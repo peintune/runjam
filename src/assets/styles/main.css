@@ -1,0 +1,453 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    color: #1a1a2e;
+    background: #f8f9fb;
+    line-height: 1.6;
+    letter-spacing: -0.01em;
+  }
+
+  ::selection {
+    background: rgba(99, 102, 241, 0.15);
+  }
+}
+
+/* ═══════════════════════════════════════════
+   Highlight.js — Light Theme (default)
+   ═══════════════════════════════════════════ */
+.hljs-theme-light .hljs,
+.cb-wrap:not(.hljs-theme-dark) .hljs {
+  color: #24292f;
+  background: transparent;
+}
+.hljs-theme-light .hljs-comment,
+.hljs-theme-light .hljs-quote,
+.cb-wrap:not(.hljs-theme-dark) .hljs-comment,
+.cb-wrap:not(.hljs-theme-dark) .hljs-quote {
+  color: #6e7781;
+  font-style: italic;
+}
+.hljs-theme-light .hljs-keyword,
+.hljs-theme-light .hljs-selector-tag,
+.hljs-theme-light .hljs-type,
+.cb-wrap:not(.hljs-theme-dark) .hljs-keyword,
+.cb-wrap:not(.hljs-theme-dark) .hljs-selector-tag,
+.cb-wrap:not(.hljs-theme-dark) .hljs-type {
+  color: #cf222e;
+}
+.hljs-theme-light .hljs-string,
+.hljs-theme-light .hljs-addition,
+.hljs-theme-light .hljs-regexp,
+.cb-wrap:not(.hljs-theme-dark) .hljs-string,
+.cb-wrap:not(.hljs-theme-dark) .hljs-addition,
+.cb-wrap:not(.hljs-theme-dark) .hljs-regexp {
+  color: #0a3069;
+}
+.hljs-theme-light .hljs-number,
+.hljs-theme-light .hljs-literal,
+.hljs-theme-light .hljs-template-variable,
+.cb-wrap:not(.hljs-theme-dark) .hljs-number,
+.cb-wrap:not(.hljs-theme-dark) .hljs-literal,
+.cb-wrap:not(.hljs-theme-dark) .hljs-template-variable {
+  color: #0550ae;
+}
+.hljs-theme-light .hljs-title,
+.hljs-theme-light .hljs-name,
+.hljs-theme-light .hljs-function,
+.hljs-theme-light .hljs-section,
+.cb-wrap:not(.hljs-theme-dark) .hljs-title,
+.cb-wrap:not(.hljs-theme-dark) .hljs-name,
+.cb-wrap:not(.hljs-theme-dark) .hljs-function,
+.cb-wrap:not(.hljs-theme-dark) .hljs-section {
+  color: #8250df;
+}
+.hljs-theme-light .hljs-attr,
+.hljs-theme-light .hljs-attribute,
+.hljs-theme-light .hljs-variable,
+.hljs-theme-light .hljs-selector-attr,
+.hljs-theme-light .hljs-selector-pseudo,
+.cb-wrap:not(.hljs-theme-dark) .hljs-attr,
+.cb-wrap:not(.hljs-theme-dark) .hljs-attribute,
+.cb-wrap:not(.hljs-theme-dark) .hljs-variable,
+.cb-wrap:not(.hljs-theme-dark) .hljs-selector-attr,
+.cb-wrap:not(.hljs-theme-dark) .hljs-selector-pseudo {
+  color: #8250df;
+}
+.hljs-theme-light .hljs-meta,
+.hljs-theme-light .hljs-built_in,
+.hljs-theme-light .hljs-selector-class,
+.cb-wrap:not(.hljs-theme-dark) .hljs-meta,
+.cb-wrap:not(.hljs-theme-dark) .hljs-built_in,
+.cb-wrap:not(.hljs-theme-dark) .hljs-selector-class {
+  color: #cf222e;
+}
+.hljs-theme-light .hljs-symbol,
+.hljs-theme-light .hljs-bullet,
+.hljs-theme-light .hljs-link,
+.cb-wrap:not(.hljs-theme-dark) .hljs-symbol,
+.cb-wrap:not(.hljs-theme-dark) .hljs-bullet,
+.cb-wrap:not(.hljs-theme-dark) .hljs-link {
+  color: #0550ae;
+}
+.hljs-theme-light .hljs-deletion,
+.cb-wrap:not(.hljs-theme-dark) .hljs-deletion {
+  color: #82071e;
+  background: #ffebe9;
+}
+.hljs-theme-light .hljs-addition,
+.cb-wrap:not(.hljs-theme-dark) .hljs-addition {
+  color: #116329;
+  background: #dafbe1;
+}
+.hljs-theme-light .hljs-params,
+.hljs-theme-light .hljs-property,
+.cb-wrap:not(.hljs-theme-dark) .hljs-params,
+.cb-wrap:not(.hljs-theme-dark) .hljs-property {
+  color: #24292f;
+}
+.hljs-theme-light .hljs-emphasis,
+.cb-wrap:not(.hljs-theme-dark) .hljs-emphasis {
+  font-style: italic;
+}
+.hljs-theme-light .hljs-strong,
+.cb-wrap:not(.hljs-theme-dark) .hljs-strong {
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════
+   Highlight.js — Dark Theme (toggle)
+   ═══════════════════════════════════════════ */
+.hljs-theme-dark .hljs {
+  color: #c0caf5;
+}
+.hljs-theme-dark .hljs-comment,
+.hljs-theme-dark .hljs-quote {
+  color: #565f89;
+  font-style: italic;
+}
+.hljs-theme-dark .hljs-keyword,
+.hljs-theme-dark .hljs-selector-tag,
+.hljs-theme-dark .hljs-type {
+  color: #9d7cd8;
+}
+.hljs-theme-dark .hljs-string,
+.hljs-theme-dark .hljs-regexp {
+  color: #9ece6a;
+}
+.hljs-theme-dark .hljs-number,
+.hljs-theme-dark .hljs-literal {
+  color: #ff9e64;
+}
+.hljs-theme-dark .hljs-title,
+.hljs-theme-dark .hljs-name,
+.hljs-theme-dark .hljs-section {
+  color: #7dcfff;
+}
+.hljs-theme-dark .hljs-attr,
+.hljs-theme-dark .hljs-attribute,
+.hljs-theme-dark .hljs-variable {
+  color: #e0af68;
+}
+.hljs-theme-dark .hljs-meta,
+.hljs-theme-dark .hljs-built_in {
+  color: #7dcfff;
+}
+.hljs-theme-dark .hljs-symbol,
+.hljs-theme-dark .hljs-bullet {
+  color: #7dcfff;
+}
+.hljs-theme-dark .hljs-deletion {
+  color: #f7768e;
+}
+.hljs-theme-dark .hljs-addition {
+  color: #9ece6a;
+}
+.hljs-theme-dark .hljs-emphasis {
+  font-style: italic;
+}
+.hljs-theme-dark .hljs-strong {
+  font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════
+   Code Block — Light Surface
+   ═══════════════════════════════════════════ */
+.cb-wrap {
+  margin: 1.25rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f6f8fa;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.cb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 6px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.cb-lang {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6366f1;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.cb-lang-error {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  color: #b45309;
+  background: #fef3c7;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.cb-copy,
+.cb-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid #e4e7ed;
+  background: transparent;
+  color: #6e7681;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.cb-copy:hover,
+.cb-copy-btn:hover {
+  background: #f0f2f5;
+  color: #24292f;
+  border-color: #d0d7de;
+}
+
+.cb-wrap pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.cb-wrap code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: inherit;
+  background: transparent !important;
+  padding: 0 !important;
+  color: inherit;
+}
+
+/* ═══════════════════════════════════════════
+   Dark Code Block variant
+   ═══════════════════════════════════════════ */
+.hljs-theme-dark.cb-wrap,
+.cb-wrap.hljs-theme-dark {
+  background: #16162a;
+  border: 1px solid #2a2a4a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(129, 140, 248, 0.04);
+}
+.hljs-theme-dark .cb-head,
+.cb-wrap.hljs-theme-dark .cb-head {
+  background: #1e1e36;
+  border-bottom: 1px solid #2a2a4a;
+}
+.hljs-theme-dark .cb-lang,
+.cb-wrap.hljs-theme-dark .cb-lang {
+  color: #818cf8;
+}
+.hljs-theme-dark .cb-copy,
+.hljs-theme-dark .cb-copy-btn,
+.cb-wrap.hljs-theme-dark .cb-copy,
+.cb-wrap.hljs-theme-dark .cb-copy-btn {
+  border-color: #3a3a5c;
+  color: #a5a5c0;
+}
+.hljs-theme-dark .cb-copy:hover,
+.hljs-theme-dark .cb-copy-btn:hover,
+.cb-wrap.hljs-theme-dark .cb-copy:hover,
+.cb-wrap.hljs-theme-dark .cb-copy-btn:hover {
+  background: #2a2a4a;
+  color: #d0d0e8;
+  border-color: #5a5a7c;
+}
+
+/* ═══════════════════════════════════════════
+   Mermaid block (global fallback)
+   ═══════════════════════════════════════════ */
+.mermaid-block {
+  margin: 1.25rem 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #e4e7ed;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.mermaid-fallback pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  background: #f6f8fa;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.mermaid-fallback code {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: inherit;
+  color: #24292f;
+}
+
+.mermaid-fallback .cb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 6px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.mermaid-fallback .cb-lang {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6366f1;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ═══════════════════════════════════════════
+   Message Bubble & Avatar
+   ═══════════════════════════════════════════ */
+.msg-agent-avatar {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.25);
+}
+
+.msg-user-bubble {
+  border-radius: 18px 18px 6px 18px;
+  background: linear-gradient(135deg, #6366f1 0%, #5558e6 100%);
+  color: #ffffff;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.2);
+}
+
+.msg-agent-bubble {
+  border-radius: 18px 18px 18px 6px;
+  background: #ffffff;
+  border: 1px solid #eef0f4;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+/* ═══════════════════════════════════════════
+   Action Bar
+   ═══════════════════════════════════════════ */
+.msg-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.msg-row:hover .msg-action-bar {
+  opacity: 1;
+}
+
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #8b949e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.msg-action-btn:hover {
+  background: #f0f2f5;
+  color: #24292f;
+}
+
+/* ═══════════════════════════════════════════
+   Prose refinements
+   ═══════════════════════════════════════════ */
+.md-content p:first-child {
+  margin-top: 0;
+}
+.md-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* Smooth scrollbar for code blocks */
+.cb-wrap pre::-webkit-scrollbar {
+  height: 6px;
+}
+.cb-wrap pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cb-wrap pre::-webkit-scrollbar-thumb {
+  background: #d0d7de;
+  border-radius: 3px;
+}
+.cb-wrap pre::-webkit-scrollbar-thumb:hover {
+  background: #afb8c1;
+}
+
+/* Dark variant scrollbar */
+.hljs-theme-dark pre::-webkit-scrollbar-thumb,
+.cb-wrap.hljs-theme-dark pre::-webkit-scrollbar-thumb {
+  background: #3a3a5c;
+}
+.hljs-theme-dark pre::-webkit-scrollbar-thumb:hover,
+.cb-wrap.hljs-theme-dark pre::-webkit-scrollbar-thumb:hover {
+  background: #5a5a7c;
+}
+
+/* Mermaid rendered SVG within prose */
+.md-content .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ═══════════════════════════════════════════
+   Blinking dot animation (session running)
+   ═══════════════════════════════════════════ */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+.animate-blink {
+  animation: blink 1.2s ease-in-out infinite;
+}

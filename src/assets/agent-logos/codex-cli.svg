@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="2048" viewBox="0 0 1024 1024">
+  <!-- 外层圆角白色App底板 -->
+  <rect x="12" y="12" width="1000" height="1000" rx="220" ry="220" fill="#f8f9fa"/>
+  
+  <!-- 云朵主体渐变 -->
+  <defs>
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#b39dff"/>
+      <stop offset="100%" stop-color="#1a55ff"/>
+    </linearGradient>
+    <filter id="glow" x="-15%" y="-15%" width="130%" height="130%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- 云朵路径 -->
+  <path d="     M 512 140     C 660 140, 770 230, 785 360     C 860 390, 905 490, 875 600     C 890 710, 810 810, 695 835     C 580 870, 435 860, 330 810     C 220 770, 160 660, 180 545     C 145 430, 200 300, 315 235     C 395 185, 485 142, 512 140     Z   " fill="url(#cloudGrad)" stroke="#63a8ff" stroke-width="4" filter="url(#glow)"/>
+
+  <!-- 终端 > 符号 -->
+  <path d="M 340 370 L 425 490 L 340 610 L 310 590 L 380 490 L 310 390 Z" fill="#ffffff" opacity="0.95"/>
+  <!-- 下划线光标 -->
+  <rect x="500" y="560" width="200" height="65" rx="32" ry="32" fill="#ffffff" opacity="0.95"/>
+</svg>
