@@ -37,6 +37,7 @@ function recordToSession(record: SessionRecord): Session {
     cli: record.cli,
     cliDisplayName: record.cli_display_name,
     title: record.title || record.cli_display_name,
+    model: record.model || null,
     directoryId: record.directory || null,
     // After a page reload, no session is truly running/waiting — backend process is gone
     status: (record.status === 'running' || record.status === 'waiting') ? 'stopped' : record.status as Session["status"],

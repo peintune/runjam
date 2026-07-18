@@ -15,7 +15,7 @@ import {
   testAgent,
   type AgentInfo, type AgentStatus,
 } from "../../api/agents";
-import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName } from "../../api/models";
+import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName, getAgentModelMap, setAgentDefaultModel, type AgentModelInfo } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 
 const router = useRouter();
@@ -184,11 +184,11 @@ async function addModelToAgent(agentIdStr: string, modelId: string) {
 }
 
 const agentModelMapDetail = ref<AgentModelInfo[]>([]);
-async function loadAgentModelMapDetail(agentIdStr: string) {
+async function loadAgentModelMapDetail(_agentIdStr: string) {
   try { agentModelMapDetail.value = await getAgentModelMap(); } catch { agentModelMapDetail.value = []; }
 }
 function isDefaultForAgentDetail(modelId: string, agentId: string): boolean {
-  return agentModelMapDetail.value.some(e => e.agent_id === agentId && e.model_id === modelId && e.is_default);
+  return agentModelMapDetail.value.some((e: AgentModelInfo) => e.agent_id === agentId && e.model_id === modelId && e.is_default);
 }
 async function setAsDefaultDetail(modelId: string, agentIdStr: string) {
   await setAgentDefaultModel(agentIdStr, modelId);

@@ -19,10 +19,6 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-function fmtCost(n: number): string {
-  return "$" + n.toFixed(4);
-}
-
 function fmtDate(d: string): string {
   // d is "2026-07-18" → "Jul 18"
   const parts = d.split("-");
@@ -62,7 +58,7 @@ const barHeight = (tokens: number) => {
 const donutTotal = computed(() => store.byAgent.reduce((s, a) => s + a.total_tokens, 0));
 function donutSegments() {
   let cumulative = 0;
-  return store.byAgent.map((a, i) => {
+  return store.byAgent.map((a, _i) => {
     const pct = donutTotal.value > 0 ? a.total_tokens / donutTotal.value : 0;
     const start = cumulative;
     cumulative += pct;

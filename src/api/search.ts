@@ -13,6 +13,7 @@ export interface SessionRecord {
   cli_display_name: string;
   title: string;
   directory: string;
+  model: string | null;
   status: string;
   pid: number | null;
   pinned: number;

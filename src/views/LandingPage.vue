@@ -64,8 +64,6 @@ const agents = [
   { name: "Gemini CLI", color: "#10b981", descKey: "Google", cmd: "gemini chat" },
 ];
 
-const agentSteps = computed(() => t("agents.steps"));
-// t("agents.steps") returns string from locale, but steps is an array.
 // We access it via the raw locale data.
 import { locales, currentLang } from "../i18n";
 const agentStepsList = computed(() => locales[currentLang.value].agents.steps);

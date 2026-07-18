@@ -162,12 +162,6 @@ watch(selectedPermissionMode, (newMode) => {
   savePermissionMode(selectedAgentId.value, newMode);
 });
 
-const modes = [
-  { id: "assistant", label: "Assistant", desc: "Basic AI assistance" },
-  { id: "code", label: "Code", desc: "Write and edit code" },
-  { id: "terminal", label: "Terminal", desc: "Access terminal commands" },
-];
-
 const permissionModeOptions = [
   { id: "read_only" },
   { id: "ask_approval" },
@@ -747,7 +741,7 @@ watch(messages, (msgs) => {
                   </button>
                   <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
                     <div v-for="model in modelList" :key="model.id"
-                      @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId.value, model.id)"
+                      @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId, model.id)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                       <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                       <div>
@@ -854,7 +848,7 @@ watch(messages, (msgs) => {
                 </button>
                 <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
                   <div v-for="model in modelList" :key="model.id"
-                    @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId.value, model.id)"
+                    @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId, model.id)"
                     :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                     <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                     <div>

@@ -3,7 +3,7 @@ import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Check } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, type AgentModelInfo } from "../../api/models";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, type AgentModelInfo, type ProtocolType } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -97,7 +97,7 @@ async function persistModels() {
       provider_icon: provider.icon,
       api_base: m.apiBase, 
       api_key: m.apiKey, 
-      protocol: m.protocol,
+      protocol: m.protocol as ProtocolType,
       context_window: 0,
       support_reasoning: false,
       tags: [],

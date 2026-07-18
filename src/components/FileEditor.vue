@@ -7,10 +7,6 @@ const props = defineProps<{
   filePath: string;
 }>();
 
-const emit = defineEmits<{
-  (e: "close"): void;
-}>();
-
 const content = ref("");
 const originalContent = ref("");
 const loading = ref(true);
@@ -190,10 +186,6 @@ async function handleSave() {
   } finally {
     saving.value = false;
   }
-}
-
-function isDirty() {
-  return content.value !== originalContent.value;
 }
 
 // Keyboard shortcut: Cmd/Ctrl+S to save
