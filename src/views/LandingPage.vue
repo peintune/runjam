@@ -119,10 +119,8 @@ function scrollToSection(id: string) {
     <nav class="fixed top-0 inset-x-0 z-50 bg-[#0a0a0f]/80 backdrop-blur-xl border-b border-white/[0.06]">
       <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
         <div class="flex items-center gap-2.5">
-          <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-[11px] font-black text-white">
-            R
-          </div>
-          <span class="font-bold text-[17px] tracking-tight">RunJam</span>
+          <img src="/runjam-logo.svg" alt="RunJam" class="w-7 h-7 rounded-lg" />
+          <span class="font-bold text-[17px] tracking-tight">Run<span style="color: #10b981">Jam</span></span>
         </div>
         <div class="flex items-center gap-5 text-[13px] text-gray-400 font-medium">
           <button @click="scrollToSection('features')" class="hover:text-white transition-colors cursor-pointer">{{ t("nav.features") }}</button>
@@ -623,7 +621,7 @@ function scrollToSection(id: string) {
       <div class="max-w-6xl mx-auto px-6 mt-24 pt-8 border-t border-white/[0.04]">
         <div class="flex flex-col md:flex-row items-center justify-between gap-4 text-[12px] text-gray-500">
           <div class="flex items-center gap-2">
-            <div class="w-5 h-5 rounded bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center text-[8px] font-black text-white">R</div>
+            <img src="/runjam-logo.svg" alt="RunJam" class="w-5 h-5 rounded" />
             <span>{{ t("footer.tagline") }}</span>
           </div>
           <div class="flex items-center gap-6">

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="public/runjam-logo.svg" width="120" alt="RunJam" />
+
 # RunJam
 
 ### One Desktop, All Your AI Agents
@@ -104,13 +106,13 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 
 ### Option A: Download Pre-built Binary
 
-> Pre-built binaries will be available on the [GitHub Releases](https://github.com/nicepkg/runjam/releases) page.
+> Pre-built binaries will be available on the [GitHub Releases](https://github.com/peintune/runjam/releases) page.
 
 ### Option B: Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/nicepkg/runjam.git
+git clone https://github.com/peintune/runjam.git
 cd runjam
 
 # Install frontend dependencies
@@ -277,7 +279,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup inst
 
 <div align="center">
 
-**[⭐ Star this repo](https://github.com/nicepkg/runjam)** if you find it useful!
+**[⭐ Star this repo](https://github.com/peintune/runjam)** if you find it useful!
 
 Made with Rust 🦀 and Vue 3 💚
 

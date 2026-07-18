@@ -98,10 +98,8 @@ function confirmDeleteAllArchived() {
     <div class="px-5 pt-4 pb-2">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-xl bg-gray-900 flex items-center justify-center shadow-sm">
-            <span class="text-white text-[13px] font-bold tracking-tight">R</span>
-          </div>
-          <span class="text-[17px] font-semibold text-gray-900 tracking-tight">RunJam</span>
+          <img src="/runjam-logo.svg" alt="RunJam" class="w-9 h-9 rounded-xl" />
+          <span class="text-[17px] font-semibold text-gray-900 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
         </div>
         <div class="flex items-center gap-1">
           <button v-if="batchMode" @click="exitBatch" class="p-1.5 rounded-lg text-[11px] font-medium text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer">Cancel</button>

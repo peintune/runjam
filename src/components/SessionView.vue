@@ -14,7 +14,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
-import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle } from "lucide-vue-next";
+import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus } from "lucide-vue-next";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -50,6 +50,17 @@ const assignedModels = ref<ModelEntry[]>([]);
 const inputText = ref("");
 const dirPath = ref("");
 const showDirMenu = ref(false);
+const showMoreAgents = ref(false);
+
+const otherAgents = [
+  { id: "openclaw", name: "OpenClaw" },
+  { id: "codebuddy", name: "CodeBuddy" },
+  { id: "qoder", name: "Qoder" },
+  { id: "augment", name: "Augment Code" },
+  { id: "codium", name: "Codium" },
+  { id: "windsurf", name: "Windsurf" },
+  { id: "continue", name: "Continue" },
+];
 
 const RECENT_DIRS_KEY = "recent-project-dirs";
 const MAX_RECENT = 5;
@@ -767,6 +778,24 @@ watch(messages, (msgs) => {
               <AgentIcon :agent-id="a.id" />
               {{ a.display_name }}
             </button>
+            <!-- More agents dropdown -->
+            <div class="relative">
+              <button @click.stop="showMoreAgents = !showMoreAgents" class="flex items-center gap-1 px-3 py-2 rounded-xl text-[13px] font-medium text-gray-500 hover:text-gray-700 transition-all duration-200 cursor-pointer">
+                More
+                <ChevronDown :size="10" :class="showMoreAgents ? 'rotate-180' : ''" class="transition-transform duration-150" />
+              </button>
+              <div v-if="showMoreAgents" class="absolute top-full left-0 mt-1 w-44 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 py-1">
+                <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Coming Soon</div>
+                <button
+                  v-for="agent in otherAgents"
+                  :key="agent.id"
+                  class="w-full flex items-center gap-2 px-3 py-2 text-left text-[12px] text-gray-400 cursor-default"
+                >
+                  <span class="w-4 h-4 rounded-full bg-gray-200 flex-shrink-0" />
+                  {{ agent.name }}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -835,6 +864,15 @@ watch(messages, (msgs) => {
                   </div>
                   <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
                     No models configured
+                  </div>
+                  <div class="border-t border-gray-100">
+                    <button
+                      @click="router.push('/settings/models?action=add')"
+                      class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer font-medium"
+                    >
+                      <Plus :size="13" class="text-gray-400" />
+                      Add Model
+                    </button>
                   </div>
                 </div>
               </div>

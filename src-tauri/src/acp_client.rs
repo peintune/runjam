@@ -1,4 +1,6 @@
 use crate::acp::{AcpEvent, AcpMessage, PermissionOption};
+use crate::cost::tracker;
+use crate::db::connection::Database;
 use crate::node_util;
 use crate::rjlog;
 use serde::{Deserialize, Serialize};
@@ -6,9 +8,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest {
@@ -61,6 +64,8 @@ struct UpdateWrapper {
     title: Option<String>,
     #[serde(default, rename = "_meta")]
     _meta: Option<Value>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// Helper: extract tool_name from UpdateWrapper (tries top-level, then _meta.claudeCode.toolName)
@@ -450,6 +455,12 @@ impl AcpClient {
         let app_clone2 = app.clone();
         let session_id_clone = session_id.to_string();
         let permission_mode_clone = permission_mode.to_string();
+        let _agent_type_clone = agent_type.to_string();
+        let model_clone = model.map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
+        
+        // Track cumulative token usage to calculate deltas
+        let last_used = Arc::new(AtomicU64::new(0));
+        let last_used_clone = last_used.clone();
         
         // Track tool call start times for duration calculation
         let tool_start_times: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -645,7 +656,31 @@ impl AcpClient {
                                         ));
                                     }
                                     "usage_update" => {
-                                        rjlog!("[ACP DEBUG] Usage update: used={}, size={}", update.params.update.used.unwrap_or(0), update.params.update.size.unwrap_or(0));
+                                        let used = update.params.update.used.unwrap_or(0);
+                                        let prev = last_used_clone.load(Ordering::SeqCst);
+                                        let delta = if used > prev { used - prev } else { 0 };
+                                        let usage_model = update.params.update.model.clone()
+                                            .filter(|m| !m.is_empty())
+                                            .unwrap_or_else(|| model_clone.clone());
+                                        rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, model={}", used, delta, usage_model);
+                                        if delta > 0 {
+                                            last_used_clone.store(used, Ordering::SeqCst);
+                                            // Record to database via Tauri state
+                                            if let Some(state) = app_clone2.try_state::<Mutex<Database>>() {
+                                                if let Ok(db) = state.lock() {
+                                                    if let Ok(conn) = db.conn.lock() {
+                                                        tracker::record_usage(
+                                                            &conn,
+                                                            &session_id_clone,
+                                                            &usage_model,
+                                                            delta as i64,
+                                                            0,
+                                                            0.0,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                     "available_commands_update" => {
                                         rjlog!("[ACP DEBUG] Available commands update");

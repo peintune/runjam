@@ -1,20 +1,39 @@
-// Cost commands — stub for future use
-use serde::Serialize;
+use crate::cost::tracker;
+use crate::db::connection::Database;
+use std::sync::Mutex;
+use tauri::State;
 
-#[derive(Serialize)]
-pub struct CostSummary {
-    pub today: f64,
-    pub week: f64,
-    pub total: f64,
-    pub total_tokens: i64,
+#[tauri::command]
+pub fn get_cost_summary(db_state: State<'_, Mutex<Database>>) -> tracker::CostSummary {
+    let db = db_state.lock().unwrap();
+    let conn = db.conn.lock().unwrap();
+    tracker::get_cost_summary(&conn)
 }
 
 #[tauri::command]
-pub fn get_cost_summary() -> CostSummary {
-    CostSummary {
-        today: 0.0,
-        week: 0.0,
-        total: 0.0,
-        total_tokens: 0,
-    }
+pub fn get_cost_by_agent(db_state: State<'_, Mutex<Database>>) -> Vec<tracker::AgentCost> {
+    let db = db_state.lock().unwrap();
+    let conn = db.conn.lock().unwrap();
+    tracker::get_cost_by_agent(&conn)
+}
+
+#[tauri::command]
+pub fn get_cost_by_day(db_state: State<'_, Mutex<Database>>, days: i32) -> Vec<tracker::DailyCost> {
+    let db = db_state.lock().unwrap();
+    let conn = db.conn.lock().unwrap();
+    tracker::get_cost_by_day(&conn, days)
+}
+
+#[tauri::command]
+pub fn get_cost_by_session(db_state: State<'_, Mutex<Database>>, limit: i64) -> Vec<tracker::SessionCost> {
+    let db = db_state.lock().unwrap();
+    let conn = db.conn.lock().unwrap();
+    tracker::get_cost_by_session(&conn, limit)
+}
+
+#[tauri::command]
+pub fn get_cost_by_directory(db_state: State<'_, Mutex<Database>>) -> Vec<tracker::DirectoryCost> {
+    let db = db_state.lock().unwrap();
+    let conn = db.conn.lock().unwrap();
+    tracker::get_cost_by_directory(&conn)
 }

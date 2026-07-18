@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useRoute } from "vue-router";
 import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Check } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, type AgentModelInfo } from "../../api/models";
@@ -26,6 +27,7 @@ const models = ref<UIModel[]>([]);
 const showAdd = ref(false);
 const agents = ref<AgentInfo[]>([]);
 const agentModelMap = ref<Record<string, AgentModelInfo[]>>({});
+const route = useRoute();
 
 const newModel = ref({ 
   provider: "openai", 
@@ -39,7 +41,10 @@ const selectedProvider = ref(providers[0]);
 const showDeleteDialog = ref(false);
 const deletingModelId = ref<string | null>(null);
 
-onMounted(async () => { 
+onMounted(async () => {
+  if (route.query.action === "add") {
+    showAdd.value = true;
+  }
   try { 
     const list = await getModels(); 
     models.value = list.map(m => ({ 
