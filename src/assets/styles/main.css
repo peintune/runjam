@@ -339,25 +339,21 @@
    Message Bubble & Avatar
    ═══════════════════════════════════════════ */
 .msg-agent-avatar {
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 700;
-  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.25);
+  overflow: hidden;
 }
 
 .msg-user-bubble {
   border-radius: 18px 18px 6px 18px;
-  background: linear-gradient(135deg, #6366f1 0%, #5558e6 100%);
-  color: #ffffff;
-  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.2);
+  background: #f3f4f6;
+  color: #1f2937;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 
 .msg-agent-bubble {

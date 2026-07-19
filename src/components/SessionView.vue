@@ -605,19 +605,19 @@ watch(messages, async () => {
 async function handleSend() {
   const text = inputText.value.trim(); if(!text)return;
   inputText.value = "";
-  
+
+  if(!store.activeSession) {
+    const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
+    const title = text.substring(0, 7) + (text.length > 7 ? '...' : '');
+    await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value);
+  }
+
   if (store.activeSession?.id) {
     const state = getSessionState(store.activeSession.id);
     state.messages.push({role:"user",content:text});
     messages.value = [...state.messages];
     msgStore.setMessages(store.activeSession.id, [...state.messages]);
     saveConversationMessage(store.activeSession.id, "user", text).catch(()=>{});
-  }
-
-  if(!store.activeSession) {
-    const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
-    const title = text.substring(0, 7) + (text.length > 7 ? '...' : '');
-    await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value);
   }
 
   if(store.activeSession) {
@@ -686,7 +686,7 @@ watch(messages, (msgs) => {
       
       <div ref="messageContainer" class="flex-1 overflow-y-auto">
         <div class="max-w-4xl mx-auto px-6 py-5">
-          <ChatMessages :messages="messages" />
+          <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
           <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
             <div class="flex items-center gap-2 text-gray-400">
               <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>

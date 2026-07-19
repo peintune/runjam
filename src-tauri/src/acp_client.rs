@@ -66,6 +66,12 @@ struct UpdateWrapper {
     _meta: Option<Value>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "inputTokens")]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "outputTokens")]
+    output_tokens: Option<u64>,
 }
 
 /// Helper: extract tool_name from UpdateWrapper (tries top-level, then _meta.claudeCode.toolName)
@@ -461,6 +467,10 @@ impl AcpClient {
         // Track cumulative token usage to calculate deltas
         let last_used = Arc::new(AtomicU64::new(0));
         let last_used_clone = last_used.clone();
+        let last_input = Arc::new(AtomicU64::new(0));
+        let last_input_clone = last_input.clone();
+        let last_output = Arc::new(AtomicU64::new(0));
+        let last_output_clone = last_output.clone();
         
         // Track tool call start times for duration calculation
         let tool_start_times: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -657,14 +667,28 @@ impl AcpClient {
                                     }
                                     "usage_update" => {
                                         let used = update.params.update.used.unwrap_or(0);
+                                        let input_tokens = update.params.update.input_tokens.unwrap_or(0);
+                                        let output_tokens = update.params.update.output_tokens.unwrap_or(0);
                                         let prev = last_used_clone.load(Ordering::SeqCst);
+                                        let prev_input = last_input_clone.load(Ordering::SeqCst);
+                                        let prev_output = last_output_clone.load(Ordering::SeqCst);
                                         let delta = if used > prev { used - prev } else { 0 };
+                                        let input_delta = if input_tokens > prev_input { input_tokens - prev_input } else { 0 };
+                                        let output_delta = if output_tokens > prev_output { output_tokens - prev_output } else { 0 };
+                                        // If agent doesn't provide separate input/output, split total delta
+                                        let (record_input, record_output) = if input_delta > 0 || output_delta > 0 {
+                                            (input_delta as i64, output_delta as i64)
+                                        } else {
+                                            (delta as i64, 0)
+                                        };
                                         let usage_model = update.params.update.model.clone()
                                             .filter(|m| !m.is_empty())
                                             .unwrap_or_else(|| model_clone.clone());
-                                        rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, model={}", used, delta, usage_model);
-                                        if delta > 0 {
+                                        rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, input_delta={}, output_delta={}, model={}", used, delta, record_input, record_output, usage_model);
+                                        if delta > 0 || record_input > 0 || record_output > 0 {
                                             last_used_clone.store(used, Ordering::SeqCst);
+                                            if input_delta > 0 { last_input_clone.store(input_tokens, Ordering::SeqCst); }
+                                            if output_delta > 0 { last_output_clone.store(output_tokens, Ordering::SeqCst); }
                                             // Record to database via Tauri state
                                             if let Some(state) = app_clone2.try_state::<Mutex<Database>>() {
                                                 if let Ok(db) = state.lock() {
@@ -673,8 +697,8 @@ impl AcpClient {
                                                             &conn,
                                                             &session_id_clone,
                                                             &usage_model,
-                                                            delta as i64,
-                                                            0,
+                                                            record_input,
+                                                            record_output,
                                                             0.0,
                                                         );
                                                     }

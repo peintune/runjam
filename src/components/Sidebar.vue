@@ -2,7 +2,7 @@
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
-import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare } from "lucide-vue-next";
+import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive } from "lucide-vue-next";
 import SessionItem from "./SessionItem.vue";
 
 const store = useWorkspaceStore();
@@ -12,6 +12,41 @@ const route = useRoute();
 const viewMode = ref<"comfortable" | "compact">("comfortable");
 const showArchived = ref(false);
 const collapsedConversations = ref(false);
+const collapsedDirectories = ref(false);
+
+// ── Fold old sessions: show N recent, rest under "older" toggle ──
+const N_RECENT_ORPHANS = 5;
+const showAllOrphans = ref(false);
+const dirShowAll = ref<Record<string, boolean>>({});
+
+const visibleOrphans = computed(() => {
+  if (showAllOrphans.value) return grouped.value.orphans;
+  return grouped.value.orphans.slice(0, N_RECENT_ORPHANS);
+});
+
+const hiddenOrphanCount = computed(() => {
+  return Math.max(0, grouped.value.orphans.length - N_RECENT_ORPHANS);
+});
+
+function getDirVisibleSessions(sessions: Session[], path: string): Session[] {
+  if (dirShowAll.value[path]) return sessions;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+  const visible = sessions.filter(s => new Date(s.lastActiveAt).getTime() >= todayMs);
+  if (visible.length === 0 && sessions.length > 0) return [sessions[0]];
+  return visible;
+}
+
+function getDirHiddenCount(sessions: Session[], path: string): number {
+  if (dirShowAll.value[path]) return 0;
+  return Math.max(0, sessions.length - getDirVisibleSessions(sessions, path).length);
+}
+
+function toggleDirShowAll(path: string) {
+  dirShowAll.value = { ...dirShowAll.value, [path]: !dirShowAll.value[path] };
+}
+
 const confirmDeleteTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const confirmDeleteMode = ref(false);
 const batchMode = ref(false);
@@ -98,8 +133,8 @@ function confirmDeleteAllArchived() {
     <div class="px-5 pt-4 pb-2">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <img src="/runjam-logo.svg" alt="RunJam" class="w-9 h-9 rounded-xl" />
-          <span class="text-[17px] font-semibold text-gray-900 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
+          <img src="/runjam-logo.svg" alt="RunJam" class="w-11 h-11 d rounded-xl" />
+          <span class="text-[17px] font-semibold text-gray-90 0 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
         </div>
         <div class="flex items-center gap-1">
           <button v-if="batchMode" @click="exitBatch" class="p-1.5 rounded-lg text-[11px] font-medium text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer">Cancel</button>
@@ -127,7 +162,7 @@ function confirmDeleteAllArchived() {
     <div class="px-3 pb-3">
       <button
         @click="store.activeSessionId = null"
-        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white bg-gray-800 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
+        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-gray-700 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
       >
         <Plus :size="17" /> New Session
       </button>
@@ -142,47 +177,70 @@ function confirmDeleteAllArchived() {
         Click sessions to select
       </p>
 
-      <template v-for="g in grouped.groups" :key="g.path" v-if="!batchMode || true">
-        <div>
-          <button
-            @click="toggleDir(g.path)"
-            class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
-          >
-            <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': expandedDirs.has(g.path) }" />
-            <Folder :size="14" class="text-gray-700 flex-shrink-0" />
-            <span class="truncate font-medium">{{ g.path.split('/').pop() || g.path }}</span>
-            <span class="text-[11px] text-gray-400 ml-auto">{{ g.sessions.length }}</span>
-          </button>
-          <div v-if="expandedDirs.has(g.path)" class="mt-0.5">
-            <SessionItem
-              v-for="s in g.sessions" :key="s.id" :session="s"
-              :active="store.activeSessionId === s.id"
-              :compact="viewMode === 'compact'"
-              :batch="batchMode" :selected="selectedIds.has(s.id)"
-              :renaming="renameId === s.id"
-              :archived="false" :menuOpen="menuSessionId === s.id" :menuX="menuX" :menuY="menuY"
-              @select="store.selectSession(s.id)"
-              @toggle-select="toggleSelect(s.id)"
-              @show-menu="(e: MouseEvent) => showMenu(e, s.id)"
-              @start-rename="startRename(s.id)"
-              @do-rename="doRename"
-              @pin="store.togglePin(s.id); menuSessionId = null"
-              @archive="store.archiveSession(s.id); menuSessionId = null"
-              @delete="store.removeSession(s.id); menuSessionId = null"
-            />
+      <!-- Directory section header -->
+      <div v-if="grouped.groups.length > 0">
+        <button
+          @click="collapsedDirectories = !collapsedDirectories"
+          class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+        >
+          <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': !collapsedDirectories }" />
+          <span class="text-[11px] font-medium text-gray-400">Directory</span>
+          <span class="text-[11px] text-gray-400 ml-auto">{{ grouped.groups.length }}</span>
+        </button>
+      </div>
+
+      <!-- Directory groups -->
+      <template v-if="!collapsedDirectories">
+        <template v-for="g in grouped.groups" :key="g.path">
+          <div class="ml-3 border-l border-gray-100 pl-2">
+            <button
+              @click="toggleDir(g.path)"
+              class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+            >
+              <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': expandedDirs.has(g.path) }" />
+              <Folder :size="14" class="text-gray-700 flex-shrink-0" />
+              <span class="truncate font-medium">{{ g.path.split('/').pop() || g.path }}</span>
+              <span class="text-[11px] text-gray-400 ml-auto">{{ g.sessions.length }}</span>
+            </button>
+            <div v-if="expandedDirs.has(g.path)" class="mt-0.5">
+              <SessionItem
+                v-for="s in getDirVisibleSessions(g.sessions, g.path)" :key="s.id" :session="s"
+                :active="store.activeSessionId === s.id"
+                :compact="viewMode === 'compact'"
+                :batch="batchMode" :selected="selectedIds.has(s.id)"
+                :renaming="renameId === s.id"
+                :archived="false" :menuOpen="menuSessionId === s.id" :menuX="menuX" :menuY="menuY"
+                @select="store.selectSession(s.id)"
+                @toggle-select="toggleSelect(s.id)"
+                @show-menu="(e: MouseEvent) => showMenu(e, s.id)"
+                @start-rename="startRename(s.id)"
+                @do-rename="doRename"
+                @pin="store.togglePin(s.id); menuSessionId = null"
+                @archive="store.archiveSession(s.id); menuSessionId = null"
+                @delete="store.removeSession(s.id); menuSessionId = null"
+              />
+              <button
+                v-if="getDirHiddenCount(g.sessions, g.path) > 0"
+                @click="toggleDirShowAll(g.path)"
+                class="w-full flex items-center gap-2 pl-5 py-1 rounded-lg text-[11px] text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors cursor-pointer"
+              >
+                <ChevronRight :size="11" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': dirShowAll[g.path] }" />
+                <span>{{ dirShowAll[g.path] ? 'Collapse' : getDirHiddenCount(g.sessions, g.path) + ' older' }}</span>
+              </button>
+            </div>
           </div>
-        </div>
+        </template>
       </template>
 
       <div v-if="grouped.orphans.length > 0">
         <button @click="collapsedConversations = !collapsedConversations" class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer">
           <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': !collapsedConversations }" />
-          <span class="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">Conversations</span>
+          <span class="text-[11px] font-medium text-gray-400">Conversations</span>
           <span class="text-[11px] text-gray-400 ml-auto">{{ grouped.orphans.length }}</span>
         </button>
         <div v-if="!collapsedConversations" :class="viewMode === 'compact' ? 'space-y-0 mt-0.5' : 'space-y-0.5 mt-0.5'">
           <SessionItem
-            v-for="s in grouped.orphans" :key="s.id" :session="s"
+            v-for="s in visibleOrphans" :key="s.id" :session="s"
             :active="store.activeSessionId === s.id"
             :compact="viewMode === 'compact'"
             :batch="batchMode" :selected="selectedIds.has(s.id)"
@@ -197,6 +255,14 @@ function confirmDeleteAllArchived() {
             @archive="store.archiveSession(s.id); menuSessionId = null"
             @delete="store.removeSession(s.id); menuSessionId = null"
           />
+          <button
+            v-if="hiddenOrphanCount > 0"
+            @click="showAllOrphans = !showAllOrphans"
+            class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors cursor-pointer"
+          >
+            <ChevronRight :size="11" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': showAllOrphans }" />
+            <span>{{ showAllOrphans ? 'Collapse' : hiddenOrphanCount + ' older' }}</span>
+          </button>
         </div>
       </div>
 

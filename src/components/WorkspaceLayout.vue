@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
+
+defineOptions({ name: "WorkspaceLayout" });
 import Sidebar from "./Sidebar.vue";
 import SessionView from "./SessionView.vue";
 import WorkspacePanel from "./WorkspacePanel.vue";
@@ -66,7 +68,8 @@ watch(() => store.activeSessionId, (newId) => {
   }
 });
 
-onMounted(() => {
+onMounted(async () => {
+  await store.loadSessions();
   if (store.activeSessionId) {
     const dirId = currentDirectoryId();
     switchDirectory(dirId);

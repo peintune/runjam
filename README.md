@@ -121,11 +121,33 @@ npm install
 # Run in development mode (hot reload)
 npm run tauri dev
 
-# Build production binary
+# Build for current platform (macOS → .dmg, Windows → .msi/.exe, Linux → .deb/.AppImage)
 npm run tauri build
 ```
 
 Build artifacts will be in `src-tauri/target/release/bundle/`.
+
+#### Platform-specific builds
+
+```bash
+# macOS: build universal binary (Intel + Apple Silicon)
+npm run tauri build -- --target universal-apple-darwin
+
+# macOS: build Intel-only .dmg
+npm run tauri build -- --target x86_64-apple-darwin
+
+# macOS: build Apple Silicon-only .dmg
+npm run tauri build -- --target aarch64-apple-darwin
+
+# Windows: build .msi / .exe (run on Windows, or cross-compile from macOS/Linux)
+npm run tauri build -- --target x86_64-pc-windows-msvc
+
+# Linux: build .deb / .AppImage
+npm run tauri build -- --target x86_64-unknown-linux-gnu
+```
+
+> **Cross-compilation note:** Building Windows binaries from macOS/Linux requires additional Rust toolchains.
+> It's recommended to build each platform's package on that platform directly (e.g., use CI runners).
 
 ### First Run
 

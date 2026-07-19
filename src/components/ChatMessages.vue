@@ -6,6 +6,7 @@ import {
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown } from "../composables/useMarkdown";
+import AgentIcon from "./AgentIcon.vue";
 
 const { render: renderMd, safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
 
@@ -39,7 +40,7 @@ export interface Message {
 }
 
 // ═══ Props ═══
-const props = defineProps<{ messages: Message[] }>();
+const props = defineProps<{ messages: Message[]; agentId?: string }>();
 
 // ═══ Message Groups: consecutive agent messages merge into one bubble ═══
 const messageGroups = computed(() => {
@@ -369,7 +370,10 @@ function truncateLabel(label: string, maxLen = 32): string {
 
       <!-- ── Agent message group (1+ messages in one bubble) ── -->
       <div v-else class="msg-row flex gap-3 justify-start">
-        <div class="msg-agent-avatar shrink-0 mt-0.5">A</div>
+        <div class="msg-agent-avatar shrink-0 mt-0.5">
+          <AgentIcon v-if="agentId" :agent-id="agentId" :size="28" />
+          <span v-else class="text-[13px] font-bold text-gray-400">A</span>
+        </div>
         <div class="msg-agent-bubble max-w-[85%] px-5 py-4">
           <!-- Iterate each message in the group -->
           <template v-for="(item, ii) in group.items" :key="item.oi">

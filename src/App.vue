@@ -21,5 +21,9 @@ Promise.all([
 </script>
 
 <template>
-  <router-view />
+  <router-view v-slot="{ Component }">
+    <keep-alive include="WorkspaceLayout">
+      <component :is="Component" />
+    </keep-alive>
+  </router-view>
 </template>
