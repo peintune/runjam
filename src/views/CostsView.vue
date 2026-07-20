@@ -95,9 +95,9 @@ async function changeDays(d: number) {
             <div class="flex items-center gap-3 mb-1">
               <button
                 @click="router.push('/')"
-                class="flex items-center gap-1.5 px-2 py-1 -ml-2 rounded-lg text-[13px] text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
+                class="flex items-center gap-1.5 px-2 py-1 -ml-2 rounded-lg text-[16px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
               >
-                <ArrowLeft :size="15" />
+                <ArrowLeft :size="17" />
                 Back
               </button>
             </div>

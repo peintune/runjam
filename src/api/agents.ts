@@ -79,8 +79,8 @@ export async function getAgentDirInfo(agentId: string): Promise<AgentDirInfo> {
   return invoke<AgentDirInfo>("get_agent_dir_info", { agentId });
 }
 
-export async function getAgentStatuses(): Promise<AgentInfo[]> {
-  return invoke<AgentInfo[]>("get_agent_statuses");
+export async function getAgentStatuses(forceRefresh?: boolean): Promise<AgentInfo[]> {
+  return invoke<AgentInfo[]>("get_agent_statuses", { forceRefresh });
 }
 
 export async function testAgent(agentId: string): Promise<{ success: boolean; message: string }> {

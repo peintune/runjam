@@ -129,6 +129,7 @@ pub fn run() {
             commands::cost_cmd::get_cost_by_directory,
             commands::app_cmd::get_data_dir,
             commands::app_cmd::open_data_dir,
+            commands::app_cmd::open_in_finder,
             commands::proxy_cmd::get_proxy_port,
             commands::proxy_cmd::get_proxy_url,
             commands::term_cmd::spawn_terminal,

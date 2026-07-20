@@ -2,8 +2,9 @@
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
-import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive } from "lucide-vue-next";
+import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink } from "lucide-vue-next";
 import SessionItem from "./SessionItem.vue";
+import { openInFinder } from "../api/app";
 
 const store = useWorkspaceStore();
 const router = useRouter();
@@ -74,9 +75,17 @@ const grouped = computed(() => {
 });
 
 const expandedDirs = ref<Set<string>>(new Set());
+const dirMenuPath = ref<string | null>(null);
 function toggleDir(path: string) {
   if (expandedDirs.value.has(path)) expandedDirs.value.delete(path);
   else expandedDirs.value.add(path);
+}
+function toggleDirMenu(path: string) {
+  dirMenuPath.value = dirMenuPath.value === path ? null : path;
+}
+function openDirInFinder(path: string) {
+  openInFinder(path).catch(console.error);
+  dirMenuPath.value = null;
 }
 
 // context menu
@@ -128,7 +137,7 @@ function confirmDeleteAllArchived() {
 </script>
 
 <template>
-  <aside class="w-full flex-shrink-0 flex flex-col select-none rounded-2xl bg-white border border-gray-100 shadow-sm" @click="menuSessionId = null">
+  <aside class="w-full flex-shrink-0 flex flex-col select-none rounded-2xl bg-white border border-gray-100 shadow-sm" @click="menuSessionId = null; dirMenuPath = null">
     <!-- header -->
     <div class="px-5 pt-4 pb-2">
       <div class="flex items-center justify-between">
@@ -193,15 +202,24 @@ function confirmDeleteAllArchived() {
       <template v-if="!collapsedDirectories">
         <template v-for="g in grouped.groups" :key="g.path">
           <div class="ml-3 border-l border-gray-100 pl-2">
-            <button
-              @click="toggleDir(g.path)"
-              class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
-            >
-              <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': expandedDirs.has(g.path) }" />
-              <Folder :size="14" class="text-gray-700 flex-shrink-0" />
-              <span class="truncate font-medium">{{ g.path.split('/').pop() || g.path }}</span>
-              <span class="text-[11px] text-gray-400 ml-auto">{{ g.sessions.length }}</span>
-            </button>
+            <div class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors group/dir">
+              <button @click="toggleDir(g.path)" class="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
+                <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': expandedDirs.has(g.path) }" />
+                <Folder :size="14" class="text-gray-700 flex-shrink-0" />
+                <span class="truncate font-medium">{{ g.path.split('/').pop() || g.path }}</span>
+                <span class="text-[11px] text-gray-400 ml-auto">{{ g.sessions.length }}</span>
+              </button>
+              <div class="relative flex-shrink-0">
+                <button @click.stop="toggleDirMenu(g.path)" class="p-0.5 rounded opacity-0 group-hover/dir:opacity-100 hover:bg-gray-200/60 transition-all cursor-pointer">
+                  <MoreHorizontal :size="13" class="text-gray-400" />
+                </button>
+                <div v-if="dirMenuPath === g.path" class="absolute right-0 top-full mt-1 w-40 bg-white rounded-xl border border-gray-100 shadow-xl py-1.5 z-50">
+                  <button @click.stop="openDirInFinder(g.path)" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors cursor-pointer">
+                    <ExternalLink :size="13" class="text-gray-400" /> Open in Finder
+                  </button>
+                </div>
+              </div>
+            </div>
             <div v-if="expandedDirs.has(g.path)" class="mt-0.5">
               <SessionItem
                 v-for="s in getDirVisibleSessions(g.sessions, g.path)" :key="s.id" :session="s"

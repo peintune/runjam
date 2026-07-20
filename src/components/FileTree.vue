@@ -5,7 +5,9 @@ import FileTreeNode from "./FileTreeNode.vue";
 import {
   Folder,
   RefreshCw,
+  ExternalLink,
 } from "lucide-vue-next";
+import { openInFinder } from "../api/app";
 
 const props = defineProps<{
   rootPath: string;
@@ -119,13 +121,22 @@ onMounted(() => {
           {{ rootPath.split('/').pop() || rootPath }}
         </span>
       </div>
-      <button
-        @click="loadEntries"
-        class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-        title="Refresh"
-      >
-        <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          @click="openInFinder(props.rootPath)"
+          class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+          title="Open in Finder"
+        >
+          <ExternalLink :size="13" />
+        </button>
+        <button
+          @click="loadEntries"
+          class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+          title="Refresh"
+        >
+          <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
+        </button>
+      </div>
     </div>
 
     <!-- tree -->

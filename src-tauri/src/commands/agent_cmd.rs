@@ -219,7 +219,7 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
     let node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
     let npm_bin = if node_bin_dir.is_empty() { "npm".to_string() } else { format!("{}/npm", node_bin_dir) };
     let path_env = if node_bin_dir.is_empty() {
-        std::env::var("PATH").unwrap_or_default()
+        crate::agent::detector::get_enhanced_path()
     } else {
         format!("{}:{}", node_bin_dir, std::env::var("PATH").unwrap_or_default())
     };
@@ -284,7 +284,7 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
     let node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
     let npm_bin = if node_bin_dir.is_empty() { "npm".to_string() } else { format!("{}/npm", node_bin_dir) };
     let path_env = if node_bin_dir.is_empty() {
-        std::env::var("PATH").unwrap_or_default()
+        crate::agent::detector::get_enhanced_path()
     } else {
         format!("{}:{}", node_bin_dir, std::env::var("PATH").unwrap_or_default())
     };
@@ -519,20 +519,31 @@ fn dirs_home() -> PathBuf {
 }
 
 #[tauri::command]
-pub fn get_agent_statuses(app_state: State<'_, Mutex<AppState>>, db: State<'_, Mutex<Database>>) -> Vec<AgentWithState> {
+pub fn get_agent_statuses(app_state: State<'_, Mutex<AppState>>, db: State<'_, Mutex<Database>>, force_refresh: Option<bool>) -> Vec<AgentWithState> {
     let state = app_state.lock().unwrap();
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     
+    let force = force_refresh.unwrap_or(false);
+    
     // 1. Try cache first (detected within last 5 min, saves a filesystem scan)
-    let mut agents = load_cached_agents(&conn).unwrap_or_else(|| {
-        // 2. Cache miss or stale — full detection + persist
+    //    Skip cache when force_refresh is true
+    let mut agents = if force {
         let detected = detector::detect_agents();
         for agent in &detected {
             save_detected_agent(&conn, agent);
         }
         detected
-    });
+    } else {
+        load_cached_agents(&conn).unwrap_or_else(|| {
+            // 2. Cache miss or stale — full detection + persist
+            let detected = detector::detect_agents();
+            for agent in &detected {
+                save_detected_agent(&conn, agent);
+            }
+            detected
+        })
+    };
     
     // 3. Overlay DB status/last_tested_at (preserved from Test runs)
     for agent in agents.iter_mut() {
@@ -619,8 +630,15 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
         return Ok(bin_dir);
     }
 
-    // 3. Check system node as fallback
-    if std::process::Command::new("npm").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+    // 3. Check system node using enhanced PATH (includes Homebrew, nvm, etc.)
+    let enhanced_path = crate::agent::detector::get_enhanced_path();
+    if std::process::Command::new("npm")
+        .arg("--version")
+        .env("PATH", &enhanced_path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
         return Ok(String::new());
     }
 

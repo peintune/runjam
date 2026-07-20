@@ -1,9 +1,9 @@
 use crate::models::agent::Agent;
 use std::process::Command;
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-fn get_enhanced_path() -> String {
+pub(crate) fn get_enhanced_path() -> String {
     let mut paths = Vec::new();
 
     if let Some(home) = home_dir() {
@@ -22,6 +22,15 @@ fn get_enhanced_path() -> String {
 
     for base in paths {
         if base.exists() {
+            // Always include the base dir itself — catches Homebrew (/opt/homebrew/bin),
+            // /usr/local/bin, npm global dirs, cargo/bin, etc.
+            if !enhanced.is_empty() {
+                enhanced.push(':');
+            }
+            enhanced.push_str(base.to_string_lossy().as_ref());
+
+            // Additionally scan for nvm-style versioned Node.js installs
+            // (e.g. ~/.nvm/versions/node/v22.12.0/bin)
             if let Ok(entries) = std::fs::read_dir(&base) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -39,11 +48,6 @@ fn get_enhanced_path() -> String {
                         }
                     }
                 }
-            } else {
-                if !enhanced.is_empty() {
-                    enhanced.push(':');
-                }
-                enhanced.push_str(base.to_string_lossy().as_ref());
             }
         }
     }
@@ -99,11 +103,11 @@ pub fn detect_agents() -> Vec<Agent> {
 
         if found { continue; }
 
-        // Fallback to system PATH
+        // Fallback to system PATH (using enhanced_path that includes Homebrew, nvm, etc.)
         let which = if cfg!(target_os = "windows") {
             Command::new("where").arg(bin_name).output()
         } else {
-            Command::new("which").arg(bin_name).output()
+            Command::new("which").arg(bin_name).env("PATH", &enhanced_path).output()
         };
 
         if let Ok(output) = which {

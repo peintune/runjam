@@ -136,8 +136,8 @@ async function loadAgent() {
       await loadAgentModels(agent.value.id);
       await loadAgentConfigModels(agent.value.id);
       const models = agentModels.value[agent.value.id] || [];
-      if (models.length > 0) {
-        useProxy.value[agent.value.id] = models[0].use_proxy || false;
+      for (const m of models) {
+        useProxy.value[m.id] = m.use_proxy || false;
       }
     }
   } catch (e) {
@@ -508,8 +508,8 @@ async function toggleModelProxy(agentIdStr: string, modelId: string, currentProx
                 <label class="flex items-center gap-2 cursor-pointer group/label">
                   <input
                     type="checkbox"
-                    :checked="useProxy[agent.id] || false"
-                    @change="useProxy[agent.id] = !useProxy[agent.id]; toggleModelProxy(agent.id, model.id, !useProxy[agent.id])"
+                    :checked="useProxy[model.id] || false"
+                    @change="useProxy[model.id] = !useProxy[model.id]; toggleModelProxy(agent.id, model.id, !useProxy[model.id])"
                     class="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-900/20 cursor-pointer"
                   />
                   <span class="text-[12px] font-medium text-gray-500 group-hover/label:text-gray-700 transition-colors">Protocol Translation</span>

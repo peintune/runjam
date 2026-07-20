@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Check } from "lucide-vue-next";
+import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, type AgentModelInfo, type ProtocolType } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
@@ -189,8 +189,16 @@ async function toggleAgentAssignment(modelId: string, agentId: string) {
     await removeModelFromAgent(agentId, modelId);
   } else {
     model.assignedAgents.push(agentId);
-    await assignModelToAgent(agentId, modelId, model.useProxy[agentId] || false);
+    model.useProxy[agentId] = model.useProxy[agentId] ?? true;
+    await assignModelToAgent(agentId, modelId, model.useProxy[agentId]);
   }
+}
+
+async function toggleProtocolTranslation(modelId: string, agentId: string) {
+  const model = models.value.find(m => m.id === modelId);
+  if (!model) return;
+  model.useProxy[agentId] = !(model.useProxy[agentId] || false);
+  await assignModelToAgent(agentId, modelId, model.useProxy[agentId]);
 }
 
 async function setAsDefault(modelId: string, agentId: string) {
@@ -208,6 +216,21 @@ function isDefaultForAgent(modelId: string, agentId: string): boolean {
 function getAgentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId);
   return agent?.display_name || agentId;
+}
+
+/** Returns true if this model's protocol differs from the agent's native protocol */
+function protocolDiffers(model: UIModel, agentId: string): boolean {
+  const nativeProtocol = getAgentNativeProtocol(agentId);
+  return nativeProtocol !== "" && model.protocol !== nativeProtocol;
+}
+
+function getAgentNativeProtocol(agentId: string): string {
+  const agentProtocol: Record<string, string> = {
+    "claude-code": "anthropic",
+    "codex-cli": "openai_chat",
+    "gemini-cli": "gemini",
+  };
+  return agentProtocol[agentId] || "";
 }
 
 </script>
@@ -337,78 +360,89 @@ function getAgentDisplayName(agentId: string): string {
         </div>
 
         <div class="px-5 py-3 bg-gray-50 border-t border-gray-100">
-          <div class="flex items-center gap-2 mb-3">
-            <Users :size="13" class="text-gray-400" />
-            <span class="text-[11px] font-medium text-gray-500">Apply to Agents</span>
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <Users :size="13" class="text-gray-400" />
+              <span class="text-[11px] font-medium text-gray-500">Assigned to Agents</span>
+            </div>
+            <span class="text-[11px] text-gray-400">
+              {{ model.assignedAgents.length }} / {{ agents.filter(a => a.installed).length }} agents
+            </span>
           </div>
 
-          <div class="border border-gray-200 rounded-xl overflow-hidden">
-            <table class="w-full">
-              <thead>
-                <tr class="bg-gray-100">
-                  <th class="px-4 py-2 text-left text-[11px] font-medium text-gray-500">Agent</th>
-                  <th class="px-4 py-2 text-left">
-                    <div class="flex items-center gap-1">
-                      <span class="text-[11px] font-medium text-gray-500">Protocol Translation</span>
-                      <span class="relative inline-block">
-                        <HelpCircle :size="12" class="text-gray-400 hover:text-gray-600 transition-colors cursor-pointer" />
-                        <div class="absolute right-0 top-4 z-50 w-56 px-3 py-2 rounded-lg bg-gray-900 text-[11px] text-white opacity-0 invisible hover:opacity-100 hover:visible transition-all duration-200 shadow-xl whitespace-nowrap">
-                          Translate model protocol to agent protocol. Required when using different protocol models (e.g., use OpenAI model in Claude Code, use Anthropic model in Codex CLI)
-                        </div>
-                      </span>
-                    </div>
-                  </th>
-                  <th class="px-4 py-2 text-left text-[11px] font-medium text-gray-500">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="agent in agents.filter(a => a.installed)" :key="agent.id" :class="[
-                  'border-t border-gray-100 transition-all duration-150',
-                  model.assignedAgents.includes(agent.id) ? 'bg-green-50' : 'hover:bg-gray-50/50'
+          <div class="space-y-1.5">
+            <div
+              v-for="agent in agents.filter(a => a.installed)"
+              :key="agent.id"
+              @click="toggleAgentAssignment(model.id, agent.id)"
+              :class="[
+                'flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-all duration-150 cursor-pointer',
+                model.assignedAgents.includes(agent.id)
+                  ? 'bg-white border-gray-300 shadow-sm'
+                  : 'bg-white/50 border-gray-100 hover:border-gray-200 hover:bg-white'
+              ]"
+            >
+              <!-- Agent info -->
+              <div class="flex items-center gap-2 flex-1 min-w-0">
+                <AgentIcon :agent-id="agent.id" :size="22" />
+                <div class="min-w-0">
+                  <span class="text-[13px] font-medium text-gray-900">{{ getAgentDisplayName(agent.id) }}</span>
+                  <span v-if="agent.status === 'available'" class="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  <span v-else-if="agent.status === 'connection_failed'" class="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                </div>
+              </div>
+
+              <!-- Controls when assigned -->
+              <template v-if="model.assignedAgents.includes(agent.id)">
+                <!-- Default toggle -->
+                <button
+                  v-if="isDefaultForAgent(model.id, agent.id)"
+                  @click.stop
+                  class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-yellow-50 border border-yellow-200 text-yellow-700 cursor-default"
+                >
+                  <span class="text-[12px]">★</span> Default
+                </button>
+                <button
+                  v-else
+                  @click.stop="setAsDefault(model.id, agent.id)"
+                  class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium border border-gray-200 text-gray-500 hover:border-yellow-300 hover:text-yellow-600 hover:bg-yellow-50 transition-all duration-150 cursor-pointer"
+                >
+                  Set Default
+                </button>
+
+                <!-- Protocol translation toggle (only relevant when protocols differ) -->
+                <button
+                  v-if="protocolDiffers(model, agent.id)"
+                  @click.stop="toggleProtocolTranslation(model.id, agent.id)"
+                  :title="`This model uses ${model.protocol} protocol, but ${getAgentDisplayName(agent.id)} expects ${getAgentNativeProtocol(agent.id)}. Enable translation to bridge the difference.`"
+                  :class="[
+                    'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all duration-150 cursor-pointer border',
+                    model.useProxy[agent.id]
+                      ? 'bg-indigo-50 border-indigo-200 text-indigo-600'
+                      : 'bg-white border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300'
+                  ]"
+                >
+                  <span class="text-[10px]">⟳</span>
+                  Translate
+                  <HelpCircle :size="10" class="text-gray-300" />
+                </button>
+              </template>
+
+              <!-- Assignment toggle on the right -->
+              <div
+                :class="[
+                  'flex items-center justify-center w-16 h-7 rounded-full text-[10px] font-semibold transition-all duration-200 flex-shrink-0 border',
+                  model.assignedAgents.includes(agent.id)
+                    ? 'bg-emerald-500 border-emerald-500 text-white'
+                    : 'bg-gray-100 border-gray-200 text-gray-400'
                 ]">
-                  <td class="px-4 py-2.5">
-                    <div :class="[
-                      'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium border transition-all duration-150',
-                      model.assignedAgents.includes(agent.id)
-                        ? 'bg-gray-700 text-white border-gray-700'
-                        : 'bg-white text-gray-600 border-gray-200'
-                    ]">
-                      <AgentIcon :agent-id="agent.id" :size="14" />
-                      <Check v-if="model.assignedAgents.includes(agent.id)" :size="12" />
-                      {{ getAgentDisplayName(agent.id) }}
-                      <span v-if="isDefaultForAgent(model.id, agent.id)" class="ml-1 text-[10px] text-yellow-400">★</span>
-                    </div>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <label class="flex items-center gap-1.5 cursor-pointer">
-                      <input type="checkbox" v-model="model.useProxy[agent.id]" class="w-3.5 h-3.5 rounded border-gray-300 text-gray-700 focus:ring-gray-500 cursor-pointer" />
-                      <span class="text-[11px] text-gray-600">Enable</span>
-                    </label>
-                  </td>
-                  <td class="px-4 py-2.5">
-                    <button
-                      @click="toggleAgentAssignment(model.id, agent.id)"
-                      :class="[
-                        'px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all duration-150 cursor-pointer',
-                        model.assignedAgents.includes(agent.id)
-                          ? 'bg-green-600 text-white border-green-600'
-                          : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                      ]"
-                    >
-                      {{ model.assignedAgents.includes(agent.id) ? 'Active' : 'Enable' }}
-                    </button>
-                    <button
-                      v-if="model.assignedAgents.includes(agent.id) && !isDefaultForAgent(model.id, agent.id)"
-                      @click.stop="setAsDefault(model.id, agent.id)"
-                      class="ml-1 px-2 py-1.5 rounded-lg text-[10px] font-medium border border-yellow-300 text-yellow-600 bg-yellow-50 hover:bg-yellow-100 transition-all duration-150 cursor-pointer"
-                    >Default</button>
-                  </td>
-                </tr>
-                <tr v-if="agents.filter(a => a.installed).length === 0">
-                  <td colspan="3" class="px-4 py-4 text-center text-[12px] text-gray-400">No agents available</td>
-                </tr>
-              </tbody>
-            </table>
+                {{ model.assignedAgents.includes(agent.id) ? 'ON' : 'OFF' }}
+              </div>
+            </div>
+
+            <div v-if="agents.filter(a => a.installed).length === 0" class="text-center py-4">
+              <p class="text-[12px] text-gray-400">No agents installed. Go to <router-link to="/settings/agents" class="text-indigo-500 hover:underline">Agents</router-link> to install one.</p>
+            </div>
           </div>
         </div>
       </div>

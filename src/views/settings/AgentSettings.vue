@@ -3,7 +3,7 @@ import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  Download, Terminal,
+  Download, Terminal, RefreshCw,
   Loader2, ToggleLeft, ToggleRight,
   Database, ChevronRight,
   AlertCircle, CheckCircle2, XCircle,
@@ -30,6 +30,16 @@ const nodeChecking = ref(false);
 
 const agentConfigModels = ref<Record<string, any[]>>({});
 const loading = ref(true);
+const refreshing = ref(false);
+
+async function doRefresh() {
+  refreshing.value = true;
+  try {
+    await loadAgents(true);
+  } finally {
+    refreshing.value = false;
+  }
+}
 
 function getStatusConfig(status: AgentStatus) {
   switch (status) {
@@ -72,10 +82,10 @@ async function getInstallGuide() {
   try { nodeInstallGuide.value = await getNodejsInstallGuide(); } catch { nodeInstallGuide.value = ""; }
 }
 
-async function loadAgents() {
+async function loadAgents(forceRefresh = false) {
   loading.value = true;
   try { 
-    agents.value = await getAgentStatuses(); 
+    agents.value = await getAgentStatuses(forceRefresh); 
     agentStore.agents = agents.value;
     await Promise.all(agents.value.map(a => loadAgentConfigModels(a.id)));
   } catch (e) {
@@ -154,6 +164,14 @@ function goToDetail(id: string) {
   <div class="flex flex-col h-full">
     <div class="flex items-center justify-between mb-6">
       <h2 class="text-lg font-semibold text-gray-900">Agents</h2>
+      <button
+        @click="doRefresh"
+        :disabled="refreshing"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-all duration-150 cursor-pointer active:scale-[0.98]"
+      >
+        <RefreshCw :size="14" :class="{ 'animate-spin': refreshing }" />
+        {{ refreshing ? 'Refreshing...' : 'Refresh' }}
+      </button>
     </div>
 
     <div class="flex-1 overflow-y-auto space-y-3">

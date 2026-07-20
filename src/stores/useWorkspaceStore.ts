@@ -89,7 +89,9 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     }
   }
 
-  function ensureDirectory(dirPath: string): string {
+  function ensureDirectory(dirPath: string): string | null {
+    // Don't track .runjam internal directories in sidebar navigation
+    if (dirPath.includes('.runjam')) return null;
     const existing = directories.value.find((d) => d.path === dirPath);
     if (existing) return existing.id;
     const id = generateId();

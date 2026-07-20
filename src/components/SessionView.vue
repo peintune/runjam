@@ -7,7 +7,7 @@ import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput } from "../api/sessions";
+import { sendInput, startSession as apiStartSession } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -92,13 +92,20 @@ const selectedMode = ref("assistant");
 const selectedPermissionMode = ref("ask_approval");
 const showPermissionDropdown = ref(false);
 
-const placeholderText = "Ask me to code, debug, explain, or explore your project files...";
+const placeholderText = "Ask anything — write code, debug, refactor, run parallel agents, orchestrate multi-agent workflows, or explore your entire codebase. What do you want to build?";
 const typingPlaceholder = ref("");
 let typingIndex = 0;
 let typingInterval: ReturnType<typeof setInterval> | null = null;
 
+function stopTyping() {
+  if (typingInterval) {
+    clearInterval(typingInterval);
+    typingInterval = null;
+  }
+}
+
 function startTyping() {
-  if (typingInterval) clearInterval(typingInterval);
+  stopTyping();
   typingIndex = 0;
   typingPlaceholder.value = "";
   typingInterval = setInterval(() => {
@@ -106,16 +113,15 @@ function startTyping() {
       typingPlaceholder.value += placeholderText[typingIndex];
       typingIndex++;
     } else {
-      if (typingInterval) {
-        clearInterval(typingInterval);
-        typingInterval = null;
-      }
+      stopTyping();
     }
   }, 50);
 }
 
 watch(inputText, (newVal) => {
-  if (!newVal && !typingPlaceholder.value) {
+  if (newVal) {
+    stopTyping();
+  } else if (!typingPlaceholder.value) {
     startTyping();
   }
 });
@@ -204,6 +210,7 @@ const thoughtDuration = ref("");
 const isProcessing = ref(false);
 
 const messageContainer = ref<HTMLElement | null>(null);
+const newSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const showModelDropdown = ref(false);
 
 // session title rename
@@ -213,6 +220,14 @@ function startSessionRename() { sessionRename.value = true; sessionRenameText.va
 function doSessionRename() {
   if (sessionRenameText.value.trim() && store.activeSession) { store.setSessionTitle(store.activeSession.id, sessionRenameText.value.trim()); }
   sessionRename.value = false;
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (messageContainer.value) {
+      messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+    }
+  });
 }
 
 watch(() => store.activeSessionId, async (newId) => {
@@ -229,6 +244,7 @@ watch(() => store.activeSessionId, async (newId) => {
       } catch {}
     }
     await loadSessionMessages(newId);
+    scrollToBottom();
     setTimeout(() => { isSessionLoading.value = false; }, 200);
   } else {
     messages.value = [];
@@ -542,10 +558,11 @@ function formatDuration(ms: number): string {
 
 function closeDropdowns(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector')) {
+  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector')) {
     showPermissionDropdown.value = false;
     showModelDropdown.value = false;
     showDirMenu.value = false;
+    showMoreAgents.value = false;
   }
 }
 
@@ -560,6 +577,12 @@ onMounted(() => {
   }
   loadAgentModels();
   document.addEventListener('click', closeDropdowns);
+  // Auto-focus the textarea on the new session page
+  nextTick(() => {
+    if (!store.activeSession && newSessionTextarea.value) {
+      newSessionTextarea.value.focus();
+    }
+  });
 });
 
 onBeforeUnmount(() => {
@@ -580,6 +603,11 @@ watch(() => store.activeSession, async (session) => {
     if (session.model) {
       selectedModel.value = session.model;
     }
+  } else {
+    // Auto-focus textarea when returning to the new session page
+    nextTick(() => {
+      newSessionTextarea.value?.focus();
+    });
   }
 }, { immediate: true });
 
@@ -610,6 +638,24 @@ async function handleSend() {
     const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
     const title = text.substring(0, 7) + (text.length > 7 ? '...' : '');
     await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value);
+  } else if (store.activeSession.status !== 'running') {
+    // Restart backend if session is not running (stopped/error/unknown)
+    const s = store.activeSession;
+    try {
+      await apiStartSession(s.cli, s.cliDisplayName, s.directoryId || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value);
+      s.status = 'running';
+      store.sessions = [...store.sessions];
+    } catch (err) {
+      console.error("Failed to restart session:", err);
+      // Show error in chat instead of calling sendInput (which would fail with "No client for session")
+      const state = getSessionState(s.id);
+      state.messages.push({role:"user",content:text});
+      state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
+      messages.value = [...state.messages];
+      msgStore.setMessages(s.id, [...state.messages]);
+      saveConversationMessage(s.id, "user", text).catch(()=>{});
+      return;
+    }
   }
 
   if (store.activeSession?.id) {
@@ -685,7 +731,7 @@ watch(messages, (msgs) => {
       </div>
       
       <div ref="messageContainer" class="flex-1 overflow-y-auto">
-        <div class="max-w-4xl mx-auto px-6 py-5">
+        <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
           <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
           <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
             <div class="flex items-center gap-2 text-gray-400">
@@ -773,7 +819,7 @@ watch(messages, (msgs) => {
               {{ a.display_name }}
             </button>
             <!-- More agents dropdown -->
-            <div class="relative">
+            <div class="relative more-agents-selector">
               <button @click.stop="showMoreAgents = !showMoreAgents" class="flex items-center gap-1 px-3 py-2 rounded-xl text-[13px] font-medium text-gray-500 hover:text-gray-700 transition-all duration-200 cursor-pointer">
                 More
                 <ChevronDown :size="10" :class="showMoreAgents ? 'rotate-180' : ''" class="transition-transform duration-150" />
@@ -802,8 +848,8 @@ watch(messages, (msgs) => {
           </button>
         </div>
 
-        <div v-else class="rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 focus-within:shadow-sm transition-all duration-150 relative">
-          <textarea v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-4 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" />
+        <div v-else class="rounded-t-2xl border border-gray-200 bg-white focus-within:border-gray-300 focus-within:shadow-sm transition-all duration-150 relative">
+          <textarea ref="newSessionTextarea" v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-4 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" />
           <div v-if="!inputText" class="absolute left-4 top-4 pointer-events-none text-[15px] text-gray-400 leading-relaxed">
             {{ typingPlaceholder }}<span class="animate-pulse">|</span>
           </div>
@@ -876,11 +922,11 @@ watch(messages, (msgs) => {
             </div>
           </div>
 
-          <!-- Directory picker — connected to the input box -->
-          <div class="relative flex items-center gap-2 px-4 py-1.5 bg-gray-50 border-t border-gray-100 dir-selector">
+          <!-- Directory picker -->
+          <div class="relative flex items-center gap-2 px-4 py-1.5 bg-gray-50 rounded-b-2xl dir-selector">
             <button
               @click.stop="showDirMenu = !showDirMenu"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] text-gray-600 bg-gray-100 hover:bg-gray-200 border border-gray-200 transition-colors cursor-pointer"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
             >
               <Folder :size="13" />
               <span v-if="!dirPath">work in a project</span>
