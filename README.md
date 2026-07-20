@@ -16,6 +16,10 @@ Run multiple AI coding agents — Claude Code, Codex CLI, Gemini CLI — in a si
 
 [Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
 
+<br/>
+
+<img src="public/homepage-screenshot.jpg" alt="RunJam Homepage" width="100%" />
+
 </div>
 
 ---
@@ -39,6 +43,8 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 ---
 
 ## Features
+
+<img src="public/core-features.gif" alt="RunJam Core Features Demo" width="100%" />
 
 ### Agent Management
 - **Auto-detection** — Scans your PATH for installed AI agents (Claude Code, Codex CLI, Gemini CLI)

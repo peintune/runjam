@@ -704,6 +704,17 @@ async function handleSend() {
   }
 }
 
+function handleModelSelect(model: ModelEntry) {
+  selectedModel.value = model.id;
+  showModelDropdown.value = false;
+  
+  if (model.provider_name === "ollama") {
+    selectedAgentId.value = "ollama-cli";
+  }
+  
+  saveSessionModel(selectedAgentId.value, model.id);
+}
+
 async function handleStop() {
   if (store.activeSession) {
     const state = getSessionState(store.activeSession.id);
@@ -810,7 +821,7 @@ watch(messages, (msgs) => {
                   </button>
                   <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
                     <div v-for="model in modelList" :key="model.id"
-                      @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId, model.id)"
+                      @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                       <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                       <div>

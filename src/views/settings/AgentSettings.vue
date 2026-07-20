@@ -41,8 +41,12 @@ async function doRefresh() {
   }
 }
 
-function getStatusConfig(status: AgentStatus) {
-  switch (status) {
+function getStatusConfig(agent: AgentInfo) {
+  // installed=true but never tested → show "Not tested" instead of "Not installed"
+  if (agent.installed && agent.status === "not_installed" && !agent.last_tested_at) {
+    return { label: "Not tested", color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", icon: AlertCircle };
+  }
+  switch (agent.status) {
     case "not_installed":
       return { label: "Not installed", color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: XCircle };
     case "connection_failed":
@@ -232,13 +236,13 @@ function goToDetail(id: string) {
               <span
                 :class="[
                   'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium border',
-                  getStatusConfig(agent.status).bg,
-                  getStatusConfig(agent.status).border,
-                  getStatusConfig(agent.status).color,
+                  getStatusConfig(agent).bg,
+                  getStatusConfig(agent).border,
+                  getStatusConfig(agent).color,
                 ]"
               >
-                <component :is="getStatusConfig(agent.status).icon" :size="12" />
-                {{ getStatusConfig(agent.status).label }}
+                <component :is="getStatusConfig(agent).icon" :size="12" />
+                {{ getStatusConfig(agent).label }}
               </span>
 
               <button

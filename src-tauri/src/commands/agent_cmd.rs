@@ -97,6 +97,26 @@ fn load_cached_agents(conn: &rusqlite::Connection) -> Option<Vec<Agent>> {
     }
 }
 
+/// Load a single agent from the DB cache regardless of age.
+/// Used as a fallback when detect_agents() can't find the agent but the
+/// cache knows about an install (e.g. via bundled Node.js).
+fn load_cached_agent_single(conn: &rusqlite::Connection, agent_id: &str) -> Option<Agent> {
+    let mut stmt = conn.prepare(
+        "SELECT id, display_name, installed, status, version, install_path, last_tested_at FROM agents WHERE id = ?"
+    ).ok()?;
+    stmt.query_row([agent_id], |row| {
+        Ok(Agent {
+            id: row.get(0)?,
+            display_name: row.get(1)?,
+            installed: row.get(2)?,
+            status: row.get(3)?,
+            version: row.get(4)?,
+            install_path: row.get(5)?,
+            last_tested_at: row.get(6)?,
+        })
+    }).ok()
+}
+
 /// Scan all installed agents, with enabled/disabled state.
 #[tauri::command]
 pub fn detect_agents(app_state: State<'_, Mutex<AppState>>) -> Vec<AgentWithState> {
@@ -788,11 +808,33 @@ pub struct TestResult {
 
 #[tauri::command]
 pub async fn test_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, Mutex<Database>>) -> Result<TestResult, String> {
-    let agents = detector::detect_agents();
-    let agent = match agents.into_iter().find(|a| a.id == agent_id) {
-        Some(a) => a,
-        None => return Ok(TestResult { success: false, message: "Agent not found".to_string() }),
+    // Try detect_agents() first, then fall back to DB cache.
+    // The cache can hold installs from the bundled Node.js whose bin
+    // directory is not in detect_agents()'s search paths.
+    let mut agent = {
+        let agents = detector::detect_agents();
+        agents.into_iter().find(|a| a.id == agent_id).unwrap_or_else(|| Agent {
+            id: agent_id.clone(),
+            display_name: String::new(),
+            install_path: None,
+            version: None,
+            installed: false,
+            status: "not_installed".to_string(),
+            last_tested_at: None,
+        })
     };
+
+    if !agent.installed {
+        // Fall back to DB cache — may know about an install detect_agents() missed
+        let db_guard = db.lock().unwrap();
+        let conn = db_guard.conn.lock().unwrap();
+        if let Some(cached) = load_cached_agent_single(&conn, &agent_id) {
+            if cached.installed {
+                agent = cached;
+            }
+        }
+    }
+
     if !agent.installed {
         return Ok(TestResult { success: false, message: "Agent is not installed".to_string() });
     }

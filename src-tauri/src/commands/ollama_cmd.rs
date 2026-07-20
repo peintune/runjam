@@ -1,5 +1,7 @@
 use std::process::Command;
 use std::env;
+use std::time::Duration;
+use std::sync::{Mutex, Arc};
 use tauri::{AppHandle, Emitter};
 use serde::{Serialize, Deserialize};
 
@@ -47,11 +49,15 @@ fn find_ollama_path() -> Option<String> {
         if std::path::Path::new(path).exists() {
             return Some(path.to_string());
         }
+        let path = "/opt/homebrew/bin/ollama";
+        if std::path::Path::new(path).exists() {
+            return Some(path.to_string());
+        }
     }
 
     #[cfg(target_os = "linux")]
     {
-        let paths = ["/usr/local/bin/ollama", "/usr/bin/ollama"];
+        let paths = ["/usr/local/bin/ollama", "/usr/bin/ollama", "/opt/homebrew/bin/ollama"];
         for path in paths.iter() {
             if std::path::Path::new(path).exists() {
                 return Some(path.to_string());
@@ -70,6 +76,34 @@ fn find_ollama_path() -> Option<String> {
     }
 
     None
+}
+
+fn ensure_ollama_running() -> Result<(), String> {
+    let path = match find_ollama_path() {
+        Some(p) => p,
+        None => return Err("Ollama not found".to_string()),
+    };
+
+    let output = Command::new(&path).arg("list").output();
+    match output {
+        Ok(out) if out.status.success() => return Ok(()),
+        _ => {}
+    }
+
+    let _ = Command::new(&path).arg("serve").spawn()
+        .map_err(|e| format!("Failed to start Ollama service: {}", e))?;
+
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(500));
+        let output = Command::new(&path).arg("list").output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                return Ok(());
+            }
+        }
+    }
+
+    Err("Failed to start Ollama service".to_string())
 }
 
 #[tauri::command]
@@ -101,6 +135,8 @@ pub fn list_ollama_models() -> Result<Vec<OllamaModel>, String> {
         None => return Err("Ollama not found".to_string()),
     };
 
+    ensure_ollama_running()?;
+
     let output = Command::new(&path).arg("list").output()
         .map_err(|e| format!("Failed to run ollama list: {}", e))?;
 
@@ -127,8 +163,8 @@ pub fn list_ollama_models() -> Result<Vec<OllamaModel>, String> {
         let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() >= 3 {
             let name = parts[0].to_string();
-            let size = parts[1].to_string();
-            let digest = parts[2].to_string();
+            let size = parts[2].to_string();
+            let digest = parts[1].to_string();
             
             let size_bytes = parse_size(&size);
             
@@ -136,7 +172,7 @@ pub fn list_ollama_models() -> Result<Vec<OllamaModel>, String> {
                 name,
                 size,
                 digest,
-                modified_at: "".to_string(),
+                modified_at: if parts.len() >= 4 { parts[3..].join(" ").to_string() } else { "".to_string() },
                 size_bytes,
             });
         }
@@ -146,6 +182,9 @@ pub fn list_ollama_models() -> Result<Vec<OllamaModel>, String> {
 }
 
 fn parse_size(size_str: &str) -> u64 {
+    if size_str == "-" {
+        return 0;
+    }
     let s = size_str.to_lowercase();
     let num: f64 = s.chars().filter(|c| c.is_numeric() || *c == '.').collect::<String>().parse().unwrap_or(0.0);
     
@@ -160,6 +199,80 @@ fn parse_size(size_str: &str) -> u64 {
     }
 }
 
+fn clean_escape_codes(s: &str) -> String {
+    let mut result = String::new();
+    let mut i = 0;
+    let bytes = s.as_bytes();
+    
+    while i < bytes.len() {
+        if bytes[i] == b'\x1b' {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'[' || bytes[i] == b';' || bytes[i] == b'h' || bytes[i] == b'l' || bytes[i] == b'G' || bytes[i] == b'K') {
+                i += 1;
+            }
+        } else if bytes[i] == b'\r' {
+            i += 1;
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    
+    result
+}
+
+fn extract_error_message(output: &str) -> String {
+    for line in output.lines().rev() {
+        let cleaned_str = clean_escape_codes(line);
+        let cleaned = cleaned_str.trim();
+        if cleaned.starts_with("Error:") || cleaned.starts_with("error:") || cleaned.contains("permission") || cleaned.contains("denied") {
+            return cleaned.to_string();
+        }
+    }
+    
+    let cleaned = clean_escape_codes(output);
+    let lines: Vec<&str> = cleaned.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() > 3 {
+        lines[lines.len() - 3..].join("\n").to_string()
+    } else {
+        cleaned.trim().to_string()
+    }
+}
+
+fn ensure_ollama_dir_permissions() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let home_dir = match directories::UserDirs::new() {
+            Some(d) => d.home_dir().to_path_buf(),
+            None => return false,
+        };
+        let ollama_dir = home_dir.join(".ollama");
+        if !ollama_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&ollama_dir) {
+                return false;
+            }
+        }
+        
+        let _ = Command::new("chmod")
+            .arg("-R")
+            .arg("755")
+            .arg(&ollama_dir)
+            .status();
+        
+        let _ = Command::new("xattr")
+            .arg("-rd")
+            .arg("com.apple.provenance")
+            .arg(&ollama_dir)
+            .status();
+        
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 #[tauri::command]
 pub fn pull_ollama_model(model_name: String, app_handle: AppHandle) -> Result<(), String> {
     let path = match find_ollama_path() {
@@ -167,64 +280,136 @@ pub fn pull_ollama_model(model_name: String, app_handle: AppHandle) -> Result<()
         None => return Err("Ollama not found".to_string()),
     };
 
-    let mut child = Command::new(&path)
-        .arg("pull")
-        .arg(&model_name)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start ollama pull: {}", e))?;
-
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    ensure_ollama_running()?;
+    ensure_ollama_dir_permissions();
 
     std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(progress) = parse_pull_progress(&line) {
-                    let _ = app_handle.emit("ollama_pull_progress", &progress);
+        let app_handle1 = app_handle.clone();
+        let app_handle2 = app_handle.clone();
+
+        let error_output = Arc::new(Mutex::new(String::new()));
+        let error_output_clone = error_output.clone();
+
+        let mut child = match Command::new(&path)
+            .arg("pull")
+            .arg(&model_name)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                    status: "failed".to_string(),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                    percentage: 0.0,
+                });
+                return;
+            }
+        };
+
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                    status: "failed".to_string(),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                    percentage: 0.0,
+                });
+                return;
+            }
+        };
+        let stderr = match child.stderr.take() {
+            Some(s) => s,
+            None => {
+                let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                    status: "failed".to_string(),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                    percentage: 0.0,
+                });
+                return;
+            }
+        };
+
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let cleaned_line = clean_escape_codes(&line);
+                    if let Ok(progress) = parse_pull_progress(&cleaned_line) {
+                        let _ = app_handle1.emit("ollama_pull_progress", &progress);
+                    }
                 }
+            }
+        });
+
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    error_output.lock().unwrap().push_str(&line);
+                    error_output.lock().unwrap().push('\n');
+                    let cleaned_line = clean_escape_codes(&line);
+                    if let Ok(progress) = parse_pull_progress(&cleaned_line) {
+                        let _ = app_handle2.emit("ollama_pull_progress", &progress);
+                    }
+                }
+            }
+        });
+
+        let status = match child.wait() {
+            Ok(s) => s,
+            Err(_) => {
+                let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                    status: "failed".to_string(),
+                    digest: None,
+                    total: None,
+                    completed: None,
+                    percentage: 0.0,
+                });
+                return;
+            }
+        };
+        
+        if status.success() {
+            let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                status: "completed".to_string(),
+                digest: None,
+                total: None,
+                completed: None,
+                percentage: 100.0,
+            });
+        } else {
+            let raw_error = error_output_clone.lock().unwrap().trim().to_string();
+            let extracted_error = extract_error_message(&raw_error);
+            
+            let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
+                status: "failed".to_string(),
+                digest: None,
+                total: None,
+                completed: None,
+                percentage: 0.0,
+            });
+            
+            if extracted_error.contains("operation not permitted") || extracted_error.contains("permission") {
+                let _ = app_handle.emit("ollama_pull_error", format!("Permission denied. Please run `ollama pull {}` in terminal first.", model_name));
+            } else {
+                let _ = app_handle.emit("ollama_pull_error", format!("Ollama pull failed: {}", extracted_error));
             }
         }
     });
 
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if let Ok(progress) = parse_pull_progress(&line) {
-                    let _ = app_handle.emit("ollama_pull_progress", &progress);
-                }
-            }
-        }
-    });
-
-    let status = child.wait().map_err(|e| format!("Failed to wait for ollama pull: {}", e))?;
-    
-    if status.success() {
-        let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
-            status: "completed".to_string(),
-            digest: None,
-            total: None,
-            completed: None,
-            percentage: 100.0,
-        });
-        Ok(())
-    } else {
-        let _ = app_handle.emit("ollama_pull_progress", OllamaPullProgress {
-            status: "failed".to_string(),
-            digest: None,
-            total: None,
-            completed: None,
-            percentage: 0.0,
-        });
-        Err("Ollama pull failed".to_string())
-    }
+    Ok(())
 }
 
 fn parse_pull_progress(line: &str) -> Result<OllamaPullProgress, ()> {

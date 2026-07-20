@@ -34,7 +34,18 @@ impl SessionManager {
         let agent_type = match cli {
             "claude-code" => "claude",
             "codex-cli" => "codex",
-            "gemini-cli" => "gemini",
+            "gemini-cli" => {
+                if let Some(m) = model {
+                    if m.starts_with("ollama-") {
+                        "ollama"
+                    } else {
+                        "gemini"
+                    }
+                } else {
+                    "gemini"
+                }
+            },
+            "ollama-cli" => "ollama",
             _ => return Err(format!("Unknown CLI: {}", cli)),
         };
 

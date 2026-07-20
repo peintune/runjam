@@ -81,6 +81,11 @@ onMounted(async () => {
       loadOllamaModels();
     }
   });
+
+  listen<string>("ollama_pull_error", (event) => {
+    pullError.value = event.payload;
+    console.error("Ollama pull error:", event.payload);
+  });
 });
 
 onUnmounted(() => {
@@ -108,13 +113,17 @@ function isModelInstalled(modelName: string): boolean {
   return ollamaModels.value.some(m => m.name === modelName);
 }
 
+const pullError = ref("");
+
 async function downloadModel(modelName: string) {
   if (pullingModel.value) return;
   pullingModel.value = modelName;
-  pullProgress.value = null;
+  pullProgress.value = { status: "downloading", percentage: 0 };
+  pullError.value = "";
   try {
     await pullOllamaModel(modelName);
-  } catch (err) {
+  } catch (err: any) {
+    pullError.value = err.message || err;
     console.error("Failed to pull model:", err);
     pullingModel.value = null;
   }
@@ -334,11 +343,11 @@ function getStatusColor(): string {
 
     <div class="mb-8 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
       <div class="flex items-center justify-between px-5 py-3 bg-gray-700 border-b border-gray-600">
-        <div class="flex items-center gap-2">
-          <div class="w-6 h-6 rounded-lg flex items-center justify-center overflow-hidden bg-gray-200">
-            <img :src="getProviderLogo('ollama')" alt="Ollama" class="w-4 h-4 object-contain" />
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden bg-gray-200">
+            <img :src="getProviderLogo('ollama')" alt="Ollama" class="w-5 h-5 object-contain" />
           </div>
-          <span class="text-[13px] font-semibold text-white">Local Models (Ollama)</span>
+          <span class="text-[15px] font-semibold text-white">Local Models (Ollama)</span>
         </div>
         <div class="flex items-center gap-2">
           <span :class="['w-2 h-2 rounded-full', getStatusColor()]"></span>
@@ -362,14 +371,14 @@ function getStatusColor(): string {
       <div v-else class="px-5 py-4">
         <div class="flex items-center justify-between mb-4">
           <div class="flex items-center gap-2">
-            <span class="text-[12px] font-medium text-gray-500">Recommended Models</span>
+            <span class="text-[14px] font-medium text-gray-600">Recommended Models</span>
           </div>
-          <button @click="loadOllamaModels" class="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 transition-colors cursor-pointer">
-            <RefreshCw :size="12" /> Refresh
+          <button @click="loadOllamaModels" class="flex items-center gap-1.5 text-[12px] text-gray-500 hover:text-gray-700 transition-colors cursor-pointer">
+            <RefreshCw :size="14" /> Refresh
           </button>
         </div>
 
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-2 gap-4">
           <div
             v-for="rm in recommendedLocalModels"
             :key="rm.name"
@@ -378,20 +387,20 @@ function getStatusColor(): string {
               isModelInstalled(rm.name) ? 'border-gray-200 bg-gray-50' : 'border-gray-100 bg-white hover:border-gray-200'
             ]"
           >
-            <div class="p-4">
-              <div class="flex items-start justify-between mb-2">
+            <div class="p-5">
+              <div class="flex items-start justify-between mb-3">
                 <div>
                   <div class="flex items-center gap-2">
-                    <span class="text-[14px] font-semibold text-gray-900">{{ rm.alias }}</span>
-                    <span v-if="isModelInstalled(rm.name)" class="flex items-center gap-0.5 text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
-                      <Check :size="10" /> Installed
+                    <span class="text-[17px] font-semibold text-gray-900">{{ rm.alias }}</span>
+                    <span v-if="isModelInstalled(rm.name)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                      <Check :size="11" /> Installed
                     </span>
                   </div>
-                  <p class="text-[11px] text-gray-400 mt-0.5">{{ rm.name }}</p>
+                  <p class="text-[12px] text-gray-400 mt-1">{{ rm.name }}</p>
                 </div>
-                <span class="text-[11px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-lg">{{ rm.size }}</span>
+                <span class="text-[12px] font-medium text-gray-500 bg-gray-100 px-2.5 py-1 rounded-lg">{{ rm.size }}</span>
               </div>
-              <p class="text-[12px] text-gray-500 mb-3">{{ rm.desc }}</p>
+              <p class="text-[13px] text-gray-500 mb-4">{{ rm.desc }}</p>
 
               <div class="flex items-center gap-2">
                 <template v-if="pullingModel === rm.name">
@@ -405,6 +414,7 @@ function getStatusColor(): string {
                     <p class="text-[10px] text-gray-400 mt-1">
                       {{ pullProgress?.status === 'downloading' ? `${Math.round(pullProgress.percentage)}%` : pullProgress?.status || 'Downloading...' }}
                     </p>
+                    <p v-if="pullError" class="text-[10px] text-red-500 mt-1.5 truncate">{{ pullError }}</p>
                   </div>
                 </template>
                 <template v-else-if="isModelInstalled(rm.name)">
@@ -428,30 +438,30 @@ function getStatusColor(): string {
           </div>
         </div>
 
-        <div v-if="ollamaModels.length > 0" class="mt-6 pt-4 border-t border-gray-100">
-          <div class="flex items-center gap-2 mb-3">
-            <span class="text-[12px] font-medium text-gray-500">Installed Models</span>
-            <span class="text-[11px] text-gray-400">({{ ollamaModels.length }})</span>
+        <div v-if="ollamaModels.length > 0" class="mt-6 pt-5 border-t border-gray-100">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="text-[14px] font-medium text-gray-600">Installed Models</span>
+            <span class="text-[12px] text-gray-400">({{ ollamaModels.length }})</span>
           </div>
-          <div class="space-y-2">
+          <div class="space-y-2.5">
             <div 
               v-for="om in ollamaModels" 
               :key="om.name"
-              class="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50"
+              class="flex items-center justify-between px-4 py-3 rounded-xl bg-gray-50"
             >
               <div>
-                <span class="text-[13px] font-medium text-gray-900">{{ om.name }}</span>
-                <span class="text-[11px] text-gray-400 ml-2">{{ om.size }}</span>
+                <span class="text-[15px] font-medium text-gray-900">{{ om.name }}</span>
+                <span class="text-[12px] text-gray-400 ml-3">{{ om.size }}</span>
               </div>
               <button 
                 v-if="!models.some(m => m.name === om.name && m.provider === 'ollama')"
                 @click="addLocalModel(om.name)"
-                class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
               >
-                <Plus :size="10" /> Add
+                <Plus :size="12" /> Add
               </button>
-              <span v-else class="flex items-center gap-1 text-[11px] text-emerald-600">
-                <Check :size="12" /> Added
+              <span v-else class="flex items-center gap-1.5 text-[12px] text-emerald-600">
+                <Check :size="14" /> Added
               </span>
             </div>
           </div>

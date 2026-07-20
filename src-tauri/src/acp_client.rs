@@ -284,10 +284,16 @@ fn resolve_agent_paths(
             ))
         }
         "gemini" | "gemini-cli" => {
-            // Gemini has native ACP support via --acp flag
             Ok((
                 "gemini".to_string(),
                 vec!["--acp".to_string()],
+                std::env::current_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
+            ))
+        }
+        "ollama" | "ollama-cli" => {
+            Ok((
+                "ollama".to_string(),
+                vec!["serve".to_string()],
                 std::env::current_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
             ))
         }

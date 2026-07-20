@@ -1275,11 +1275,18 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
 }
 
 fn extract_model_from_path(path: &str) -> Option<&str> {
-    // Gemini uses both /v1/models/ and /v1beta/models/ prefixes
     for prefix in &["/v1/models/", "/v1beta/models/"] {
         if let Some(start) = path.find(prefix) {
             let start = start + prefix.len();
-            let end = path[start..].find(|c: char| c == '/' || c == ':').unwrap_or(path[start..].len());
+            let mut colon_count = 0;
+            let end = path[start..].find(|c: char| {
+                if c == ':' {
+                    colon_count += 1;
+                    colon_count >= 2
+                } else {
+                    c == '/'
+                }
+            }).unwrap_or(path[start..].len());
             return Some(&path[start..start + end]);
         }
     }
