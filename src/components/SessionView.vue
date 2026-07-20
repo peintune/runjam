@@ -14,7 +14,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
-import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus } from "lucide-vue-next";
+import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -46,6 +46,17 @@ const selectedAgent = computed(() => agents.value.find(a => a.id === selectedAge
 const modelList = ref<ModelEntry[]>(agentStore.models.length > 0 ? agentStore.models : []);
 const selectedModel = ref("");
 const assignedModels = ref<ModelEntry[]>([]);
+
+// Onboarding state
+const hasAnyAgentInstalled = computed(() => agents.value.some(a => a.installed));
+const hasAnyModel = computed(() => modelList.value.length > 0);
+const currentAgentNeedsSetup = computed(() => {
+  const agent = selectedAgent.value;
+  if (!agent) return true;
+  if (!agent.installed) return true;
+  if (!hasAnyModel.value) return true;
+  return false;
+});
 
 const inputText = ref("");
 const dirPath = ref("");
@@ -566,11 +577,23 @@ function closeDropdowns(e: MouseEvent) {
   }
 }
 
+// Keep local agents ref in sync with the store (updated by Settings pages after install/uninstall)
+watch(() => agentStore.agents, (newAgents) => {
+  if (newAgents.length > 0) {
+    agents.value = newAgents;
+  }
+});
+
 onMounted(() => { 
   startTyping();
   getLastAgent().then(id => { if(id) selectedAgentId.value = id; }).catch(()=>{});
   if (agents.value.length === 0) {
-    getAgentStatuses().then(list => { if(list) agents.value = list; }).catch(()=>{});
+    getAgentStatuses().then(list => { 
+      if(list) { 
+        agents.value = list; 
+        agentStore.agents = list; // also update store so all views stay in sync
+      }
+    }).catch(()=>{});
   }
   if (modelList.value.length === 0) {
     getModels().then(list => { if(list) modelList.value = list; }).catch(()=>{});
@@ -814,9 +837,15 @@ watch(messages, (msgs) => {
       <div class="w-full max-w-[640px]">
         <div class="flex justify-center mb-5">
           <div class="inline-flex bg-gray-100 rounded-2xl p-1 gap-0.5">
-            <button v-for="a in enabledAgents" :key="a.id" @click="selectedAgentId=a.id" :class="['flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 cursor-pointer',selectedAgentId===a.id?'bg-white text-gray-900 shadow-sm':'text-gray-500 hover:text-gray-700']">
-              <AgentIcon :agent-id="a.id" />
-              {{ a.display_name }}
+            <template v-if="enabledAgents.length > 0">
+              <button v-for="a in enabledAgents" :key="a.id" @click="selectedAgentId=a.id" :class="['flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 cursor-pointer',selectedAgentId===a.id?'bg-white text-gray-900 shadow-sm':'text-gray-500 hover:text-gray-700']">
+                <AgentIcon :agent-id="a.id" />
+                {{ a.display_name }}
+              </button>
+            </template>
+            <button v-else @click="router.push('/settings/agents')" class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium text-gray-400 hover:text-gray-600 transition-all duration-200 cursor-pointer">
+              <Package :size="14" />
+              Install an Agent
             </button>
             <!-- More agents dropdown -->
             <div class="relative more-agents-selector">
@@ -839,12 +868,44 @@ watch(messages, (msgs) => {
           </div>
         </div>
 
-        <!-- Not installed warning -->
-        <div v-if="selectedAgent && !selectedAgent.installed" class="mb-5 p-5 rounded-2xl border border-amber-200 bg-amber-50 text-center">
+        <!-- Onboarding: no agents installed at all -->
+        <div v-if="!hasAnyAgentInstalled && agents.length > 0" class="mb-5 p-6 rounded-2xl border border-blue-200 bg-gradient-to-br from-blue-50 to-indigo-50 text-center">
+          <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-blue-100 flex items-center justify-center">
+            <Package :size="24" class="text-blue-600" />
+          </div>
+          <p class="text-[15px] font-semibold text-gray-800 mb-1">Welcome to RunJam</p>
+          <p class="text-[13px] text-gray-500 mb-5 max-w-sm mx-auto leading-relaxed">
+            To start chatting with an AI agent, you need to install an agent and configure at least one model.
+          </p>
+          <div class="flex items-center justify-center gap-3">
+            <button @click="router.push('/settings/agents')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-blue-600 text-white hover:bg-blue-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
+              <Download :size="15" /> Install Agent
+            </button>
+            <button @click="router.push('/settings/models?action=add')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
+              <Wand2 :size="15" /> Configure Model
+            </button>
+          </div>
+        </div>
+
+        <!-- Selected agent not installed -->
+        <div v-else-if="selectedAgent && !selectedAgent.installed" class="mb-5 p-5 rounded-2xl border border-amber-200 bg-amber-50 text-center">
           <p class="text-[14px] font-semibold text-amber-800 mb-1">{{ selectedAgent.display_name }} is not installed</p>
-          <p class="text-[13px] text-amber-600 mb-3">Install it first to start chatting.</p>
+          <p class="text-[13px] text-amber-600 mb-1">Install it to start chatting with AI.</p>
+          <p v-if="!hasAnyModel" class="text-[12px] text-amber-500 mb-3">You'll also need to configure a model after installation.</p>
           <button @click="router.push(`/settings/agents/${selectedAgentId}`)" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-amber-600 text-white hover:bg-amber-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
             <Download :size="14" /> Install {{ selectedAgent.display_name }}
+          </button>
+        </div>
+
+        <!-- Agent installed but no models -->
+        <div v-else-if="hasAnyAgentInstalled && !hasAnyModel" class="mb-5 p-4 rounded-2xl border border-purple-200 bg-purple-50 flex items-center gap-3">
+          <Wand2 :size="18" class="text-purple-500 flex-shrink-0" />
+          <div class="flex-1">
+            <p class="text-[13px] font-medium text-purple-800">No model configured yet</p>
+            <p class="text-[12px] text-purple-500">Add a model provider to start chatting.</p>
+          </div>
+          <button @click="router.push('/settings/models?action=add')" class="flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-purple-600 text-white hover:bg-purple-700 active:scale-[0.98] transition-all cursor-pointer">
+            Add Model
           </button>
         </div>
 
@@ -918,7 +979,7 @@ watch(messages, (msgs) => {
               </div>
 
               <!-- Send button -->
-              <button @click="handleSend" :disabled="!inputText.trim()" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0" :class="inputText.trim()?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'"><Send :size="14" /></button>
+              <button @click="handleSend" :disabled="!inputText.trim() || currentAgentNeedsSetup" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0" :class="inputText.trim() && !currentAgentNeedsSetup ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'" :title="currentAgentNeedsSetup ? 'Install an agent and configure a model first' : ''"><Send :size="14" /></button>
             </div>
           </div>
 

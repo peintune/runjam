@@ -21,8 +21,8 @@ export async function checkAgent(agentId: string): Promise<AgentInfo> {
   return invoke<AgentInfo>("check_agent", { agentId });
 }
 
-export async function installAgent(agentId: string): Promise<{ id: string; installed: boolean; version: string | null }> {
-  return invoke("install_agent", { agentId });
+export async function installAgent(agentId: string): Promise<AgentInfo> {
+  return invoke<AgentInfo>("install_agent", { agentId });
 }
 
 export async function uninstallAgent(agentId: string): Promise<void> {

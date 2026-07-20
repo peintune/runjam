@@ -8,3 +8,4 @@ pub mod search_cmd;
 pub mod proxy_cmd;
 pub mod fs_cmd;
 pub mod term_cmd;
+pub mod ollama_cmd;

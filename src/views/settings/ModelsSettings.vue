@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users } from "lucide-vue-next";
+import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, RefreshCw } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, type AgentModelInfo, type ProtocolType } from "../../api/models";
+import { listen } from "@tauri-apps/api/event";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, checkOllamaInstalled, getOllamaStatus, listOllamaModels, pullOllamaModel, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type OllamaModel, type OllamaPullProgress } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -41,6 +42,12 @@ const selectedProvider = ref(providers[0]);
 const showDeleteDialog = ref(false);
 const deletingModelId = ref<string | null>(null);
 
+const ollamaInstalled = ref(false);
+const ollamaStatus = ref("");
+const ollamaModels = ref<OllamaModel[]>([]);
+const pullingModel = ref<string | null>(null);
+const pullProgress = ref<OllamaPullProgress | null>(null);
+
 onMounted(async () => {
   if (route.query.action === "add") {
     showAdd.value = true;
@@ -64,7 +71,74 @@ onMounted(async () => {
   try {
     agents.value = await getAgentStatuses();
   } catch {}
+  
+  await loadOllamaInfo();
+  
+  listen<OllamaPullProgress>("ollama_pull_progress", (event) => {
+    pullProgress.value = event.payload;
+    if (event.payload.status === "completed" || event.payload.status === "failed") {
+      pullingModel.value = null;
+      loadOllamaModels();
+    }
+  });
 });
+
+onUnmounted(() => {
+});
+
+async function loadOllamaInfo() {
+  try {
+    ollamaInstalled.value = await checkOllamaInstalled();
+    ollamaStatus.value = await getOllamaStatus();
+    await loadOllamaModels();
+  } catch (err) {
+    console.error("Failed to load Ollama info:", err);
+  }
+}
+
+async function loadOllamaModels() {
+  try {
+    ollamaModels.value = await listOllamaModels();
+  } catch {
+    ollamaModels.value = [];
+  }
+}
+
+function isModelInstalled(modelName: string): boolean {
+  return ollamaModels.value.some(m => m.name === modelName);
+}
+
+async function downloadModel(modelName: string) {
+  if (pullingModel.value) return;
+  pullingModel.value = modelName;
+  pullProgress.value = null;
+  try {
+    await pullOllamaModel(modelName);
+  } catch (err) {
+    console.error("Failed to pull model:", err);
+    pullingModel.value = null;
+  }
+}
+
+async function addLocalModel(modelName: string) {
+  const provider = getProviderById("ollama")!;
+  const modelExists = models.value.some(m => m.name === modelName && m.provider === "ollama");
+  if (modelExists) return;
+  
+  models.value.push({
+    id: `ollama-${modelName}-${Date.now().toString(36)}`,
+    name: modelName,
+    alias: modelName,
+    provider: "ollama",
+    apiBase: provider.defaultBase,
+    apiKey: "ollama",
+    protocol: provider.protocol,
+    showKey: false,
+    assignedAgents: [],
+    useProxy: {},
+  });
+  await persistModels();
+}
 
 async function loadAgentModelMap() {
   try {
@@ -211,14 +285,11 @@ function isDefaultForAgent(modelId: string, agentId: string): boolean {
   return entries.some(e => e.agent_id === agentId && e.is_default);
 }
 
-
-
 function getAgentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId);
   return agent?.display_name || agentId;
 }
 
-/** Returns true if this model's protocol differs from the agent's native protocol */
 function protocolDiffers(model: UIModel, agentId: string): boolean {
   const nativeProtocol = getAgentNativeProtocol(agentId);
   return nativeProtocol !== "" && model.protocol !== nativeProtocol;
@@ -233,6 +304,19 @@ function getAgentNativeProtocol(agentId: string): string {
   return agentProtocol[agentId] || "";
 }
 
+function getStatusText(): string {
+  if (ollamaStatus.value.startsWith("installed")) {
+    return "Ollama running";
+  }
+  return "Ollama not installed";
+}
+
+function getStatusColor(): string {
+  if (ollamaStatus.value.startsWith("installed")) {
+    return "bg-emerald-500";
+  }
+  return "bg-gray-300";
+}
 </script>
 
 <template>
@@ -246,6 +330,133 @@ function getAgentNativeProtocol(agentId: string): string {
         class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
         <Plus :size="15" /> Add Model
       </button>
+    </div>
+
+    <div class="mb-8 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+      <div class="flex items-center justify-between px-5 py-3 bg-gray-700 border-b border-gray-600">
+        <div class="flex items-center gap-2">
+          <div class="w-6 h-6 rounded-lg flex items-center justify-center overflow-hidden bg-gray-200">
+            <img :src="getProviderLogo('ollama')" alt="Ollama" class="w-4 h-4 object-contain" />
+          </div>
+          <span class="text-[13px] font-semibold text-white">Local Models (Ollama)</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span :class="['w-2 h-2 rounded-full', getStatusColor()]"></span>
+          <span class="text-[11px] text-gray-300">{{ getStatusText() }}</span>
+        </div>
+      </div>
+
+      <div v-if="!ollamaInstalled" class="px-5 py-6">
+        <div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+          <div class="text-amber-500">💡</div>
+          <div class="flex-1">
+            <p class="text-[13px] font-medium text-amber-800">Ollama is not installed</p>
+            <p class="text-[12px] text-amber-600 mt-0.5">Install Ollama to run models locally without cloud API keys</p>
+          </div>
+          <button @click="openUrl('https://ollama.com/download')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 transition-colors cursor-pointer">
+            Download <ExternalLink :size="12" />
+          </button>
+        </div>
+      </div>
+
+      <div v-else class="px-5 py-4">
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-[12px] font-medium text-gray-500">Recommended Models</span>
+          </div>
+          <button @click="loadOllamaModels" class="flex items-center gap-1 text-[11px] text-gray-400 hover:text-gray-600 transition-colors cursor-pointer">
+            <RefreshCw :size="12" /> Refresh
+          </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div
+            v-for="rm in recommendedLocalModels"
+            :key="rm.name"
+            :class="[
+              'relative rounded-xl border transition-all duration-150',
+              isModelInstalled(rm.name) ? 'border-gray-200 bg-gray-50' : 'border-gray-100 bg-white hover:border-gray-200'
+            ]"
+          >
+            <div class="p-4">
+              <div class="flex items-start justify-between mb-2">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[14px] font-semibold text-gray-900">{{ rm.alias }}</span>
+                    <span v-if="isModelInstalled(rm.name)" class="flex items-center gap-0.5 text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
+                      <Check :size="10" /> Installed
+                    </span>
+                  </div>
+                  <p class="text-[11px] text-gray-400 mt-0.5">{{ rm.name }}</p>
+                </div>
+                <span class="text-[11px] font-medium text-gray-500 bg-gray-100 px-2 py-0.5 rounded-lg">{{ rm.size }}</span>
+              </div>
+              <p class="text-[12px] text-gray-500 mb-3">{{ rm.desc }}</p>
+
+              <div class="flex items-center gap-2">
+                <template v-if="pullingModel === rm.name">
+                  <div class="flex-1">
+                    <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div 
+                        class="h-full bg-gray-700 transition-all duration-200"
+                        :style="{ width: `${pullProgress?.percentage || 0}%` }"
+                      ></div>
+                    </div>
+                    <p class="text-[10px] text-gray-400 mt-1">
+                      {{ pullProgress?.status === 'downloading' ? `${Math.round(pullProgress.percentage)}%` : pullProgress?.status || 'Downloading...' }}
+                    </p>
+                  </div>
+                </template>
+                <template v-else-if="isModelInstalled(rm.name)">
+                  <button 
+                    @click="addLocalModel(rm.name)"
+                    class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  >
+                    <Plus :size="12" /> Add to Models
+                  </button>
+                </template>
+                <template v-else>
+                  <button 
+                    @click="downloadModel(rm.name)"
+                    class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  >
+                    <Download :size="12" /> Download
+                  </button>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="ollamaModels.length > 0" class="mt-6 pt-4 border-t border-gray-100">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-[12px] font-medium text-gray-500">Installed Models</span>
+            <span class="text-[11px] text-gray-400">({{ ollamaModels.length }})</span>
+          </div>
+          <div class="space-y-2">
+            <div 
+              v-for="om in ollamaModels" 
+              :key="om.name"
+              class="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50"
+            >
+              <div>
+                <span class="text-[13px] font-medium text-gray-900">{{ om.name }}</span>
+                <span class="text-[11px] text-gray-400 ml-2">{{ om.size }}</span>
+              </div>
+              <button 
+                v-if="!models.some(m => m.name === om.name && m.provider === 'ollama')"
+                @click="addLocalModel(om.name)"
+                class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+              >
+                <Plus :size="10" /> Add
+              </button>
+              <span v-else class="flex items-center gap-1 text-[11px] text-emerald-600">
+                <Check :size="12" /> Added
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-if="showAdd" class="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -382,7 +593,6 @@ function getAgentNativeProtocol(agentId: string): string {
                   : 'bg-white/50 border-gray-100 hover:border-gray-200 hover:bg-white'
               ]"
             >
-              <!-- Agent info -->
               <div class="flex items-center gap-2 flex-1 min-w-0">
                 <AgentIcon :agent-id="agent.id" :size="22" />
                 <div class="min-w-0">
@@ -392,9 +602,7 @@ function getAgentNativeProtocol(agentId: string): string {
                 </div>
               </div>
 
-              <!-- Controls when assigned -->
               <template v-if="model.assignedAgents.includes(agent.id)">
-                <!-- Default toggle -->
                 <button
                   v-if="isDefaultForAgent(model.id, agent.id)"
                   @click.stop
@@ -410,7 +618,6 @@ function getAgentNativeProtocol(agentId: string): string {
                   Set Default
                 </button>
 
-                <!-- Protocol translation toggle (only relevant when protocols differ) -->
                 <button
                   v-if="protocolDiffers(model, agent.id)"
                   @click.stop="toggleProtocolTranslation(model.id, agent.id)"
@@ -428,7 +635,6 @@ function getAgentNativeProtocol(agentId: string): string {
                 </button>
               </template>
 
-              <!-- Assignment toggle on the right -->
               <div
                 :class="[
                   'flex items-center justify-center w-16 h-7 rounded-full text-[10px] font-semibold transition-all duration-200 flex-shrink-0 border',

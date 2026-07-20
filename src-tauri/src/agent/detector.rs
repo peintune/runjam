@@ -141,7 +141,7 @@ fn dirs_data_dir() -> std::path::PathBuf {
     }
 }
 
-fn get_version(bin: &str, path: &str) -> Option<String> {
+pub fn get_version(bin: &str, path: &str) -> Option<String> {
     let output = Command::new(bin)
         .arg("--version")
         .env("PATH", path)

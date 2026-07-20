@@ -120,9 +120,7 @@ async function doInstall(id: string) {
     if (idx >= 0) {
       agents.value[idx].installed = info.installed;
       agents.value[idx].version = info.version;
-      if (info.installed) {
-        agents.value[idx].status = "available";
-      }
+      agents.value[idx].status = info.status;
     }
   } catch (err) { if (!installLogs.value[id]) installLogs.value[id] = []; installLogs.value[id]!.push(`[error] ${err}`); }
   if (unlisten) unlisten();

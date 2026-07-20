@@ -88,12 +88,12 @@ fn load_cached_agents(conn: &rusqlite::Connection) -> Option<Vec<Agent>> {
         })
     }).ok()?;
     
-    let mut agents: Vec<Agent> = agents_iter.filter_map(Result::ok).collect();
+    let agents: Vec<Agent> = agents_iter.filter_map(Result::ok).collect();
     
-    if agents.len() >= 3 {
-        Some(agents)
-    } else {
+    if agents.is_empty() {
         None
+    } else {
+        Some(agents)
     }
 }
 
@@ -249,23 +249,93 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
             serde_json::json!({ "status": "done", "message": "Installation complete" }),
         );
 
-        let agents = detector::detect_agents();
-        let agent = agents.into_iter().find(|a| a.id == agent_id).unwrap_or_else(|| Agent {
-            id: agent_id.clone(),
-            display_name: String::new(),
-            install_path: None,
-            version: None,
-            installed: true,
-            status: "not_installed".to_string(),
-            last_tested_at: None,
-        });
+        let bin_name = match agent_id.as_str() {
+            "claude-code" => "claude",
+            "codex-cli" => "codex",
+            "gemini-cli" => "gemini",
+            _ => unreachable!(),
+        };
 
-        // Update DB cache immediately
-        let db_guard = db.lock().unwrap();
-        let conn = db_guard.conn.lock().unwrap();
-        save_detected_agent(&conn, &agent);
-        drop(conn);
-        drop(db_guard);
+        // Directly check the npm's own bin directory — npm install -g
+        // always places the binary next to npm itself, regardless of
+        // whether it's bundled, nvm, or system Node.js.
+        let expected_binary = std::path::Path::new(&node_bin_dir).join(bin_name);
+        let (install_path, version) = if expected_binary.exists() {
+            let ver = detector::get_version(
+                &expected_binary.to_string_lossy(),
+                &path_env,
+            );
+            (Some(expected_binary.to_string_lossy().to_string()), ver)
+        } else {
+            // Fallback to full PATH scan (handles unusual npm prefixes)
+            let agents = detector::detect_agents();
+            if let Some(found) = agents.into_iter().find(|a| a.id == agent_id) {
+                (found.install_path, found.version)
+            } else {
+                (None, None)
+            }
+        };
+
+        let agent = {
+            let is_installed = install_path.is_some();
+            Agent {
+                id: agent_id.clone(),
+                display_name: String::new(),
+                install_path: install_path.clone(),
+                version: version.clone(),
+                installed: is_installed,
+                status: "not_installed".to_string(),
+                last_tested_at: None,
+            }
+        };
+
+        // Save detection result to DB immediately
+        {
+            let db_guard = db.lock().unwrap();
+            let conn = db_guard.conn.lock().unwrap();
+            save_detected_agent(&conn, &agent);
+        }
+
+        // Auto-test: if we found the binary, run ACP connection test so the
+        // agent shows as "Available" right away without manual Test click.
+        let agent = if let Some(ref _bin_path) = agent.install_path {
+            let now = chrono::Local::now().to_rfc3339();
+            let _ = app.emit(
+                &event_name,
+                serde_json::json!({ "status": "testing", "message": "Testing connection..." }),
+            );
+
+            let (status, msg) = match AcpClient::new(&agent_id, &now, &app).await {
+                Ok(mut client) => match client.test_connection().await {
+                    Ok(_) => ("available".to_string(), "Connection successful".to_string()),
+                    Err(e) => ("connection_failed".to_string(), format!("Connection failed: {}", e)),
+                },
+                Err(e) => ("connection_failed".to_string(), format!("Failed to create ACP client: {}", e)),
+            };
+
+            {
+                let db_guard = db.lock().unwrap();
+                let conn = db_guard.conn.lock().unwrap();
+                save_agent_status_to_db(&conn, &agent_id, &status, &now);
+            }
+
+            let _ = app.emit(
+                &event_name,
+                serde_json::json!({ "status": if status == "available" { "done" } else { "error" }, "message": msg }),
+            );
+
+            Agent {
+                id: agent_id,
+                display_name: String::new(),
+                install_path,
+                version,
+                installed: true,
+                status,
+                last_tested_at: Some(now),
+            }
+        } else {
+            agent
+        };
 
         Ok(agent)
     } else {
@@ -278,38 +348,162 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
     }
 }
 
+/// Given an agent binary's full install path, resolve the npm binary from the
+/// same bin directory so we use the correct package manager for uninstall.
+fn resolve_npm_from_install_path(install_path: &str) -> Option<(String, String)> {
+    let bin_dir = std::path::Path::new(install_path).parent()?;
+
+    let npm_name = if cfg!(target_os = "windows") {
+        "npm.cmd"
+    } else {
+        "npm"
+    };
+    let npm_path = bin_dir.join(npm_name);
+
+    if npm_path.exists() {
+        let path_env = format!(
+            "{}:{}",
+            bin_dir.to_string_lossy().to_string(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        Some((npm_path.to_string_lossy().to_string(), path_env))
+    } else {
+        None
+    }
+}
+
+/// Find all paths where a binary exists in a given PATH (like `which -a`).
+fn find_all_binaries(bin_name: &str, search_path: &str) -> Vec<std::path::PathBuf> {
+    let mut results = Vec::new();
+    for dir in std::env::split_paths(search_path) {
+        let candidate = dir.join(bin_name);
+        if candidate.exists() && !results.contains(&candidate) {
+            results.push(candidate);
+        }
+    }
+    results
+}
+
 /// Uninstall an agent CLI.
+/// 1. Finds the agent binary via detection / which
+/// 2. Runs npm uninstall using the npm from the same directory
+/// 3. If the binary still exists after npm, deletes it directly
+/// 4. Scans for any other copies of the binary and cleans those up too
 #[tauri::command]
 pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
-    let node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
-    let npm_bin = if node_bin_dir.is_empty() { "npm".to_string() } else { format!("{}/npm", node_bin_dir) };
-    let path_env = if node_bin_dir.is_empty() {
-        crate::agent::detector::get_enhanced_path()
-    } else {
-        format!("{}:{}", node_bin_dir, std::env::var("PATH").unwrap_or_default())
-    };
-
-    let uninstall_cmd = match agent_id.as_str() {
-        "claude-code" => vec!["uninstall", "-g", "@anthropic-ai/claude-code"],
-        "codex-cli" => vec!["uninstall", "-g", "@openai/codex"],
-        "gemini-cli" => vec!["uninstall", "-g", "@google/gemini-cli"],
+    let bin_name = match agent_id.as_str() {
+        "claude-code" => "claude",
+        "codex-cli" => "codex",
+        "gemini-cli" => "gemini",
         _ => return Err(format!("Unknown agent: {}", agent_id)),
     };
 
+    // Detect where the agent is currently installed
+    let agents = detector::detect_agents();
+    let detected = agents.iter().find(|a| a.id == agent_id);
+    let detected_path: Option<String> = detected.and_then(|a| a.install_path.clone());
+
     let event_name = format!("agent-uninstall:{}", agent_id);
-    let _ = app.emit(
-        &event_name,
-        serde_json::json!({ "status": "uninstalling", "message": format!("Running: {} {}", npm_bin, uninstall_cmd.join(" ")) }),
-    );
 
-    let output = std::process::Command::new(&npm_bin)
-        .args(&uninstall_cmd)
-        .env("PATH", &path_env)
-        .output()
-        .map_err(|e| format!("Failed to run uninstaller: {}", e))?;
+    // --- Try npm uninstall using the npm from the detected binary's directory ---
+    let mut npm_uninstall_attempted = false;
+    if let Some(ref install_path) = detected_path {
+        if let Some((npm_bin, path_env)) = resolve_npm_from_install_path(install_path) {
+            let uninstall_cmd = match agent_id.as_str() {
+                "claude-code" => vec!["uninstall", "-g", "@anthropic-ai/claude-code"],
+                "codex-cli" => vec!["uninstall", "-g", "@openai/codex"],
+                "gemini-cli" => vec!["uninstall", "-g", "@google/gemini-cli"],
+                _ => unreachable!(),
+            };
 
-    if output.status.success() {
-        // Update cached detection so agent shows as not installed immediately
+            let _ = app.emit(
+                &event_name,
+                serde_json::json!({ "status": "uninstalling", "message": format!("Running: {} {}", npm_bin, uninstall_cmd.join(" ")) }),
+            );
+
+            let _ = std::process::Command::new(&npm_bin)
+                .args(&uninstall_cmd)
+                .env("PATH", &path_env)
+                .output();
+            npm_uninstall_attempted = true;
+        }
+    }
+
+    // Also try system npm as a fallback cleanup (in case detected npm was wrong version)
+    if !npm_uninstall_attempted {
+        let enhanced_path = crate::agent::detector::get_enhanced_path();
+        let uninstall_cmd = match agent_id.as_str() {
+            "claude-code" => vec!["uninstall", "-g", "@anthropic-ai/claude-code"],
+            "codex-cli" => vec!["uninstall", "-g", "@openai/codex"],
+            "gemini-cli" => vec!["uninstall", "-g", "@google/gemini-cli"],
+            _ => unreachable!(),
+        };
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({ "status": "uninstalling", "message": format!("Running: npm {}", uninstall_cmd.join(" ")) }),
+        );
+        let _ = std::process::Command::new("npm")
+            .args(&uninstall_cmd)
+            .env("PATH", &enhanced_path)
+            .output();
+    }
+
+    // --- Remove any remaining binary files directly ---
+    let enhanced_path = crate::agent::detector::get_enhanced_path();
+    let mut removed_count = 0u32;
+
+    // First, try the specific install_path we detected
+    if let Some(ref install_path) = detected_path {
+        let p = std::path::Path::new(install_path);
+        if p.exists() {
+            if std::fs::remove_file(p).is_ok() {
+                removed_count += 1;
+                let _ = app.emit(
+                    &event_name,
+                    serde_json::json!({ "status": "uninstalling", "message": format!("Removed: {}", install_path) }),
+                );
+            }
+        }
+    }
+
+    // Then scan the full enhanced PATH for any other copies
+    for bin_path in find_all_binaries(bin_name, &enhanced_path) {
+        let path_str = bin_path.to_string_lossy().to_string();
+        // Skip the one we already removed
+        if detected_path.as_deref() == Some(&path_str) {
+            continue;
+        }
+        if std::fs::remove_file(&bin_path).is_ok() {
+            removed_count += 1;
+            let _ = app.emit(
+                &event_name,
+                serde_json::json!({ "status": "uninstalling", "message": format!("Removed: {}", path_str) }),
+            );
+        }
+    }
+
+    // --- Final verification: re-run detection to confirm it's gone ---
+    let remaining = detector::detect_agents();
+    let still_installed = remaining.iter().any(|a| a.id == agent_id && a.installed);
+
+    if still_installed {
+        // Binary may still exist somewhere we didn't check — report what we did
+        let db_guard = db.lock().unwrap();
+        let conn = db_guard.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET installed = 0, status = 'not_installed', detected_at = ? WHERE id = ?",
+            rusqlite::params![chrono::Local::now().to_rfc3339(), &agent_id],
+        ).ok();
+        drop(conn);
+        drop(db_guard);
+
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({ "status": "done", "message": format!("Partially removed: {} binary file(s) deleted, but agent may still be detectable. Try manual cleanup.", removed_count) }),
+        );
+        Ok(())
+    } else {
+        // Success — agent is fully gone
         let db_guard = db.lock().unwrap();
         let conn = db_guard.conn.lock().unwrap();
         conn.execute(
@@ -324,9 +518,6 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
             serde_json::json!({ "status": "done", "message": "Uninstall complete" }),
         );
         Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Uninstall failed: {}", stderr))
     }
 }
 
@@ -535,14 +726,44 @@ pub fn get_agent_statuses(app_state: State<'_, Mutex<AppState>>, db: State<'_, M
         }
         detected
     } else {
-        load_cached_agents(&conn).unwrap_or_else(|| {
-            // 2. Cache miss or stale — full detection + persist
-            let detected = detector::detect_agents();
-            for agent in &detected {
-                save_detected_agent(&conn, agent);
+        match load_cached_agents(&conn) {
+            Some(cached) => {
+                // Merge partial cache with fresh detection.
+                // Prefer cached install data when the cache says "installed"
+                // but detect_agents() says otherwise — this happens when the
+                // agent was installed via the bundled Node.js, whose bin
+                // directory is not in detect_agents()'s search paths.
+                let detected = detector::detect_agents();
+                let mut result = Vec::new();
+                let cached_map: std::collections::HashMap<&str, &Agent> =
+                    cached.iter().map(|a| (a.id.as_str(), a)).collect();
+
+                for det_agent in &detected {
+                    if let Some(cached_agent) = cached_map.get(det_agent.id.as_str()) {
+                        if cached_agent.installed && !det_agent.installed {
+                            // Cache knows about an install that detection missed
+                            result.push((*cached_agent).clone());
+                            save_detected_agent(&conn, cached_agent);
+                        } else {
+                            result.push(det_agent.clone());
+                            save_detected_agent(&conn, det_agent);
+                        }
+                    } else {
+                        result.push(det_agent.clone());
+                        save_detected_agent(&conn, det_agent);
+                    }
+                }
+                result
             }
-            detected
-        })
+            None => {
+                // 2. Cache miss or stale — full detection + persist
+                let detected = detector::detect_agents();
+                for agent in &detected {
+                    save_detected_agent(&conn, agent);
+                }
+                detected
+            }
+        }
     };
     
     // 3. Overlay DB status/last_tested_at (preserved from Test runs)

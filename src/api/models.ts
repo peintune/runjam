@@ -2,6 +2,51 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ProtocolType = "anthropic" | "openai_chat" | "openai_responses" | "gemini";
 
+export interface OllamaModel {
+  name: string;
+  size: string;
+  digest: string;
+  modified_at: string;
+  size_bytes: number;
+}
+
+export interface OllamaPullProgress {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  percentage: number;
+}
+
+export async function checkOllamaInstalled(): Promise<boolean> {
+  return invoke<boolean>("check_ollama_installed");
+}
+
+export async function getOllamaStatus(): Promise<string> {
+  return invoke<string>("get_ollama_status");
+}
+
+export async function listOllamaModels(): Promise<OllamaModel[]> {
+  return invoke<OllamaModel[]>("list_ollama_models");
+}
+
+export async function pullOllamaModel(modelName: string): Promise<void> {
+  return invoke("pull_ollama_model", { modelName });
+}
+
+export async function createOllamaModel(modelName: string): Promise<string> {
+  return invoke<string>("create_ollama_model", { modelName });
+}
+
+export const recommendedLocalModels = [
+  { name: "llama3", alias: "LLaMA 3", size: "4.7GB", desc: "综合性能最强的开源模型" },
+  { name: "mistral", alias: "Mistral", size: "4.1GB", desc: "代码能力优秀，响应速度快" },
+  { name: "qwen2:7b", alias: "Qwen 2 7B", size: "3.8GB", desc: "中文支持优秀" },
+  { name: "phi3", alias: "Phi-3", size: "2.1GB", desc: "轻量高效，适合资源有限环境" },
+  { name: "codellama", alias: "CodeLlama", size: "4.7GB", desc: "专为代码任务优化" },
+  { name: "gemma2", alias: "Gemma 2", size: "2.5GB", desc: "Google 开源模型，质量优秀" },
+];
+
 export interface ModelEntry {
   id: string;
   name: string;
@@ -272,6 +317,17 @@ export const providers: ProviderConfig[] = [
     models: [],
     desc: "Groq inference",
     homepage: "https://groq.com/",
+  },
+  {
+    id: "ollama",
+    name: "Ollama",
+    icon: "🦙",
+    color: "#000000",
+    defaultBase: "http://localhost:11434/v1",
+    protocol: "openai_chat",
+    models: [],
+    desc: "Local models",
+    homepage: "https://ollama.com/",
   },
 ];
 
