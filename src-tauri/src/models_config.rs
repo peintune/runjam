@@ -16,6 +16,8 @@ pub struct ModelEntry {
     pub context_window: u64,
     pub support_reasoning: bool,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub use_proxy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +126,7 @@ fn parse_claude_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
                     context_window,
                     support_reasoning,
                     tags,
+                    use_proxy: false,
                 });
             }
         }
@@ -152,6 +155,7 @@ fn parse_codex_native_config(doc: &toml::Value) -> Vec<ModelEntry> {
             context_window: 0,
             support_reasoning: false,
             tags: vec![],
+            use_proxy: false,
         });
     }
     
@@ -172,6 +176,7 @@ fn parse_codex_native_config(doc: &toml::Value) -> Vec<ModelEntry> {
                     context_window: 0,
                     support_reasoning: false,
                     tags: vec![],
+                    use_proxy: false,
                 });
             }
         }
@@ -208,6 +213,7 @@ fn parse_gemini_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
                     context_window,
                     support_reasoning,
                     tags,
+                    use_proxy: false,
                 });
             }
         }
@@ -539,6 +545,99 @@ pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), Stri
         _ => {}
     }
 
+    Ok(())
+}
+
+/// Update model name and API key in the agent config file, preserving
+/// proxy URL and other settings. Called when the user selects a model
+/// in the chat dialog, so the agent sends the correct model name to the proxy.
+pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Result<(), String> {
+    let home = directories::UserDirs::new()
+        .map(|d| d.home_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    match agent_id {
+        "claude-code" => {
+            let path = home.join(".claude").join("settings.json");
+            if !path.exists() {
+                return Ok(());
+            }
+            let s = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut settings: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
+
+            settings["model"] = serde_json::Value::String(model_name.to_string());
+
+            if let Some(env) = settings.get_mut("env") {
+                if let Some(obj) = env.as_object_mut() {
+                    // Update API key for proxy (proxy handles auth, but some agents validate locally)
+                    if !api_key.is_empty() {
+                        obj.insert("ANTHROPIC_AUTH_TOKEN".into(), serde_json::Value::String(api_key.to_string()));
+                    }
+                    // Model name
+                    obj.insert("ANTHROPIC_MODEL".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_SONNET_MODEL".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_SONNET_MODEL_NAME".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), serde_json::Value::String(model_name.to_string()));
+                    obj.insert("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME".into(), serde_json::Value::String(model_name.to_string()));
+                }
+            }
+
+            std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap_or_default())
+                .map_err(|e| format!("Failed to write claude config: {}", e))?;
+        }
+        "codex-cli" => {
+            let path = home.join(".codex").join("config.toml");
+            if !path.exists() {
+                return Ok(());
+            }
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut doc: toml::Value = toml::from_str(&content).unwrap_or(toml::Value::Table(toml::value::Table::new()));
+
+            if let toml::Value::Table(ref mut table) = doc {
+                table.insert("model".to_string(), toml::Value::String(model_name.to_string()));
+
+                // Update API key in model_providers.custom (proxy URL is preserved)
+                if !api_key.is_empty() {
+                    let mut custom = table.get("model_providers")
+                        .and_then(|v| v.get("custom"))
+                        .and_then(|v| v.as_table())
+                        .cloned()
+                        .unwrap_or_default();
+                    custom.insert("api_key".to_string(), toml::Value::String(api_key.to_string()));
+                    let mut providers = toml::value::Table::new();
+                    providers.insert("custom".to_string(), toml::Value::Table(custom));
+                    table.insert("model_providers".to_string(), toml::Value::Table(providers));
+                }
+            }
+
+            std::fs::write(&path, toml::to_string_pretty(&doc).unwrap_or_default())
+                .map_err(|e| format!("Failed to write codex config: {}", e))?;
+        }
+        "gemini-cli" => {
+            let path = home.join(".gemini").join("settings.json");
+            if !path.exists() {
+                return Ok(());
+            }
+            let s = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut settings: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
+
+            let mut env_map = settings.get("env")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            env_map.insert("GEMINI_MODEL".into(), serde_json::Value::String(model_name.to_string()));
+            if !api_key.is_empty() {
+                env_map.insert("GEMINI_API_KEY".into(), serde_json::Value::String(api_key.to_string()));
+            }
+            settings["env"] = serde_json::Value::Object(env_map);
+
+            std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap_or_default())
+                .map_err(|e| format!("Failed to write gemini config: {}", e))?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 

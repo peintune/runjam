@@ -94,8 +94,12 @@ export async function setAgentDefaultModel(agentId: string, modelId: string): Pr
   return invoke("set_agent_default_model", { agentId, modelId });
 }
 
-export async function assignModelToAgent(agentId: string, modelId: string, useProxy: boolean = false): Promise<void> {
+export async function assignModelToAgent(agentId: string, modelId: string, useProxy: boolean = true): Promise<void> {
   return invoke("assign_model_to_agent", { agentId, modelId, useProxy });
+}
+
+export async function setAgentModel(agentId: string, modelId: string): Promise<void> {
+  return invoke("set_agent_model_cmd", { agentId, modelId });
 }
 
 export async function removeModelFromAgent(agentId: string, modelId: string): Promise<void> {

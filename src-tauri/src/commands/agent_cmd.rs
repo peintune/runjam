@@ -316,48 +316,44 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
             save_detected_agent(&conn, &agent);
         }
 
-        // Auto-test: if we found the binary, run ACP connection test so the
-        // agent shows as "Available" right away without manual Test click.
-        let agent = if let Some(ref _bin_path) = agent.install_path {
-            let now = chrono::Local::now().to_rfc3339();
-            let _ = app.emit(
-                &event_name,
-                serde_json::json!({ "status": "testing", "message": "Testing connection..." }),
-            );
+        // Auto-test: always run ACP connection test after a successful install
+        // so the agent shows as "Available" right away without manual Test click.
+        // Even if install_path detection missed the binary, AcpClient::new uses
+        // resolve_agent_paths() which has its own detection logic.
+        let now = chrono::Local::now().to_rfc3339();
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({ "status": "testing", "message": "Testing connection..." }),
+        );
 
-            let (status, msg) = match AcpClient::new(&agent_id, &now, &app).await {
-                Ok(mut client) => match client.test_connection().await {
-                    Ok(_) => ("available".to_string(), "Connection successful".to_string()),
-                    Err(e) => ("connection_failed".to_string(), format!("Connection failed: {}", e)),
-                },
-                Err(e) => ("connection_failed".to_string(), format!("Failed to create ACP client: {}", e)),
-            };
-
-            {
-                let db_guard = db.lock().unwrap();
-                let conn = db_guard.conn.lock().unwrap();
-                save_agent_status_to_db(&conn, &agent_id, &status, &now);
-            }
-
-            let _ = app.emit(
-                &event_name,
-                serde_json::json!({ "status": if status == "available" { "done" } else { "error" }, "message": msg }),
-            );
-
-            Agent {
-                id: agent_id,
-                display_name: String::new(),
-                install_path,
-                version,
-                installed: true,
-                status,
-                last_tested_at: Some(now),
-            }
-        } else {
-            agent
+        let (status, msg) = match AcpClient::new(&agent_id, &now, &app).await {
+            Ok(mut client) => match client.test_connection().await {
+                Ok(_) => ("available".to_string(), "Connection successful".to_string()),
+                Err(e) => ("connection_failed".to_string(), format!("Connection failed: {}", e)),
+            },
+            Err(e) => ("connection_failed".to_string(), format!("Failed to create ACP client: {}", e)),
         };
 
-        Ok(agent)
+        {
+            let db_guard = db.lock().unwrap();
+            let conn = db_guard.conn.lock().unwrap();
+            save_agent_status_to_db(&conn, &agent_id, &status, &now);
+        }
+
+        let _ = app.emit(
+            &event_name,
+            serde_json::json!({ "status": if status == "available" { "done" } else { "error" }, "message": msg }),
+        );
+
+        Ok(Agent {
+            id: agent_id,
+            display_name: String::new(),
+            install_path,
+            version,
+            installed: true,
+            status,
+            last_tested_at: Some(now),
+        })
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let _ = app.emit(

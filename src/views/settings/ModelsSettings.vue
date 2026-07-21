@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, RefreshCw } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, setAgentDefaultModel, checkOllamaInstalled, getOllamaStatus, listOllamaModels, pullOllamaModel, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type OllamaModel, type OllamaPullProgress } from "../../api/models";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkOllamaInstalled, getOllamaStatus, listOllamaModels, pullOllamaModel, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type OllamaModel, type OllamaPullProgress } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -272,45 +272,13 @@ async function toggleAgentAssignment(modelId: string, agentId: string) {
     await removeModelFromAgent(agentId, modelId);
   } else {
     model.assignedAgents.push(agentId);
-    model.useProxy[agentId] = model.useProxy[agentId] ?? true;
-    await assignModelToAgent(agentId, modelId, model.useProxy[agentId]);
+    await assignModelToAgent(agentId, modelId, true);
   }
-}
-
-async function toggleProtocolTranslation(modelId: string, agentId: string) {
-  const model = models.value.find(m => m.id === modelId);
-  if (!model) return;
-  model.useProxy[agentId] = !(model.useProxy[agentId] || false);
-  await assignModelToAgent(agentId, modelId, model.useProxy[agentId]);
-}
-
-async function setAsDefault(modelId: string, agentId: string) {
-  await setAgentDefaultModel(agentId, modelId);
-  await loadAgentModelMap();
-}
-
-function isDefaultForAgent(modelId: string, agentId: string): boolean {
-  const entries = agentModelMap.value[modelId] || [];
-  return entries.some(e => e.agent_id === agentId && e.is_default);
 }
 
 function getAgentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId);
   return agent?.display_name || agentId;
-}
-
-function protocolDiffers(model: UIModel, agentId: string): boolean {
-  const nativeProtocol = getAgentNativeProtocol(agentId);
-  return nativeProtocol !== "" && model.protocol !== nativeProtocol;
-}
-
-function getAgentNativeProtocol(agentId: string): string {
-  const agentProtocol: Record<string, string> = {
-    "claude-code": "anthropic",
-    "codex-cli": "openai_chat",
-    "gemini-cli": "gemini",
-  };
-  return agentProtocol[agentId] || "";
 }
 
 function getStatusText(): string {
@@ -611,39 +579,6 @@ function getStatusColor(): string {
                   <span v-else-if="agent.status === 'connection_failed'" class="ml-1.5 inline-block w-1.5 h-1.5 rounded-full bg-red-400"></span>
                 </div>
               </div>
-
-              <template v-if="model.assignedAgents.includes(agent.id)">
-                <button
-                  v-if="isDefaultForAgent(model.id, agent.id)"
-                  @click.stop
-                  class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-yellow-50 border border-yellow-200 text-yellow-700 cursor-default"
-                >
-                  <span class="text-[12px]">★</span> Default
-                </button>
-                <button
-                  v-else
-                  @click.stop="setAsDefault(model.id, agent.id)"
-                  class="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium border border-gray-200 text-gray-500 hover:border-yellow-300 hover:text-yellow-600 hover:bg-yellow-50 transition-all duration-150 cursor-pointer"
-                >
-                  Set Default
-                </button>
-
-                <button
-                  v-if="protocolDiffers(model, agent.id)"
-                  @click.stop="toggleProtocolTranslation(model.id, agent.id)"
-                  :title="`This model uses ${model.protocol} protocol, but ${getAgentDisplayName(agent.id)} expects ${getAgentNativeProtocol(agent.id)}. Enable translation to bridge the difference.`"
-                  :class="[
-                    'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all duration-150 cursor-pointer border',
-                    model.useProxy[agent.id]
-                      ? 'bg-indigo-50 border-indigo-200 text-indigo-600'
-                      : 'bg-white border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300'
-                  ]"
-                >
-                  <span class="text-[10px]">⟳</span>
-                  Translate
-                  <HelpCircle :size="10" class="text-gray-300" />
-                </button>
-              </template>
 
               <div
                 :class="[

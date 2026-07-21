@@ -41,8 +41,8 @@ pub fn update_session_title(id: String, title: String) {
 }
 
 #[tauri::command]
-pub fn delete_session(id: String) {
-    search::delete_session(&id);
+pub fn delete_session(id: String) -> Result<(), String> {
+    search::delete_session(&id).map_err(|e| format!("Failed to delete session: {}", e))
 }
 
 #[tauri::command]

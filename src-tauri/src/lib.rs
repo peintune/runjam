@@ -100,6 +100,7 @@ pub fn run() {
             commands::models_cmd::get_agent_permission_mode,
             commands::models_cmd::set_agent_permission_mode,
             commands::models_cmd::configure_agent_to_proxy,
+            commands::models_cmd::set_agent_model_cmd,
             commands::search_cmd::search_conversations,
             commands::search_cmd::save_conversation_message,
             commands::search_cmd::get_conversation_messages,

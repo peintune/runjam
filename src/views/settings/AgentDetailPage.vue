@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowLeft, Download, Trash2, ExternalLink, Terminal,
   Loader2, ToggleLeft, ToggleRight, Save,
-  Database, HelpCircle, Plus, CheckCircle2, XCircle, AlertCircle,
+  Database, Plus, CheckCircle2, XCircle, AlertCircle,
 } from "lucide-vue-next";
 import AgentIcon from "../../components/AgentIcon.vue";
 import { useAgentStore } from "../../stores/useAgentStore";
@@ -15,7 +15,7 @@ import {
   testAgent,
   type AgentInfo, type AgentStatus,
 } from "../../api/agents";
-import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName, getAgentModelMap, setAgentDefaultModel, type AgentModelInfo } from "../../api/models";
+import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 
 const router = useRouter();
@@ -37,14 +37,13 @@ const nodeInstallGuide = ref("");
 const configContent = ref<Record<string, string>>({});
 const configDirty = ref<Record<string, boolean>>({});
 const configSaving = ref<Record<string, boolean>>({});
+const configSaveMsg = ref<Record<string, string>>({});
 
 const allModels = ref<any[]>([]);
 const agentModels = ref<Record<string, any[]>>({});
 const agentConfigModels = ref<Record<string, any[]>>({});
 const addingModel = ref<Record<string, boolean>>({});
 const selectedModelId = ref<Record<string, string>>({});
-const useProxy = ref<Record<string, boolean>>({});
-const tooltipVisible = ref(false);
 
 const providerColorMap: Record<string, string> = {
   anthropic: 'border-orange-300 text-orange-700 bg-orange-50',
@@ -135,10 +134,6 @@ async function loadAgent() {
       await loadConfig(agent.value.id);
       await loadAgentModels(agent.value.id);
       await loadAgentConfigModels(agent.value.id);
-      const models = agentModels.value[agent.value.id] || [];
-      for (const m of models) {
-        useProxy.value[m.id] = m.use_proxy || false;
-      }
     }
   } catch (e) {
     console.error("loadAgent error", e);
@@ -173,27 +168,13 @@ async function addModelToAgent(agentIdStr: string, modelId: string) {
   if (!modelId) return;
   addingModel.value[agentIdStr] = true;
   try {
-    await assignModelToAgent(agentIdStr, modelId, useProxy.value[agentIdStr] || false);
+    await assignModelToAgent(agentIdStr, modelId, true);
     await loadAgentModels(agentIdStr);
-    await loadAgentModelMapDetail(agentIdStr);
     await loadAgentConfigModels(agentIdStr);
     await loadConfig(agentIdStr);
     selectedModelId.value[agentIdStr] = '';
   } catch {}
   addingModel.value[agentIdStr] = false;
-}
-
-const agentModelMapDetail = ref<AgentModelInfo[]>([]);
-async function loadAgentModelMapDetail(_agentIdStr: string) {
-  try { agentModelMapDetail.value = await getAgentModelMap(); } catch { agentModelMapDetail.value = []; }
-}
-function isDefaultForAgentDetail(modelId: string, agentId: string): boolean {
-  return agentModelMapDetail.value.some((e: AgentModelInfo) => e.agent_id === agentId && e.model_id === modelId && e.is_default);
-}
-async function setAsDefaultDetail(modelId: string, agentIdStr: string) {
-  await setAgentDefaultModel(agentIdStr, modelId);
-  await loadAgentModelMapDetail(agentIdStr);
-  await loadAgentModels(agentIdStr);
 }
 
 async function removeModelFromAgentUI(agentIdStr: string, modelId: string) {
@@ -270,17 +251,10 @@ async function loadConfig(id: string) {
 
 async function saveConfig(id: string) {
   configSaving.value[id] = true;
-  try { await writeAgentConfig(id, configContent.value[id] || ''); configDirty.value[id] = false; }
-  catch (err) { console.error(err); }
+  try { await writeAgentConfig(id, configContent.value[id] || ''); configDirty.value[id] = false; configSaveMsg.value[id] = 'Saved successfully'; }
+  catch (err) { console.error(err); configSaveMsg.value[id] = 'Save failed'; }
   configSaving.value[id] = false;
-}
-
-async function toggleModelProxy(agentIdStr: string, modelId: string, currentProxy: boolean) {
-  try {
-    await assignModelToAgent(agentIdStr, modelId, !currentProxy);
-    await loadAgentModels(agentIdStr);
-    await loadConfig(agentIdStr);
-  } catch {}
+  setTimeout(() => { if (configSaveMsg.value[id] === 'Saved successfully' || configSaveMsg.value[id] === 'Save failed') configSaveMsg.value[id] = ''; }, 2500);
 }
 
 </script>
@@ -458,21 +432,6 @@ async function toggleModelProxy(agentIdStr: string, modelId: string, currentProx
             </div>
 
             <div class="flex items-center gap-4 pt-1">
-              <label class="flex items-center gap-2 cursor-pointer group">
-                <input
-                  type="checkbox"
-                  v-model="useProxy[agent.id]"
-                  @change="toggleModelProxy(agent.id, (agentModels[agent.id] || [])[0]?.id || '', !useProxy[agent.id])"
-                  class="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-900/20 cursor-pointer"
-                />
-                <span class="text-[13px] font-medium text-gray-600 group-hover:text-gray-900 transition-colors">Protocol Translation</span>
-                <span class="relative" @mouseenter="tooltipVisible = true" @mouseleave="tooltipVisible = false">
-                  <HelpCircle :size="13" class="text-gray-400 hover:text-gray-600 transition-colors cursor-help" />
-                  <div v-show="tooltipVisible" class="absolute left-1/2 -translate-x-1/2 top-5 z-50 w-64 px-3 py-2 rounded-xl bg-gray-900 text-[11px] text-white leading-relaxed shadow-xl">
-                    Translate model protocol to agent protocol. Required when using different protocol models (e.g., use OpenAI model in Claude Code)
-                  </div>
-                </span>
-              </label>
               <button
                 @click="addModelToAgent(agent.id, selectedModelId[agent.id])"
                 :disabled="addingModel[agent.id] || !selectedModelId[agent.id]"
@@ -505,20 +464,6 @@ async function toggleModelProxy(agentIdStr: string, modelId: string, currentProx
                 </div>
               </div>
               <div class="flex items-center gap-3">
-                <label class="flex items-center gap-2 cursor-pointer group/label">
-                  <input
-                    type="checkbox"
-                    :checked="useProxy[model.id] || false"
-                    @change="useProxy[model.id] = !useProxy[model.id]; toggleModelProxy(agent.id, model.id, !useProxy[model.id])"
-                    class="w-4 h-4 rounded border-gray-300 text-gray-700 focus:ring-gray-900/20 cursor-pointer"
-                  />
-                  <span class="text-[12px] font-medium text-gray-500 group-hover/label:text-gray-700 transition-colors">Protocol Translation</span>
-                </label>
-                <button
-                  v-if="!isDefaultForAgentDetail(model.id, agent.id)"
-                  @click="setAsDefaultDetail(model.id, agent.id)"
-                  class="ml-1 px-2 py-1 rounded-lg text-[11px] text-yellow-600 bg-yellow-50 hover:bg-yellow-100 border border-yellow-200 transition-colors cursor-pointer"
-                >★ Default</button>
                 <button
                   @click="removeModelFromAgentUI(agent.id, model.id)"
                   class="p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
@@ -549,6 +494,13 @@ async function toggleModelProxy(agentIdStr: string, modelId: string, currentProx
             </div>
             <div class="flex items-center gap-3">
               <span class="text-[12px] text-gray-400 hidden sm:inline">Edit the raw JSON config directly</span>
+              <span
+                v-if="configSaveMsg[agent.id]"
+                :class="[
+                  'text-[12px] font-medium',
+                  configSaveMsg[agent.id] === 'Saved successfully' ? 'text-emerald-600' : 'text-red-500'
+                ]"
+              >{{ configSaveMsg[agent.id] }}</span>
               <button
                 v-if="configDirty[agent.id]"
                 @click="saveConfig(agent.id)"

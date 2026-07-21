@@ -5,7 +5,7 @@ import { useRouter } from "vue-router";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
-import { getModels, getLastAgent, setLastAgent, getAgentModels, type ModelEntry, getProviderByName } from "../api/models";
+import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
 import { sendInput, startSession as apiStartSession } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages } from "../api/search";
@@ -237,6 +237,12 @@ function scrollToBottom() {
   nextTick(() => {
     if (messageContainer.value) {
       messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+      // For completed sessions, double-check after paint
+      requestAnimationFrame(() => {
+        if (messageContainer.value) {
+          messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+        }
+      });
     }
   });
 }
@@ -302,6 +308,7 @@ async function loadSessionMessages(sessionId: string) {
       const loadedMessages: Message[] = dbMessages.map(m => ({
         role: m.role as "user" | "agent",
         content: m.content,
+        isProcessing: false, // historical messages are never live
       }));
       state.messages = loadedMessages;
       state.loaded = true;
@@ -354,7 +361,13 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         }
         state.activeThinking += p.content; 
         const l = ensureAgentMsg(state); 
-        l.thinking = state.activeThinking; 
+        l.thinking = state.activeThinking;
+        // Directly update the reactive message in messages.value for smooth streaming
+        // (avoiding messages.value = [...state.messages] which triggers full-page re-render)
+        if (isActiveSession) {
+          const rl = lastAgentMsg(messages.value);
+          if (rl) rl.thinking = state.activeThinking;
+        }
       }
       if (p.status==="done") {
         // agent_thought_end: freeze the thinking timer
@@ -366,14 +379,20 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         }
         const l = ensureAgentMsg(state); 
         l.thoughtDuration = state.thoughtDuration;
+        if (isActiveSession) {
+          const rl = lastAgentMsg(messages.value);
+          if (rl) rl.thoughtDuration = state.thoughtDuration;
+        }
       } else if (p.duration) {
         state.thoughtDuration = p.duration; 
         const l = ensureAgentMsg(state); 
-        l.thoughtDuration = p.duration; 
+        l.thoughtDuration = p.duration;
+        if (isActiveSession) {
+          const rl = lastAgentMsg(messages.value);
+          if (rl) rl.thoughtDuration = p.duration;
+        }
       }
-      if (isActiveSession) {
-        messages.value = [...state.messages];
-      }
+      // Sync to msgStore only (skip full messages.value clone for smooth streaming)
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "text":
@@ -713,6 +732,8 @@ function handleModelSelect(model: ModelEntry) {
   }
   
   saveSessionModel(selectedAgentId.value, model.id);
+  // Immediately update agent config so the agent uses the right model name
+  setAgentModel(selectedAgentId.value, model.id).catch(() => {});
 }
 
 async function handleStop() {
@@ -966,7 +987,7 @@ watch(messages, (msgs) => {
                 </button>
                 <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
                   <div v-for="model in modelList" :key="model.id"
-                    @click="selectedModel = model.id; showModelDropdown = false; saveSessionModel(selectedAgentId, model.id)"
+                    @click="handleModelSelect(model)"
                     :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                     <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                     <div>

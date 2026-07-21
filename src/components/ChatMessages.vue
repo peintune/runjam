@@ -105,9 +105,11 @@ const tickTimer = setInterval(() => {
   now.value = Date.now();
 }, 200);
 const timers: ReturnType<typeof setInterval>[] = [];
+const activeTimers = new Map<string, ReturnType<typeof setInterval>>();
 onBeforeUnmount(() => {
   clearInterval(tickTimer);
-  timers.forEach(clearInterval);
+  activeTimers.forEach(clearInterval);
+  activeTimers.clear();
 });
 const thinkingRefs = ref<Record<number, HTMLElement>>({});
 
@@ -125,9 +127,18 @@ function startTypewriter(
   const current = displayMap[idx][field];
   if (current.length >= fullText.length) return;
 
+  // Cancel any existing timer for this idx+field so only one runs at a time
+  const timerKey = `${idx}-${field}`;
+  const oldTimer = activeTimers.get(timerKey);
+  if (oldTimer) {
+    clearInterval(oldTimer);
+    activeTimers.delete(timerKey);
+  }
+
   const timer = setInterval(() => {
     if (!displayMap[idx]) {
       clearInterval(timer);
+      activeTimers.delete(timerKey);
       return;
     }
     const cur = displayMap[idx][field];
@@ -143,9 +154,11 @@ function startTypewriter(
       });
     } else {
       clearInterval(timer);
+      activeTimers.delete(timerKey);
       frozenDurations[idx][field] = Date.now() - startTimes[idx][field];
     }
   }, speed);
+  activeTimers.set(timerKey, timer);
   timers.push(timer);
 }
 
@@ -233,9 +246,9 @@ watch(
       if (!startTimes[i]) startTimes[i] = { thinking: 0, content: 0 };
       if (!frozenDurations[i]) frozenDurations[i] = { thinking: 0, content: 0 };
 
-      const isLive =
-        m.isProcessing === true ||
-        (i === msgs.length - 1 && m.role === "agent" && m.isProcessing !== false);
+      // Only messages explicitly marked as processing get the typewriter effect.
+      // Completed/historical messages (isProcessing: false or undefined) render instantly.
+      const isLive = m.isProcessing === true;
 
       if (isLive) {
         if (m.thinking && displayMap[i].thinking.length < m.thinking.length)

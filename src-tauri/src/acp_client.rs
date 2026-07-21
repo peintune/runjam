@@ -115,6 +115,39 @@ fn get_content_text(w: &UpdateWrapper) -> String {
     }
 }
 
+/// Filter out codex-cli "Model metadata" warning that appears before actual agent output.
+/// codex-cli emits this when using a model it doesn't recognize natively (e.g. deepseek via proxy):
+/// "Model metadata for {model} not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+fn filter_codex_metadata_warning(text: &str) -> &str {
+    if text.contains("Defaulting to fallback metadata")
+        && text.contains("degrade performance")
+        && text.contains("cause issues")
+    {
+        rjlog!("[ACP DEBUG] Filtered codex model metadata warning: {}", text);
+        return "";
+    }
+    text
+}
+
+/// Clean up thinking/reasoning text from DeepSeek models that use markdown bold formatting
+/// inside reasoning_content (e.g., **The****user****said****hello**).
+/// Since the thinking panel renders as plain text (not markdown), convert ** markers to spaces
+/// and normalize whitespace so words don't get jammed together.
+fn clean_thinking_text(text: &str) -> String {
+    let cleaned = text
+        .replace("**", " ")
+        .replace("__", " ");
+    // Collapse multiple spaces into one, trim
+    let cleaned = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned != text {
+        rjlog!("[ACP DEBUG] Cleaned thinking text (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
+    }
+    cleaned
+}
+
 /// Helper: extract tool output (tries rawOutput first, then content field)
 fn get_tool_output(w: &UpdateWrapper) -> String {
     if let Some(ref raw) = w.raw_output {
@@ -611,7 +644,7 @@ impl AcpClient {
                                 let event_name = format!("acp:{}", session_id_clone);
                                 match update.params.update.session_update.as_str() {
                                     "agent_message_chunk" => {
-                                        let text = get_content_text(&update.params.update);
+                                        let text = filter_codex_metadata_warning(&get_content_text(&update.params.update)).to_string();
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Agent message chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
@@ -628,7 +661,8 @@ impl AcpClient {
                                         ));
                                     }
                                     "agent_thought_chunk" => {
-                                        let text = get_content_text(&update.params.update);
+                                        let raw = get_content_text(&update.params.update);
+                                        let text = clean_thinking_text(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Agent thought chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
@@ -645,7 +679,8 @@ impl AcpClient {
                                         ));
                                     }
                                     "thinking" => {
-                                        let text = get_content_text(&update.params.update);
+                                        let raw = get_content_text(&update.params.update);
+                                        let text = clean_thinking_text(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Thinking update: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
@@ -655,7 +690,7 @@ impl AcpClient {
                                         }
                                     }
                                     "message_chunk" => {
-                                        let text = get_content_text(&update.params.update);
+                                        let text = filter_codex_metadata_warning(&get_content_text(&update.params.update)).to_string();
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Message chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(

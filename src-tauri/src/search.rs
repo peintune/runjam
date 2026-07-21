@@ -201,7 +201,12 @@ pub fn set_session_archived(id: &str, archived: bool) {
 pub fn delete_archived_sessions() {
     if let Ok(conn) = get_conn() {
         conn.execute("DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE archived = 1)", []).ok();
-        conn.execute("DELETE FROM sessions WHERE archived = 1", []).ok();
+        conn.execute("DELETE FROM token_usage WHERE session_id IN (SELECT id FROM sessions WHERE archived = 1)", []).ok();
+        if conn.execute("DELETE FROM sessions WHERE archived = 1", []).is_err() {
+            conn.execute_batch("PRAGMA foreign_keys=OFF").ok();
+            conn.execute("DELETE FROM sessions WHERE archived = 1", []).ok();
+            conn.execute_batch("PRAGMA foreign_keys=ON").ok();
+        }
     }
 }
 
@@ -214,9 +219,27 @@ pub fn update_session_title(id: &str, title: &str) {
     }
 }
 
-pub fn delete_session(id: &str) {
-    if let Ok(conn) = get_conn() {
-        conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id]).ok();
-        conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]).ok();
+pub fn delete_session(id: &str) -> Result<()> {
+    let conn = get_conn()?;
+
+    // Delete related data (best-effort, don't fail if any step errors)
+    let _ = conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id]);
+    let _ = conn.execute("DELETE FROM token_usage WHERE session_id = ?1", params![id]);
+
+    // Try to delete the session. If FOREIGN KEY still blocks us, temporarily
+    // disable FK enforcement so the session row is always removed.
+    if let Err(_) = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]) {
+        conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+        let result = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]);
+        conn.execute_batch("PRAGMA foreign_keys=ON")?;
+        if let Err(e) = result {
+            eprintln!("[delete_session] ERROR deleting session {}: {}", id, e);
+            return Err(e);
+        }
     }
+
+    // Force WAL checkpoint so data survives app restart
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+    eprintln!("[delete_session] Deleted session: {}", id);
+    Ok(())
 }

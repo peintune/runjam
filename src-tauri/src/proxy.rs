@@ -556,14 +556,30 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         return (StatusCode(404), format!(r#"{{"error":"Model {} not configured"}}"#, model_name));
     };
 
-    // Build Chat Completions request (Responses API tools are already in OpenAI format)
+    // Build Chat Completions request (convert Responses API tool format to Chat format)
     let mut chat_body = serde_json::json!({
         "model": real_model,
         "messages": messages,
         "stream": stream,
     });
-    if let Some(tools) = req.get("tools") {
-        chat_body["tools"] = tools.clone();
+    if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
+        // Responses API tools: {type: "function", name, description, parameters}
+        //                          OR {type: "namespace", namespace: ...} etc.
+        // Chat Completions tools: only {type: "function", function: {name, description, parameters}}
+        let chat_tools: Vec<Value> = tools.iter()
+            .filter(|t| t["type"].as_str() == Some("function"))
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t.get("description").unwrap_or(&Value::Null),
+                        "parameters": t.get("parameters").unwrap_or(&Value::Null),
+                    }
+                })
+            })
+            .collect();
+        chat_body["tools"] = serde_json::Value::Array(chat_tools);
         if let Some(tc) = req.get("tool_choice") {
             chat_body["tool_choice"] = tc.clone();
         }

@@ -1,4 +1,4 @@
-use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, restore_agent_config, detect_model_protocol};
+use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, restore_agent_config, set_agent_model, detect_model_protocol};
 use crate::db::connection::Database;
 use crate::proxy::ProxyState;
 use tauri::State;
@@ -26,6 +26,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
             context_window: row.get(9)?,
             support_reasoning: row.get(10)?,
             tags,
+            use_proxy: false,
         })
     }).unwrap();
     
@@ -112,7 +113,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
     let conn = db_guard.conn.lock().unwrap();
     
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags 
+        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags, am.use_proxy
          FROM models m 
          JOIN agent_models am ON m.id = am.model_id 
          WHERE am.agent_id = ? 
@@ -127,6 +128,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            use_proxy: row.get::<_, i32>(12)? != 0,
         })
     }).unwrap();
     
@@ -199,12 +201,11 @@ pub fn assign_model_to_agent(agent_id: String, model_id: String, use_proxy: bool
         ps.agent_models.insert(agent_id.clone(), ids);
     }
     
-    if use_proxy {
-        let port = proxy_state.lock().unwrap().port;
-        if port > 0 {
-            let proxy_url = format!("http://127.0.0.1:{}", port);
-            configure_agent_proxy(&agent_id, &proxy_url).ok();
-        }
+    // Always configure agent to use the proxy — all model traffic goes through proxy
+    let port = proxy_state.lock().unwrap().port;
+    if port > 0 {
+        let proxy_url = format!("http://127.0.0.1:{}", port);
+        configure_agent_proxy(&agent_id, &proxy_url).ok();
     }
     
     Ok(())
@@ -268,6 +269,7 @@ fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            use_proxy: false,
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -287,6 +289,7 @@ fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            use_proxy: false,
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -308,6 +311,7 @@ fn get_default_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> V
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            use_proxy: false,
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -443,6 +447,7 @@ pub fn get_model_by_alias(alias: String, db: State<'_, Mutex<Database>>) -> Opti
                     provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
                     api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
                     context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+                    use_proxy: false,
                 })
             }).unwrap();
             models_iter.next().and_then(|m| m.ok())
@@ -495,6 +500,22 @@ pub fn get_agent_permission_mode(agent_id: String, db: State<'_, Mutex<Database>
         [&format!("agent_permission_{}", agent_id)], |row| row.get(0)
     );
     result.unwrap_or_default()
+}
+
+/// Update the agent config file with the selected model's name and API key.
+/// Called when user selects a model in the chat dialog, so the agent
+/// sends the correct model name to the proxy.
+/// Preserves the proxy URL (already set by configure_agent_proxy).
+#[tauri::command]
+pub fn set_agent_model_cmd(agent_id: String, model_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    let db_guard = db.lock().unwrap();
+    let conn = db_guard.conn.lock().unwrap();
+    let (model_name, api_key): (String, String) = conn.query_row(
+        "SELECT name, api_key FROM models WHERE id = ?1",
+        [&model_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).map_err(|e| format!("Model not found: {}", e))?;
+    set_agent_model(&agent_id, &model_name, &api_key)
 }
 
 #[tauri::command]

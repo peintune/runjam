@@ -184,15 +184,19 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     sessions.value = sessions.value.filter(s => !s.archived);
   }
 
-  function batchDelete(ids: string[]) {
+  async function batchDelete(ids: string[]) {
     sessions.value = sessions.value.filter(s => !ids.includes(s.id));
     if (activeSessionId.value && ids.includes(activeSessionId.value)) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
-    ids.forEach(id => {
+    for (const id of ids) {
       useMessageStore().removeSession(id);
-      deleteSession(id).catch(() => {});
-    });
+      try {
+        await deleteSession(id);
+      } catch (err) {
+        console.error("Failed to delete session:", err);
+      }
+    }
   }
 
   function batchPin(ids: string[]) {
@@ -221,7 +225,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
     useMessageStore().removeSession(id);
-    deleteSession(id).catch(err => console.error("Failed to delete session:", err));
+    try {
+      await deleteSession(id);
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+    }
   }
 
   return {
