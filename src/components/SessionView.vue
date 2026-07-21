@@ -361,13 +361,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         }
         state.activeThinking += p.content; 
         const l = ensureAgentMsg(state); 
-        l.thinking = state.activeThinking;
-        // Directly update the reactive message in messages.value for smooth streaming
-        // (avoiding messages.value = [...state.messages] which triggers full-page re-render)
-        if (isActiveSession) {
-          const rl = lastAgentMsg(messages.value);
-          if (rl) rl.thinking = state.activeThinking;
-        }
+        l.thinking = state.activeThinking; 
       }
       if (p.status==="done") {
         // agent_thought_end: freeze the thinking timer
@@ -379,20 +373,14 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         }
         const l = ensureAgentMsg(state); 
         l.thoughtDuration = state.thoughtDuration;
-        if (isActiveSession) {
-          const rl = lastAgentMsg(messages.value);
-          if (rl) rl.thoughtDuration = state.thoughtDuration;
-        }
       } else if (p.duration) {
         state.thoughtDuration = p.duration; 
         const l = ensureAgentMsg(state); 
-        l.thoughtDuration = p.duration;
-        if (isActiveSession) {
-          const rl = lastAgentMsg(messages.value);
-          if (rl) rl.thoughtDuration = p.duration;
-        }
+        l.thoughtDuration = p.duration; 
       }
-      // Sync to msgStore only (skip full messages.value clone for smooth streaming)
+      if (isActiveSession) {
+        messages.value = [...state.messages];
+      }
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "text":

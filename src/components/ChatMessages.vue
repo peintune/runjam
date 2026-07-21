@@ -105,11 +105,9 @@ const tickTimer = setInterval(() => {
   now.value = Date.now();
 }, 200);
 const timers: ReturnType<typeof setInterval>[] = [];
-const activeTimers = new Map<string, ReturnType<typeof setInterval>>();
 onBeforeUnmount(() => {
   clearInterval(tickTimer);
-  activeTimers.forEach(clearInterval);
-  activeTimers.clear();
+  timers.forEach(clearInterval);
 });
 const thinkingRefs = ref<Record<number, HTMLElement>>({});
 
@@ -127,18 +125,9 @@ function startTypewriter(
   const current = displayMap[idx][field];
   if (current.length >= fullText.length) return;
 
-  // Cancel any existing timer for this idx+field so only one runs at a time
-  const timerKey = `${idx}-${field}`;
-  const oldTimer = activeTimers.get(timerKey);
-  if (oldTimer) {
-    clearInterval(oldTimer);
-    activeTimers.delete(timerKey);
-  }
-
   const timer = setInterval(() => {
     if (!displayMap[idx]) {
       clearInterval(timer);
-      activeTimers.delete(timerKey);
       return;
     }
     const cur = displayMap[idx][field];
@@ -154,11 +143,9 @@ function startTypewriter(
       });
     } else {
       clearInterval(timer);
-      activeTimers.delete(timerKey);
       frozenDurations[idx][field] = Date.now() - startTimes[idx][field];
     }
   }, speed);
-  activeTimers.set(timerKey, timer);
   timers.push(timer);
 }
 

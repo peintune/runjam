@@ -129,23 +129,15 @@ fn filter_codex_metadata_warning(text: &str) -> &str {
     text
 }
 
-/// Clean up thinking/reasoning text from DeepSeek models that use markdown bold formatting
-/// inside reasoning_content (e.g., **The****user****said****hello**).
-/// Since the thinking panel renders as plain text (not markdown), convert ** markers to spaces
-/// and normalize whitespace so words don't get jammed together.
-fn clean_thinking_text(text: &str) -> String {
-    let cleaned = text
-        .replace("**", " ")
-        .replace("__", " ");
-    // Collapse multiple spaces into one, trim
-    let cleaned = cleaned
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if cleaned != text {
-        rjlog!("[ACP DEBUG] Cleaned thinking text (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
+/// Gemini agent's thought text uses "****" as word separators in its ACP output
+/// (e.g., "The****user****is****saying****hello"). Replace with spaces for readability.
+fn normalize_gemini_thought(text: &str) -> String {
+    if text.contains("****") {
+        let cleaned = text.replace("****", " ");
+        rjlog!("[ACP DEBUG] Normalized gemini thought (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
+        return cleaned;
     }
-    cleaned
+    text.to_string()
 }
 
 /// Helper: extract tool output (tries rawOutput first, then content field)
@@ -662,7 +654,7 @@ impl AcpClient {
                                     }
                                     "agent_thought_chunk" => {
                                         let raw = get_content_text(&update.params.update);
-                                        let text = clean_thinking_text(filter_codex_metadata_warning(&raw));
+                                        let text = normalize_gemini_thought(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Agent thought chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
@@ -680,7 +672,7 @@ impl AcpClient {
                                     }
                                     "thinking" => {
                                         let raw = get_content_text(&update.params.update);
-                                        let text = clean_thinking_text(filter_codex_metadata_warning(&raw));
+                                        let text = normalize_gemini_thought(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
                                             rjlog!("[ACP DEBUG] Thinking update: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
