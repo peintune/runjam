@@ -131,9 +131,10 @@ fn filter_codex_metadata_warning(text: &str) -> &str {
 
 /// Gemini agent's thought text uses "****" as word separators in its ACP output
 /// (e.g., "The****user****is****saying****hello"). Replace with spaces for readability.
+/// Also remove newlines since Gemini's thought contains unnecessary line breaks.
 fn normalize_gemini_thought(text: &str) -> String {
-    if text.contains("****") {
-        let cleaned = text.replace("****", " ");
+    if text.contains("****") || text.contains('\n') {
+        let cleaned = text.replace("****", " ").replace('\n', " ");
         rjlog!("[ACP DEBUG] Normalized gemini thought (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
         return cleaned;
     }

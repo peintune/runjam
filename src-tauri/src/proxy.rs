@@ -5,12 +5,92 @@ use crate::models_config::{ModelConfig, ModelEntry};
 use crate::rjlog;
 use serde_json::Value;
 
-
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tiny_http::{Header, Response, Server, StatusCode};
+
+/// Response from handle_request: either a completed String response,
+/// or a streaming data source for SSE endpoints.
+enum ProxyResponse {
+    Sync(StatusCode, String),
+    Stream {
+        reader: Box<dyn Read + Send>,
+    },
+}
+
+/// Wraps a BufReader from the upstream SSE response and a line-conversion
+/// closure into a `Read` impl that tiny_http can use as a streaming body.
+struct SseStreamConverter {
+    upstream: BufReader<Box<dyn Read + Send>>,
+    convert: Box<dyn FnMut(&str) -> Vec<u8> + Send>,
+    pending: Vec<u8>,
+    pos: usize,
+    done: bool,
+    first: bool,
+}
+
+impl SseStreamConverter {
+    fn new(
+        upstream: BufReader<Box<dyn Read + Send>>,
+        convert: Box<dyn FnMut(&str) -> Vec<u8> + Send>,
+    ) -> Self {
+        Self { upstream, convert, pending: Vec::new(), pos: 0, done: false, first: true }
+    }
+}
+
+impl Read for SseStreamConverter {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            // Return pending data first
+            if self.pos < self.pending.len() {
+                let n = (self.pending.len() - self.pos).min(buf.len());
+                buf[..n].copy_from_slice(&self.pending[self.pos..self.pos + n]);
+                self.pos += n;
+                return Ok(n);
+            }
+            if self.done {
+                return Ok(0);
+            }
+
+            // Read next line from upstream SSE
+            let mut line = String::new();
+            match self.upstream.read_line(&mut line) {
+                Ok(0) => {
+                    self.done = true;
+                    return Ok(0);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    self.done = true;
+                    return Err(e);
+                }
+            }
+
+            let trimmed = line.trim();
+            let converted = if trimmed.starts_with("data: ") {
+                (self.convert)(line.trim_end())
+            } else if trimmed.is_empty() {
+                // Empty line in SSE: separator between events, pass through
+                if self.first { self.first = false; return self.read(buf); }
+                b"\n".to_vec()
+            } else {
+                // Non-data lines (event: etc.), skip
+                continue;
+            };
+
+            if converted.is_empty() {
+                continue;
+            }
+
+            self.first = false;
+            self.pending = converted;
+            self.pos = 0;
+        }
+    }
+}
 
 pub struct ProxyState {
     pub port: u16,
@@ -51,37 +131,55 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
 
     thread::spawn(move || {
         for mut request in server.incoming_requests() {
-            // Catch panics from handle_request so a single malformed request
-            // doesn't kill the whole proxy thread.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let path = request.url().to_string();
                 let method = request.method().as_str().to_string();
                 handle_request(&path, &method, &mut request, &state)
             }));
-            let (status, body) = match result {
-                Ok(r) => r,
+            match result {
+                Ok(ProxyResponse::Sync(status, body)) => {
+                    let response = Response::from_string(&body)
+                        .with_status_code(status);
+                    // SSE: add text/event-stream content type
+                    if body.starts_with("data:") || body.starts_with("event:") {
+                        let stream_response = Response::from_string(&body)
+                            .with_status_code(200)
+                            .with_header(Header::from_bytes("Content-Type", "text/event-stream").unwrap());
+                        request.respond(stream_response).ok();
+                    } else {
+                        let response = response
+                            .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+                        request.respond(response).ok();
+                    }
+                }
+                Ok(ProxyResponse::Stream { reader }) => {
+                    // Streaming SSE response: tiny_http sends chunks as they become available
+                    let response = Response::new(
+                        StatusCode(200),
+                        vec![
+                            Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                            Header::from_bytes("Cache-Control", "no-cache").unwrap(),
+                            Header::from_bytes("Connection", "keep-alive").unwrap(),
+                        ],
+                        reader,
+                        None,
+                        None,
+                    );
+                    request.respond(response).ok();
+                }
                 Err(e) => {
                     let detail = e.downcast_ref::<String>()
                         .map(|s| s.as_str())
                         .or_else(|| e.downcast_ref::<&str>().copied())
                         .unwrap_or("");
                     rjlog!("[PROXY] PANIC in handler: {}", detail);
-                    (StatusCode(500), format!(r#"{{"error":"Internal proxy error: {}"}}"#, detail))
+                    let response = Response::from_string(
+                        &format!(r#"{{"error":"Internal proxy error: {}"}}"#, detail)
+                    )
+                    .with_status_code(StatusCode(500))
+                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
+                    request.respond(response).ok();
                 }
-            };
-
-            let response = Response::from_string(&body)
-                .with_status_code(status)
-                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
-
-            // SSE streaming: Chat Completions uses "data:" prefix, Responses API uses "event:" prefix
-            if body.starts_with("data:") || body.starts_with("event:") {
-                let stream_response = Response::from_string(&body)
-                    .with_status_code(200)
-                    .with_header(Header::from_bytes("Content-Type", "text/event-stream").unwrap());
-                request.respond(stream_response).ok();
-            } else {
-                request.respond(response).ok();
             }
         }
     });
@@ -138,13 +236,13 @@ fn find_model<'a>(
 
 fn handle_request(
     path: &str, method: &str, request: &mut tiny_http::Request, state: &Arc<Mutex<ProxyState>>,
-) -> (StatusCode, String) {
+) -> ProxyResponse {
     rjlog!("[PROXY] >>> {} {} (from {}:{})", method, path, request.remote_addr().map(|a| a.to_string()).unwrap_or_default(), request.remote_addr().map(|a| a.port()).unwrap_or(0));
     if method != "POST" {
         if path == "/v1/models" || path == "/v1beta/models" {
-            return (StatusCode(200), r#"{"object":"list","data":[]}"#.to_string());
+            return ProxyResponse::Sync(StatusCode(200), r#"{"object":"list","data":[]}"#.to_string());
         }
-        return (StatusCode(405), "Method not allowed".to_string());
+        return ProxyResponse::Sync(StatusCode(405), "Method not allowed".to_string());
     }
 
     let body = {
@@ -182,25 +280,29 @@ fn handle_request(
 
     // Anthropic Messages API → proxy (supports /anthropic/v1/messages prefix)
     if path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages") {
-        return proxy_anthropic_to_openai(&body, &models, preferred_ref);
+        let (s, b) = proxy_anthropic_to_openai(&body, &models, preferred_ref);
+        return ProxyResponse::Sync(s, b);
     }
 
     // OpenAI Chat Completions → proxy
     if path == "/v1/chat/completions" || path.ends_with("/v1/chat/completions") {
-        return proxy_openai_direct(&body, &models, preferred_ref);
+        let (s, b) = proxy_openai_direct(&body, &models, preferred_ref);
+        return ProxyResponse::Sync(s, b);
     }
 
     // OpenAI Responses API → Chat Completions (Codex uses /responses)
     if path == "/responses" || path == "/v1/responses" || path.ends_with("/v1/responses") {
-        return proxy_responses_to_openai(&body, &models, preferred_ref);
+        let (s, b) = proxy_responses_to_openai(&body, &models, preferred_ref);
+        return ProxyResponse::Sync(s, b);
     }
 
     // Gemini GenerateContent API → proxy
     if (path.contains("/v1/") || path.contains("/v1beta/")) && (path.contains(":generateContent") || path.contains("/models/")) {
-        return proxy_gemini_to_openai(&body, &models, &path, preferred_ref);
+        let (s, b) = proxy_gemini_to_openai(&body, &models, &path, preferred_ref);
+        return ProxyResponse::Sync(s, b);
     }
 
-    (StatusCode(404), "Not found".to_string())
+    ProxyResponse::Sync(StatusCode(404), "Not found".to_string())
 }
 
 fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> (StatusCode, String) {
@@ -1333,7 +1435,9 @@ fn convert_openai_to_gemini(openai_resp: &str) -> String {
 
     let mut parts: Vec<Value> = vec![];
     if !reasoning_content.is_empty() {
-        parts.push(serde_json::json!({"text": reasoning_content, "thought": true}));
+        // Strip newlines from reasoning content to keep Gemini thinking clean.
+        let reasoning_clean = reasoning_content.replace('\n', " ");
+        parts.push(serde_json::json!({"text": reasoning_clean, "thought": true}));
     }
     // Tool calls → functionCall parts
     if let Some(tool_calls) = choice["message"].get("tool_calls").and_then(|v| v.as_array()) {
@@ -1414,19 +1518,24 @@ fn convert_openai_sse_to_gemini_sse(openai_sse: &str) -> String {
                     }
                 }
 
-                // Reasoning — flush tools first, then emit thought
+                // Reasoning — flush tools first, then emit thought.
+                // Strip newlines: Gemini thinking content with line breaks can break the
+                // UI rendering and downstream ACP processing.
                 if let Some(reasoning) = delta["reasoning_content"].as_str() {
                     flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
-                    result.push_str(&format!("data: {}\n\n", serde_json::json!({
-                        "candidates": [{
-                            "content": {
-                                "parts": [{"text": reasoning, "thought": true}],
-                                "role": "model"
-                            },
-                            "finishReason": null,
-                            "safetyRatings": []
-                        }]
-                    })));
+                    let reasoning_clean = reasoning.replace('\n', " ");
+                    if !reasoning_clean.trim().is_empty() {
+                        result.push_str(&format!("data: {}\n\n", serde_json::json!({
+                            "candidates": [{
+                                "content": {
+                                    "parts": [{"text": reasoning_clean, "thought": true}],
+                                    "role": "model"
+                                },
+                                "finishReason": null,
+                                "safetyRatings": []
+                            }]
+                        })));
+                    }
                 }
 
                 // Regular text — flush tools first, then emit text
