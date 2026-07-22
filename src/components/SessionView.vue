@@ -12,7 +12,8 @@ import { saveConversationMessage, getConversationMessages } from "../api/search"
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import ChatMessages, { type Message } from "./ChatMessages.vue";
+import ChatMessages from "./ChatMessages.vue";
+import type { Message } from "../stores/useMessageStore";
 import AgentIcon from "./AgentIcon.vue";
 import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
 
@@ -27,6 +28,8 @@ interface AcpPayload {
   start_time?: number; duration_ms?: number;
   request_id?: string;
   title?: string;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 const store = useWorkspaceStore();
@@ -359,8 +362,15 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         if (state.thinkingStartTime === 0) {
           state.thinkingStartTime = Date.now();
         }
+        // If current message already has content or toolCalls, create a new message for this thinking
+        let l = lastAgentMsg(state.messages);
+        if (l && (l.content || (l.toolCalls && l.toolCalls.length > 0))) {
+          l = { role: "agent", content: "", startTime: Date.now(), isProcessing: true };
+          state.messages.push(l);
+        } else {
+          l = ensureAgentMsg(state);
+        }
         state.activeThinking += p.content; 
-        const l = ensureAgentMsg(state); 
         l.thinking = state.activeThinking; 
       }
       if (p.status==="done") {
@@ -400,57 +410,62 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "tool_call": {
-      const tc = ensureAgentMsg(state);
-      if (!tc.toolCalls) tc.toolCalls = [];
       const toolName = p.tool_name || "";
       const isRunning = p.status === "running";
 
       if (isRunning) {
-        // tool_call_update (running) — update existing entry, don't push a new one
+        // tool_call_update (running) — find the matching tool call in any message and update it
         let found = false;
-        for (let i = tc.toolCalls.length - 1; i >= 0; i--) {
-          const existing = tc.toolCalls[i];
-          if ((existing.status === "started" || existing.status === "running") && existing.toolName === toolName) {
-            // Update input if we got new info
-            if (p.input) existing.input = p.input;
-            if (p.title) existing.title = p.title;
-            existing.status = "running";
-            found = true;
-            break;
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+          const msg = state.messages[i];
+          if (msg.role !== "agent" || !msg.toolCalls) continue;
+          for (let j = msg.toolCalls.length - 1; j >= 0; j--) {
+            const existing = msg.toolCalls[j];
+            if ((existing.status === "started" || existing.status === "running") && existing.toolName === toolName) {
+              if (p.input) existing.input = p.input;
+              if (p.title) existing.title = p.title;
+              existing.status = "running";
+              found = true;
+              break;
+            }
           }
+          if (found) break;
         }
         if (!found) {
-          // Fallback: push as new
-          tc.toolCalls.push({
+          // Fallback: create new message for this tool call
+          const newMsg: Message = { role: "agent", content: "", startTime: Date.now(), isProcessing: true, toolCalls: [{
             toolName,
             input: p.input || "",
             status: "running",
             startTime: p.start_time,
             title: p.title,
-          });
+          }]};
+          state.messages.push(newMsg);
         }
       } else {
-        // tool_call (started) — push new entry
-        tc.toolCalls.push({
+        // tool_call (started) — create new message for this tool call to maintain order
+        const newMsg: Message = { role: "agent", content: "", startTime: Date.now(), isProcessing: true, toolCalls: [{
           toolName,
           input: p.input || "",
           status: p.status || "started",
           startTime: p.start_time,
           title: p.title,
-        });
+        }]};
+        state.messages.push(newMsg);
       }
       if (isActiveSession) { messages.value = [...state.messages]; }
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     }
     case "tool_result": {
-      const tr = ensureAgentMsg(state);
-      if (tr.toolCalls && tr.toolCalls.length > 0) {
-        // Find the last tool call with matching tool_name that's still started/running
-        const toolName = p.tool_name || "";
-        let found = false;
-        for (let i = tr.toolCalls.length - 1; i >= 0; i--) {
-          const tc = tr.toolCalls[i];
+      // Find the matching tool call in any message that's still started/running
+      const toolName = p.tool_name || "";
+      let found = false;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        const msg = state.messages[i];
+        if (msg.role !== "agent" || !msg.toolCalls) continue;
+        for (let j = msg.toolCalls.length - 1; j >= 0; j--) {
+          const tc = msg.toolCalls[j];
           if (tc.status === "started" || tc.status === "running") {
             if (!toolName || tc.toolName === toolName) {
               tc.output = p.output || "";
@@ -470,13 +485,20 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
             }
           }
         }
-        // Fallback: if no matching running tool, update the last one
-        if (!found) {
-          const last = tr.toolCalls[tr.toolCalls.length - 1];
-          last.output = p.output || "";
-          last.status = "completed";
-          if (p.duration_ms !== undefined) {
-            last.durationMs = p.duration_ms;
+        if (found) break;
+      }
+      // Fallback: if no matching running tool, update the last tool call in any message
+      if (!found) {
+        for (let i = state.messages.length - 1; i >= 0; i--) {
+          const msg = state.messages[i];
+          if (msg.role === "agent" && msg.toolCalls && msg.toolCalls.length > 0) {
+            const last = msg.toolCalls[msg.toolCalls.length - 1];
+            last.output = p.output || "";
+            last.status = "completed";
+            if (p.duration_ms !== undefined) {
+              last.durationMs = p.duration_ms;
+            }
+            break;
           }
         }
       }
@@ -520,8 +542,26 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
     case "finish":
       state.isProcessing = false;
       state.thinkingStartTime = 0;
-      const lm = ensureAgentMsg(state);
-      lm.isProcessing = false;
+      const endTime = Date.now();
+      // Set all agent messages to not processing and set endTime
+      for (const msg of state.messages) {
+        if (msg.role === "agent") {
+          msg.isProcessing = false;
+          if (!msg.endTime) msg.endTime = endTime;
+        }
+      }
+      // Remove empty agent messages (no content, no thinking, no toolCalls)
+      state.messages = state.messages.filter(msg => {
+        if (msg.role !== "agent") return true;
+        return msg.content || msg.thinking || (msg.toolCalls && msg.toolCalls.length > 0);
+      });
+      // Add tokens to the last agent message if it exists
+      const lm = lastAgentMsg(state.messages);
+      if (lm) {
+        if (p.input_tokens !== undefined) lm.inputTokens = p.input_tokens;
+        if (p.output_tokens !== undefined) lm.outputTokens = p.output_tokens;
+        if (!lm.endTime) lm.endTime = endTime;
+      }
       if (sessionId && state.activeContent) {
         saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
       }
@@ -678,7 +718,11 @@ async function handleSend() {
     // Restart backend if session is not running (stopped/error/unknown)
     const s = store.activeSession;
     try {
-      await apiStartSession(s.cli, s.cliDisplayName, s.directoryId || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value);
+      // Resolve actual directory path from directoryId (UUID) — not the ID itself
+      const dirPathForRestart = s.directoryId
+        ? store.directories.find(d => d.id === s.directoryId)?.path
+        : undefined;
+      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value);
       s.status = 'running';
       store.sessions = [...store.sessions];
     } catch (err) {

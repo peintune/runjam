@@ -65,13 +65,11 @@ struct UpdateWrapper {
     #[serde(default, rename = "_meta")]
     _meta: Option<Value>,
     #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    #[serde(rename = "inputTokens")]
     input_tokens: Option<u64>,
     #[serde(default)]
-    #[serde(rename = "outputTokens")]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// Helper: extract tool_name from UpdateWrapper (tries top-level, then _meta.claudeCode.toolName)
@@ -518,8 +516,34 @@ impl AcpClient {
             rjlog!("[ACP DEBUG] Started stdout reader");
             let reader = BufReader::new(stdout);
             let mut tool_times = tool_times_clone.lock().unwrap();
+            let mut current_event = String::new();
+            let mut current_data = String::new();
             for line in reader.lines().flatten() {
                 rjlog!("[ACP RAW] {}", line);
+                // Handle SSE format (event: xxx\ndata: yyy)
+                if line.starts_with("event: ") {
+                    current_event = line["event: ".len()..].trim().to_string();
+                    current_data.clear();
+                } else if line.starts_with("data: ") {
+                    current_data.push_str(&line["data: ".len()..]);
+                } else if line.is_empty() && !current_event.is_empty() {
+                    // End of SSE event
+                    if current_event == "response.completed" {
+                        if let Ok(data_val) = serde_json::from_str::<Value>(&current_data) {
+                            if let Some(usage) = data_val.get("response").and_then(|r| r.get("usage")) {
+                                let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                rjlog!("[ACP DEBUG] SSE response.completed: input_tokens={}, output_tokens={}", input_tokens, output_tokens);
+                                last_input_clone.store(input_tokens, Ordering::SeqCst);
+                                last_output_clone.store(output_tokens, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                    current_event.clear();
+                    current_data.clear();
+                    continue;
+                }
+                // Handle JSON format
                 if let Ok(val) = serde_json::from_str::<Value>(&line) {
                     if val.get("method").is_some() {
                         // Try to parse as permission request first
@@ -651,9 +675,15 @@ impl AcpClient {
                                     }
                                     "agent_message_end" => {
                                         rjlog!("[ACP DEBUG] Agent message end");
+                                        let input_t = last_input_clone.load(Ordering::SeqCst);
+                                        let output_t = last_output_clone.load(Ordering::SeqCst);
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string() }
+                                            AcpEvent::Finish { 
+                                                stop_reason: "end".to_string(),
+                                                input_tokens: Some(input_t as i64),
+                                                output_tokens: Some(output_t as i64),
+                                            }
                                         ));
                                     }
                                     "agent_thought_chunk" => {
@@ -697,9 +727,15 @@ impl AcpClient {
                                     }
                                     "message_end" => {
                                         rjlog!("[ACP DEBUG] Message end");
+                                        let input_t = last_input_clone.load(Ordering::SeqCst);
+                                        let output_t = last_output_clone.load(Ordering::SeqCst);
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string() }
+                                            AcpEvent::Finish { 
+                                                stop_reason: "end".to_string(),
+                                                input_tokens: Some(input_t as i64),
+                                                output_tokens: Some(output_t as i64),
+                                            }
                                         ));
                                     }
                                     "usage_update" => {
@@ -722,10 +758,10 @@ impl AcpClient {
                                             .filter(|m| !m.is_empty())
                                             .unwrap_or_else(|| model_clone.clone());
                                         rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, input_delta={}, output_delta={}, model={}", used, delta, record_input, record_output, usage_model);
-                                        if delta > 0 || record_input > 0 || record_output > 0 {
+                                        if delta > 0 || record_input > 0 || record_output > 0 || input_tokens > 0 || output_tokens > 0 {
                                             last_used_clone.store(used, Ordering::SeqCst);
-                                            if input_delta > 0 { last_input_clone.store(input_tokens, Ordering::SeqCst); }
-                                            if output_delta > 0 { last_output_clone.store(output_tokens, Ordering::SeqCst); }
+                                            last_input_clone.store(input_tokens, Ordering::SeqCst);
+                                            last_output_clone.store(output_tokens, Ordering::SeqCst);
                                             // Record to database via Tauri state
                                             if let Some(state) = app_clone2.try_state::<Mutex<Database>>() {
                                                 if let Ok(db) = state.lock() {
@@ -848,9 +884,15 @@ impl AcpClient {
                                 let stop_reason = result.get("stopReason")
                                     .and_then(|r| r.as_str())
                                     .unwrap_or("unknown");
+                                let input_t = last_input_clone.load(Ordering::SeqCst);
+                                let output_t = last_output_clone.load(Ordering::SeqCst);
                                 let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                     &session_id_clone, "0", "0",
-                                    AcpEvent::Finish { stop_reason: stop_reason.to_string() }
+                                    AcpEvent::Finish { 
+                                        stop_reason: stop_reason.to_string(),
+                                        input_tokens: Some(input_t as i64),
+                                        output_tokens: Some(output_t as i64),
+                                    }
                                 ));
                             }
                         }
@@ -866,9 +908,15 @@ impl AcpClient {
             }
             rjlog!("[ACP DEBUG] Stdout reader exited - process may have terminated");
             let event_name = format!("acp:{}", session_id_clone);
+            let input_t = last_input_clone.load(Ordering::SeqCst);
+            let output_t = last_output_clone.load(Ordering::SeqCst);
             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                 &session_id_clone, "0", "0",
-                AcpEvent::Finish { stop_reason: "process_exit".to_string() }
+                AcpEvent::Finish { 
+                    stop_reason: "process_exit".to_string(),
+                    input_tokens: Some(input_t as i64),
+                    output_tokens: Some(output_t as i64),
+                }
             ));
         });
 

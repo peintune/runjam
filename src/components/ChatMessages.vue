@@ -24,7 +24,7 @@ export interface ToolCall {
 }
 export interface PermissionPrompt {
   requestId: string;
-  prompt: string;
+  prompt?: string;
   options: InteractionOption[];
   sessionId: string;
 }
@@ -37,7 +37,10 @@ export interface Message {
   permission?: PermissionPrompt;
   isProcessing?: boolean;
   startTime?: number;
+  endTime?: number;
   toolCalls?: ToolCall[];
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 // ═══ Props ═══
@@ -69,17 +72,29 @@ const toolExpanded = ref<Set<string>>(new Set());
 const respondedPermissions = ref<Set<string>>(new Set());
 const respondedInteractions = ref<Set<string>>(new Set());
 
-// Auto-expand thinking if its message has no content yet (still thinking phase)
 function shouldAutoExpandThinking(msg: Message): boolean {
   return !msg.content && !!msg.thinking;
+}
+
+function shouldCollapseThinking(msg: Message, index: number): boolean {
+  if (!msg.thinking) return false;
+  if (msg.content) return true;
+  if (msg.toolCalls && msg.toolCalls.length > 0) return true;
+  const nextMsg = props.messages[index + 1];
+  if (nextMsg && nextMsg.role === "agent" && (nextMsg.content || (nextMsg.toolCalls && nextMsg.toolCalls.length > 0))) {
+    return true;
+  }
+  return false;
 }
 
 watch(
   () => props.messages,
   (msgs) => {
     for (let i = 0; i < msgs.length; i++) {
-      // Auto-expand thinking that hasn't reached content phase yet
-      if (shouldAutoExpandThinking(msgs[i])) {
+      const m = msgs[i];
+      if (shouldCollapseThinking(m, i) && thinkingExpanded.value.has(i)) {
+        thinkingExpanded.value.delete(i);
+      } else if (shouldAutoExpandThinking(m) && !thinkingExpanded.value.has(i)) {
         thinkingExpanded.value.add(i);
       }
     }
@@ -279,6 +294,57 @@ function formatDuration(ms: number): string {
   return Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
 
+function isCommandTool(toolName: string): boolean {
+  const cmdTools = ["bash", "execute_command", "run_command", "terminal", "shell", "cmd", "exec", "sh", "zsh", "command"];
+  return cmdTools.some(t => toolName.toLowerCase().includes(t));
+}
+
+function getToolTitleDisplay(tc: ToolCall): string {
+  const parts: string[] = [];
+  if (tc.toolName) parts.push(tc.toolName);
+  if (tc.title && tc.title !== tc.toolName) parts.push(tc.title);
+  if (isCommandTool(tc.toolName || "")) {
+    const cmd = extractBashCommand(tc.input || "");
+    if (cmd) parts.push(cmd);
+  }
+  if (parts.length === 0) parts.push("Tool");
+  return parts.join(" · ");
+}
+
+function getToolTitleFull(tc: ToolCall): string {
+  const parts: string[] = [];
+  if (tc.toolName) parts.push(tc.toolName);
+  if (tc.title && tc.title !== tc.toolName) parts.push(tc.title);
+  if (isCommandTool(tc.toolName || "")) {
+    const cmd = extractBashCommand(tc.input || "");
+    if (cmd) parts.push(cmd);
+  }
+  return parts.join(" · ");
+}
+
+function extractBashCommand(input: string): string {
+  if (!input || !input.trim()) return "";
+  
+  try {
+    const parsed = JSON.parse(input);
+    if (parsed.command && typeof parsed.command === "string") {
+      return parsed.command.trim();
+    }
+    if (parsed.args && Array.isArray(parsed.args)) {
+      return parsed.args.join(" ");
+    }
+    if (parsed.cwd && typeof parsed.cwd === "string") {
+      return `cd ${parsed.cwd}`;
+    }
+  } catch {
+  }
+  
+  if (input.length > 100) {
+    return input.trim().substring(0, 100) + "...";
+  }
+  return input.trim();
+}
+
 // ═══ Render content with safe streaming slice ═══
 function renderContent(idx: number, msg: Message): string {
   const fullContent = msg.content;
@@ -300,6 +366,20 @@ function isGroupActive(items: { msg: Message; oi: number }[]): boolean {
   return items.some(
     (it) => isTyping(it.oi, it.msg) || it.msg.isProcessing === true,
   );
+}
+
+function getGroupDuration(items: { msg: Message; oi: number }[]): string {
+  const startTimes = items.filter(it => it.msg.startTime).map(it => it.msg.startTime!);
+  if (startTimes.length === 0) return "";
+  const minStart = Math.min(...startTimes);
+  const maxEnd = Math.max(...items.map(it => it.msg.endTime || it.msg.startTime || Date.now()));
+  const duration = maxEnd - minStart;
+  if (duration < 1000) return "<1s";
+  const seconds = Math.floor(duration / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 }
 
 // ═══ Mermaid post-processing ═══
@@ -486,7 +566,7 @@ function truncateLabel(label: string, maxLen = 32): string {
           <AgentIcon v-if="agentId" :agent-id="agentId" :size="28" />
           <span v-else class="text-[13px] font-bold text-gray-400">A</span>
         </div>
-        <div class="msg-agent-bubble max-w-[85%] px-5 py-4">
+        <div class="msg-agent-bubble w-full max-w-[85%] px-5 py-4">
           <!-- Iterate each message in the group -->
           <template v-for="(item, ii) in group.items" :key="item.oi">
             <!-- Thinking -->
@@ -545,8 +625,8 @@ function truncateLabel(label: string, maxLen = 32): string {
                   />
                   <ChevronRight v-else :size="11" />
                   <Wrench :size="12" />
-                  <span class="text-gray-500 flex-1 min-w-0 truncate">{{
-  tc.title ? (tc.title + (tc.toolName && tc.title !== tc.toolName ? ' · ' + tc.toolName : '')) : (tc.toolName || "Tool")
+                  <span class="text-gray-500 flex-1 min-w-0 truncate" :title="getToolTitleFull(tc)">{{
+  getToolTitleDisplay(tc)
 }}</span>
                   <span
                     v-if="tc.status === 'started' || tc.status === 'running'"
@@ -715,16 +795,56 @@ function truncateLabel(label: string, maxLen = 32): string {
             />
           </template>
 
-          <!-- Typewriter cursor for group -->
-          <span
-            v-if="isGroupActive(group.items)"
-            class="animate-pulse text-gray-300 text-[15px]"
-            >▌</span
+          <!-- Token usage display -->
+          <div
+            v-if="
+              !isGroupActive(group.items) &&
+              group.items.some((it) => it.msg.inputTokens !== undefined || it.msg.outputTokens !== undefined)
+            "
+            class="flex items-center gap-3 mt-2 pt-2 border-t border-gray-100"
           >
+            <template v-for="(it, ix) in group.items" :key="'tokens-' + it.oi">
+              <span
+                v-if="it.msg.inputTokens !== undefined || it.msg.outputTokens !== undefined"
+                :class="ix > 0 ? 'ml-3' : ''"
+                class="text-[11px] text-gray-400"
+              >
+                <span v-if="it.msg.inputTokens !== undefined">Input: {{ it.msg.inputTokens.toLocaleString() }}</span>
+                <span v-if="it.msg.inputTokens !== undefined && it.msg.outputTokens !== undefined"> · </span>
+                <span v-if="it.msg.outputTokens !== undefined">Output: {{ it.msg.outputTokens.toLocaleString() }}</span>
+              </span>
+            </template>
+          </div>
+
+          <!-- Execution status indicator -->
+          <div
+            v-if="isGroupActive(group.items)"
+            class="flex items-center gap-2 mt-3"
+          >
+            <div class="flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-gray-900 animate-pulse"></span>
+              <span class="w-2 h-2 rounded-full bg-gray-900 animate-pulse" style="animation-delay: 0.2s"></span>
+              <span class="w-2 h-2 rounded-full bg-gray-900 animate-pulse" style="animation-delay: 0.4s"></span>
+            </div>
+            <span class="text-[12px] text-gray-400">
+              working {{ Math.floor((now - (group.items.find(it => it.msg.isProcessing)?.msg.startTime || now)) / 1000) }}s
+            </span>
+          </div>
+
+          <!-- Completed status indicator -->
+          <div
+            v-else-if="group.items.some(it => it.msg.startTime)"
+            class="flex items-center gap-2 mt-3"
+          >
+            <Check :size="12" class="text-green-500" />
+            <span class="text-[12px] text-gray-400">
+              in {{ getGroupDuration(group.items) }}
+            </span>
+          </div>
 
           <!-- Unknown / loading for empty group -->
           <div
-            v-if="
+            v-else-if="
               group.items.every(
                 (it) => !it.msg.content && !it.msg.thinking,
               )
@@ -738,26 +858,9 @@ function truncateLabel(label: string, maxLen = 32): string {
 
           <!-- ── Action bar (hover-visible) ── -->
           <div
-            v-if="group.items.some((it) => !!it.msg.content)"
+            v-if="group.items.some((it) => !!it.msg.content || (it.msg.toolCalls && it.msg.toolCalls.length > 0))"
             class="msg-action-bar"
           >
-            <!-- Status: show working timer if any msg is processing, else checkmark -->
-            <template
-              v-if="group.items.some((it) => it.msg.isProcessing)"
-            >
-              <span
-                v-for="(it, _ix) in group.items"
-                :key="'status-' + it.oi"
-                class="text-[12px] text-gray-400"
-              >
-                <template v-if="it.msg.isProcessing && it.msg.startTime">
-                  working {{ Math.floor((now - it.msg.startTime) / 1000) }}s
-                </template>
-              </span>
-            </template>
-            <span v-else class="flex items-center gap-1 text-green-500">
-              <Check :size="12" />
-            </span>
             <!-- Copy - copies last content in group -->
             <button
               @click="

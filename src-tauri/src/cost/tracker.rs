@@ -56,6 +56,14 @@ pub struct DirectoryCost {
     pub sessions: i64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SessionTokenUsage {
+    pub session_id: String,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_tokens: i64,
+}
+
 /// Record a token usage entry for a session.
 /// Called from the ACP client when usage_update events arrive.
 pub fn record_usage(

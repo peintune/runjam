@@ -35,7 +35,13 @@ pub enum AcpEvent {
         prompt: String,
         options: Vec<PermissionOption>,
     },
-    #[serde(rename = "finish")] Finish { stop_reason: String },
+    #[serde(rename = "finish")] Finish { 
+        stop_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<i64>,
+    },
     #[serde(rename = "error")] Error { message: String },
 }
 

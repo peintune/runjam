@@ -303,7 +303,9 @@ async function changeDays(d: number) {
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Session</th>
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Input</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Output</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Total</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Msgs</th>
               </tr>
             </thead>
@@ -320,6 +322,8 @@ async function changeDays(d: number) {
                   </div>
                 </td>
                 <td class="px-5 py-3 text-[12px] text-gray-600 font-mono max-w-[200px] truncate">{{ shortDir(s.directory) }}</td>
+                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(s.input_tokens) }}</td>
+                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(s.output_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-800 font-medium text-right tabular-nums">{{ fmtTokens(s.total_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ s.message_count }}</td>
               </tr>

@@ -2,12 +2,33 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 
 export interface InteractionOption { key: string; label: string; is_default: boolean; }
-export interface ToolCall { toolName: string; input: string; output?: string; status: string; }
+export interface ToolCall { 
+  toolName: string; 
+  input: string; 
+  output?: string; 
+  status: string;
+  title?: string;
+  startTime?: number;
+  durationMs?: number;
+}
+export interface PermissionRequest {
+  sessionId: string;
+  requestId: string;
+  options: InteractionOption[];
+  prompt?: string;
+}
+
 export interface Message {
   role: "user" | "agent"; content: string; thinking?: string;
   thoughtDuration?: string;
   interaction?: { prompt: string; options: InteractionOption[]; sessionId: string; };
   toolCalls?: ToolCall[];
+  isProcessing?: boolean;
+  startTime?: number;
+  endTime?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  permission?: PermissionRequest;
 }
 
 export const useMessageStore = defineStore("message", () => {
