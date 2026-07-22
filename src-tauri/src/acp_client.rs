@@ -356,7 +356,10 @@ impl AcpClient {
         rjlog!("[ACP DEBUG] Args: {:?}", args);
         rjlog!("[ACP DEBUG] Package dir: {}", package_dir);
 
-        let cwd = directory.unwrap_or(&package_dir);
+        // Default to user's home directory instead of the package dir so that
+        // tool calls (mkdir, write_file, etc.) use a sensible location.
+        let default_dir = std::env::var("HOME").unwrap_or_else(|_| package_dir.to_string());
+        let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
 
         let mut cmd = Command::new(cmd_path);
@@ -789,10 +792,11 @@ impl AcpClient {
                                         let tool_name = get_tool_name(&update.params.update);
                                         let input = get_tool_input(&update.params.update);
                                         let start_time = tool_times.get(&tool_name).copied();
+                                        let title = get_title(&update.params.update);
                                         rjlog!("[ACP DEBUG] Tool call end: {} start_time={:?}", tool_name, start_time);
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::ToolCall { tool_name, input, status: "completed".to_string(), start_time, title: None }
+                                            AcpEvent::ToolCall { tool_name, input, status: "completed".to_string(), start_time, title }
                                         ));
                                     }
                                     "tool_result" => {
@@ -802,10 +806,11 @@ impl AcpClient {
                                             let now = chrono::Utc::now().timestamp_millis() as u64;
                                             now.saturating_sub(start)
                                         });
+                                        let title = get_title(&update.params.update);
                                         rjlog!("[ACP DEBUG] Tool result: {} duration_ms={:?}", tool_name, duration_ms);
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::ToolResult { tool_name, output, duration_ms, title: None }
+                                            AcpEvent::ToolResult { tool_name, output, duration_ms, title }
                                         ));
                                     }
                                     _ => {

@@ -1,12 +1,16 @@
 //! Local HTTP proxy that translates between LLM API protocols.
 //! Enables using any model provider with any Agent CLI.
+//!
+//! All proxy handlers support both sync and streaming modes:
+//! - Sync: wait for full upstream response, convert, return.
+//! - Stream: read upstream SSE line by line, convert on the fly, stream back.
 
 use crate::models_config::{ModelConfig, ModelEntry};
 use crate::rjlog;
 use serde_json::Value;
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -59,17 +63,20 @@ impl Read for SseStreamConverter {
             let mut line = String::new();
             match self.upstream.read_line(&mut line) {
                 Ok(0) => {
+                    rjlog!("[PROXY STREAM] EOF from upstream reader");
                     self.done = true;
                     return Ok(0);
                 }
                 Ok(_) => {}
                 Err(e) => {
+                    rjlog!("[PROXY STREAM] Error reading upstream: {}", e);
                     self.done = true;
                     return Err(e);
                 }
             }
 
             let trimmed = line.trim();
+            rjlog!("[PROXY STREAM] Read line: {} ({} bytes)", &trimmed[..trimmed.len().min(80)], trimmed.len());
             let converted = if trimmed.starts_with("data: ") {
                 (self.convert)(line.trim_end())
             } else if trimmed.is_empty() {
@@ -82,12 +89,14 @@ impl Read for SseStreamConverter {
             };
 
             if converted.is_empty() {
+                rjlog!("[PROXY STREAM] Converted empty, skipping");
                 continue;
             }
 
             self.first = false;
             self.pending = converted;
             self.pos = 0;
+            rjlog!("[PROXY STREAM] Pending {} bytes for output", self.pending.len());
         }
     }
 }
@@ -153,6 +162,7 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                     }
                 }
                 Ok(ProxyResponse::Stream { reader }) => {
+                    rjlog!("[PROXY STREAM] Sending streaming SSE response to agent");
                     // Streaming SSE response: tiny_http sends chunks as they become available
                     let response = Response::new(
                         StatusCode(200),
@@ -280,33 +290,29 @@ fn handle_request(
 
     // Anthropic Messages API → proxy (supports /anthropic/v1/messages prefix)
     if path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages") {
-        let (s, b) = proxy_anthropic_to_openai(&body, &models, preferred_ref);
-        return ProxyResponse::Sync(s, b);
+        return proxy_anthropic_to_openai(&body, &models, preferred_ref);
     }
 
     // OpenAI Chat Completions → proxy
     if path == "/v1/chat/completions" || path.ends_with("/v1/chat/completions") {
-        let (s, b) = proxy_openai_direct(&body, &models, preferred_ref);
-        return ProxyResponse::Sync(s, b);
+        return proxy_openai_direct(&body, &models, preferred_ref);
     }
 
     // OpenAI Responses API → Chat Completions (Codex uses /responses)
     if path == "/responses" || path == "/v1/responses" || path.ends_with("/v1/responses") {
-        let (s, b) = proxy_responses_to_openai(&body, &models, preferred_ref);
-        return ProxyResponse::Sync(s, b);
+        return proxy_responses_to_openai(&body, &models, preferred_ref);
     }
 
     // Gemini GenerateContent API → proxy
     if (path.contains("/v1/") || path.contains("/v1beta/")) && (path.contains(":generateContent") || path.contains("/models/")) {
-        let (s, b) = proxy_gemini_to_openai(&body, &models, &path, preferred_ref);
-        return ProxyResponse::Sync(s, b);
+        return proxy_gemini_to_openai(&body, &models, &path, preferred_ref);
     }
 
     ProxyResponse::Sync(StatusCode(404), "Not found".to_string())
 }
 
-fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> (StatusCode, String) {
-    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return (StatusCode(400), format!("Invalid JSON: {}", e)) };
+fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
+    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return ProxyResponse::Sync(StatusCode(400), format!("Invalid JSON: {}", e)) };
 
     // Extract messages and model
     let model_name = req["model"].as_str().unwrap_or("claude-3-5-sonnet");
@@ -314,6 +320,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     let system = req["system"].as_str();
     let max_tokens = req["max_tokens"].as_u64().unwrap_or(4096);
     let stream = req["stream"].as_bool().unwrap_or(false);
+    rjlog!("[PROXY] Anthropic→OpenAI stream={}", stream);
 
     // Find matching model in our config
     let target = find_model(models, model_name, preferred_ids);
@@ -322,7 +329,8 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         (m.api_key.clone(), m.api_base.clone(), m.name.clone())
     } else {
         // No match — try to forward as-is to Anthropic
-        return forward_to_anthropic(body);
+        let (s, b) = forward_to_anthropic(body);
+        return ProxyResponse::Sync(s, b);
     };
 
     // Build OpenAI-format request
@@ -345,8 +353,6 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
             match role {
                 "user" => {
                     // User messages may contain text blocks and/or tool_result blocks.
-                    // In OpenAI format, text blocks stay as user messages; tool_result
-                    // blocks become separate "tool" role messages.
                     let mut text_parts: Vec<&str> = vec![];
                     for block in blocks {
                         match block["type"].as_str() {
@@ -377,7 +383,6 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 }
                 "assistant" => {
                     // Assistant messages may contain text and/or tool_use blocks.
-                    // In OpenAI format: content = concatenated text, tool_calls = array.
                     let mut text_parts: Vec<&str> = vec![];
                     let mut tool_calls: Vec<Value> = vec![];
                     for block in blocks {
@@ -407,7 +412,6 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                     openai_messages.push(msg);
                 }
                 _ => {
-                    // system or other roles — just extract text
                     let text = blocks.iter()
                         .filter_map(|b| if b["type"].as_str() == Some("text") { b["text"].as_str() } else { None })
                         .collect::<Vec<_>>().join("");
@@ -467,21 +471,19 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     match resp {
         Ok(response) => {
-            let status = response.status();
-            let resp_body = response.into_string().unwrap_or_default();
-            rjlog!("[PROXY] Anthropic→OpenAI: upstream response status={} body_len={}", status, resp_body.len());
-            rjlog!("[PROXY] Anthropic→OpenAI: upstream body first 300: {}", &resp_body[..resp_body.len().min(300)]);
             if stream {
-                // Convert OpenAI SSE → Anthropic SSE
-                let converted = convert_openai_sse_to_claude_sse(&resp_body, model_name);
-                rjlog!("[PROXY] Anthropic→OpenAI: converted SSE output {} chars, first 500: {}",
-                    converted.len(), &converted[..converted.len().min(500)]);
-                (StatusCode(200), converted)
+                let reader = response.into_reader();
+                let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
+                let converter = SseStreamConverter::new(
+                    buf_reader,
+                    Box::new(make_anthropic_sse_converter(model_name.to_string())),
+                );
+                rjlog!("[PROXY] Anthropic→OpenAI: returning streaming response");
+                ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
-                // Convert OpenAI response → Anthropic format
+                let resp_body = response.into_string().unwrap_or_default();
                 let converted = convert_openai_to_anthropic(&resp_body, model_name);
-                rjlog!("[PROXY] Anthropic→OpenAI: converted non-stream output {} chars", converted.len());
-                (StatusCode(200), converted)
+                ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
         Err(ureq::Error::Status(st, r)) => {
@@ -491,7 +493,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 "type": "error",
                 "error": {"type": "api_error", "message": format!("Upstream {}: {}", st, &body[..body.len().min(200)])}
             });
-            (StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
         Err(e) => {
             rjlog!("[PROXY] Anthropic→OpenAI: connection error: {:?}", e);
@@ -499,7 +501,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 "type": "error",
                 "error": {"type": "api_error", "message": format!("Proxy error: {}", e)}
             });
-            (StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
     }
 }
@@ -541,10 +543,12 @@ fn convert_tool_choice_anthropic_to_openai(tc: &Value) -> Value {
     tc.clone()
 }
 
-fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option<&[String]>) -> (StatusCode, String) {
+fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
     // For OpenAI requests, forward directly to the target
-    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return (StatusCode(400), "Invalid JSON".into()) };
+    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return ProxyResponse::Sync(StatusCode(400), "Invalid JSON".into()) };
     let model_name = req["model"].as_str().unwrap_or("gpt-4o");
+    let stream = req["stream"].as_bool().unwrap_or(false);
+    rjlog!("[PROXY] OpenAI direct stream={}", stream);
 
     // Find matching model config
     let models = ModelConfig::load().models;
@@ -557,21 +561,42 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
             .set("Content-Type", "application/json")
             .send_string(body);
         match resp {
-            Ok(r) => (StatusCode(200), r.into_string().unwrap_or_default()),
-            Err(e) => (StatusCode(502), format!("Proxy error: {}", e)),
+            Ok(r) => {
+                if stream {
+                    // Pass through the upstream SSE stream as-is (no format conversion needed)
+                    let reader = r.into_reader();
+                    let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
+                    let converter = SseStreamConverter::new(
+                        buf_reader,
+                        Box::new(|line: &str| -> Vec<u8> {
+                            // Pass through each SSE line as-is
+                            let mut buf = line.as_bytes().to_vec();
+                            buf.push(b'\n');
+                            buf.push(b'\n');
+                            buf
+                        }),
+                    );
+                    rjlog!("[PROXY] OpenAI direct: returning streaming response");
+                    ProxyResponse::Stream { reader: Box::new(converter) }
+                } else {
+                    ProxyResponse::Sync(StatusCode(200), r.into_string().unwrap_or_default())
+                }
+            }
+            Err(e) => ProxyResponse::Sync(StatusCode(502), format!("Proxy error: {}", e)),
         }
     } else {
-        (StatusCode(404), format!("Model {} not configured", model_name))
+        ProxyResponse::Sync(StatusCode(404), format!("Model {} not configured", model_name))
     }
 }
 
 /// Translate OpenAI Responses API → OpenAI Chat Completions.
 /// Codex uses the Responses API (/responses), but most providers (DeepSeek, etc.)
 /// only support Chat Completions (/v1/chat/completions).
-fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> (StatusCode, String) {
-    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return (StatusCode(400), "Invalid JSON".into()) };
+fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
+    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return ProxyResponse::Sync(StatusCode(400), "Invalid JSON".into()) };
     let model_name = req["model"].as_str().unwrap_or("");
     let stream = req["stream"].as_bool().unwrap_or(false);
+    rjlog!("[PROXY] Responses→Chat stream={}", stream);
 
     // Convert Responses API `input` → Chat Completions `messages`
     let messages = if let Some(input) = req.get("input") {
@@ -640,7 +665,7 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     };
 
     if model_name.is_empty() || messages.is_empty() {
-        return (StatusCode(400), r#"{"error":"Missing model or input"}"#.into());
+        return ProxyResponse::Sync(StatusCode(400), r#"{"error":"Missing model or input"}"#.into());
     }
 
     // Find matching model in config
@@ -655,7 +680,7 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         rjlog!("[PROXY] Responses→Chat: Model '{}' NOT FOUND in {} models. Available: {:?}",
             model_name, models.len(),
             models.iter().map(|m| format!("{}({})", m.name, m.id)).collect::<Vec<_>>());
-        return (StatusCode(404), format!(r#"{{"error":"Model {} not configured"}}"#, model_name));
+        return ProxyResponse::Sync(StatusCode(404), format!(r#"{{"error":"Model {} not configured"}}"#, model_name));
     };
 
     // Build Chat Completions request (convert Responses API tool format to Chat format)
@@ -665,9 +690,6 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         "stream": stream,
     });
     if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
-        // Responses API tools: {type: "function", name, description, parameters}
-        //                          OR {type: "namespace", namespace: ...} etc.
-        // Chat Completions tools: only {type: "function", function: {name, description, parameters}}
         let chat_tools: Vec<Value> = tools.iter()
             .filter(|t| t["type"].as_str() == Some("function"))
             .map(|t| {
@@ -707,41 +729,38 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         Ok(r) => {
             let status = r.status();
             rjlog!("[PROXY] Upstream response status: {} (stream={})", status, stream);
-            match r.into_string() {
-                Ok(resp_body) => {
-                    rjlog!("[PROXY] Upstream response body: {} chars. First 300 chars: {}",
-                        resp_body.len(), &resp_body[..resp_body.len().min(300)]);
-                    if status >= 400 {
-                        rjlog!("[PROXY] Upstream error ({} chars): {}", resp_body.len(), &resp_body[..resp_body.len().min(1000)]);
-                        return (StatusCode(status), resp_body);
-                    }
-                    // Convert Chat Completions → Responses API format
-                    if stream {
-                        rjlog!("[PROXY] Converting SSE stream ({} chars) to Responses format", resp_body.len());
-                        let converted = convert_chat_sse_to_responses_sse(&resp_body, &real_model);
-                        rjlog!("[PROXY] Converted SSE output: {} chars. First 500 chars: {}", converted.len(), &converted[..converted.len().min(500)]);
-                        (StatusCode(200), converted)
-                    } else {
-                        rjlog!("[PROXY] Converting non-stream response to Responses format");
+            if stream {
+                let reader = r.into_reader();
+                let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
+                let converter = SseStreamConverter::new(
+                    buf_reader,
+                    Box::new(make_responses_sse_converter(real_model)),
+                );
+                rjlog!("[PROXY] Responses→Chat: returning streaming response");
+                ProxyResponse::Stream { reader: Box::new(converter) }
+            } else {
+                match r.into_string() {
+                    Ok(resp_body) => {
+                        if status >= 400 {
+                            return ProxyResponse::Sync(StatusCode(status), resp_body);
+                        }
                         let converted = convert_chat_to_responses(&resp_body, &real_model, false);
-                        rjlog!("[PROXY] Converted non-stream output: {} chars", converted.len());
-                        (StatusCode(200), converted)
+                        ProxyResponse::Sync(StatusCode(200), converted)
                     }
-                }
-                Err(e) => {
-                    rjlog!("[PROXY] Failed to read response body: {}", e);
-                    (StatusCode(502), format!(r#"{{"error":"Failed to read response: {}"}}"#, e))
+                    Err(e) => {
+                        ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Failed to read response: {}"}}"#, e))
+                    }
                 }
             }
         }
         Err(ureq::Error::Status(status, r)) => {
             let body = r.into_string().unwrap_or_default();
             rjlog!("[PROXY] Upstream HTTP {}: {}", status, &body[..body.len().min(1000)]);
-            (StatusCode(502), format!(r#"{{"error":"Upstream {}: {}"}}"#, status, body))
+            ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Upstream {}: {}"}}"#, status, body))
         }
         Err(e) => {
             rjlog!("[PROXY] Connection error: {:?}", e);
-            (StatusCode(502), format!(r#"{{"error":"Proxy error: {}"}}"#, e))
+            ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Proxy error: {}"}}"#, e))
         }
     }
 }
@@ -814,6 +833,214 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
             "total_tokens": total_tokens,
         }
     }).to_string()
+}
+
+/// Returns a closure that converts OpenAI Chat Completions SSE lines
+/// → OpenAI Responses API SSE format, line by line (for streaming).
+///
+/// Codex expects the full Responses streaming event chain:
+///   response.created
+///   response.output_item.added  ← activates the output item
+///   response.content_part.added ← activates the text part
+///   response.output_text.delta  ← actual token deltas (0..N)
+///   response.reasoning_text.delta ← thinking deltas
+///   response.function_call_arguments.delta ← tool call args
+///   response.content_part.done
+///   response.output_item.done
+///   response.completed
+fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
+    use std::collections::HashMap;
+    let response_id = format!("resp_{}", chrono::Utc::now().timestamp_millis());
+    let reasoning_id = format!("rs_{}", chrono::Utc::now().timestamp_millis());
+    let item_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
+    let part_id = format!("part_{}", chrono::Utc::now().timestamp_millis());
+    let mut started = false;
+    let mut reasoning_started = false;
+    let mut reasoning_done = false;
+    let mut msg_started = false;
+    let mut full_reasoning = String::new();
+    let mut full_text = String::new();
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut total_tokens: u64 = 0;
+    let mut tool_items: HashMap<usize, (String, String, String, String)> = HashMap::new();
+    let mut tool_output_indices: HashMap<usize, usize> = HashMap::new();
+
+    move |line: &str| -> Vec<u8> {
+        let mut result = Vec::new();
+
+        let data = match line.strip_prefix("data: ") {
+            Some(d) => d,
+            None => return result,
+        };
+
+        // Helper: close reasoning item inline
+        let mut close_reasoning = |result: &mut Vec<u8>,
+                                   started: &mut bool,
+                                   done: &mut bool,
+                                   reasoning_id: &str,
+                                   full_reasoning: &str|
+        {
+            if *started && !*done {
+                *done = true;
+                let _ = write!(result, "event: response.reasoning_text.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.reasoning_text.done", "item_id": reasoning_id, "output_index": 0, "content_index": 0, "text": full_reasoning
+                }));
+                let _ = write!(result, "event: response.output_item.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.output_item.done", "output_index": 0, "item": {
+                        "id": reasoning_id, "object": "realtime.item", "type": "reasoning", "status": "completed",
+                        "role": "assistant", "summary": [{"type": "summary_text", "text": full_reasoning}]
+                    }
+                }));
+            }
+        };
+
+        if data == "[DONE]" {
+            close_reasoning(&mut result, &mut reasoning_started, &mut reasoning_done, &reasoning_id, &full_reasoning);
+
+            for (_, (fc_id, _, _, args)) in tool_items.drain() {
+                let oi = 1;
+                let _ = write!(result, "event: response.function_call_arguments.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.function_call_arguments.done", "output_index": oi, "item_id": fc_id
+                }));
+                let _ = write!(result, "event: response.output_item.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.output_item.done", "output_index": oi, "item": {
+                        "id": fc_id, "object": "realtime.item", "type": "function_call", "status": "completed",
+                        "call_id": "", "name": "", "arguments": args
+                    }
+                }));
+            }
+
+            let msg_idx = if reasoning_done { 1 } else { 0 };
+            if msg_started {
+                let _ = write!(result, "event: response.content_part.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.content_part.done", "output_index": msg_idx, "content_index": 0, "item_id": item_id,
+                    "part": {"id": part_id, "object": "realtime.item", "type": "output_text", "text": full_text}
+                }));
+                let _ = write!(result, "event: response.output_item.done\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.output_item.done", "output_index": msg_idx, "item": {
+                        "id": item_id, "object": "realtime.item", "type": "message", "status": "completed",
+                        "role": "assistant", "content": [{"type": "output_text", "text": full_text}]
+                    }
+                }));
+            }
+
+            let mut output_items: Vec<Value> = vec![];
+            if reasoning_done {
+                output_items.push(serde_json::json!({"type":"reasoning","id":reasoning_id,"status":"completed","role":"assistant","summary":[{"type":"summary_text","text":full_reasoning}]}));
+            }
+            if msg_started || !full_text.is_empty() {
+                output_items.push(serde_json::json!({"type":"message","id":item_id,"status":"completed","role":"assistant","content":[{"type":"output_text","text":full_text}]}));
+            }
+            let _ = write!(result, "event: response.completed\ndata: {}\n\n", serde_json::json!({
+                "type": "response.completed", "response": {
+                    "id": response_id, "object": "response", "model": model, "status": "completed",
+                    "output": output_items,
+                    "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total_tokens}
+                }
+            }));
+            return result;
+        }
+
+        if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            if !started {
+                started = true;
+                let _ = write!(result, "event: response.created\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.created", "response": {
+                        "id": response_id, "object": "response", "model": model, "status": "in_progress", "output": []
+                    }
+                }));
+            }
+
+            let choice = &chunk["choices"][0];
+
+            // --- Reasoning / thinking ---
+            if let Some(reasoning) = choice["delta"]["reasoning_content"].as_str() {
+                if !reasoning_done && !msg_started {
+                    if !reasoning_started {
+                        reasoning_started = true;
+                        let _ = write!(result, "event: response.output_item.added\ndata: {}\n\n", serde_json::json!({
+                            "type": "response.output_item.added", "output_index": 0, "item": {
+                                "id": reasoning_id, "object": "realtime.item", "type": "reasoning",
+                                "status": "in_progress", "role": "assistant", "summary": []
+                            }
+                        }));
+                    }
+                    full_reasoning.push_str(reasoning);
+                    let _ = write!(result, "event: response.reasoning_text.delta\ndata: {}\n\n", serde_json::json!({
+                        "type": "response.reasoning_text.delta", "item_id": reasoning_id, "output_index": 0, "content_index": 0, "delta": reasoning
+                    }));
+                }
+            }
+
+            // --- Tool calls → function_call output items ---
+            if let Some(tool_calls) = choice["delta"]["tool_calls"].as_array() {
+                close_reasoning(&mut result, &mut reasoning_started, &mut reasoning_done, &reasoning_id, &full_reasoning);
+
+                let base_oi = if reasoning_done { 1usize } else { 0usize };
+                for tc in tool_calls {
+                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                    let oi = base_oi + idx;
+
+                    if let Some(id) = tc["id"].as_str() {
+                        if !tool_items.contains_key(&idx) {
+                            let fc_id = format!("fc_{}_{}", chrono::Utc::now().timestamp_millis(), idx);
+                            let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                            tool_items.insert(idx, (fc_id.clone(), id.to_string(), name.clone(), String::new()));
+                            tool_output_indices.insert(idx, oi);
+                            let _ = write!(result, "event: response.output_item.added\ndata: {}\n\n", serde_json::json!({
+                                "type": "response.output_item.added", "output_index": oi, "item": {
+                                    "id": fc_id, "object": "realtime.item", "type": "function_call",
+                                    "status": "in_progress", "call_id": id, "name": name, "arguments": ""
+                                }
+                            }));
+                        }
+                    }
+
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        if let Some(entry) = tool_items.get_mut(&idx) {
+                            entry.3.push_str(args);
+                        }
+                        let _ = write!(result, "event: response.function_call_arguments.delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "response.function_call_arguments.delta", "output_index": tool_output_indices.get(&idx).copied().unwrap_or(0), "call_id": "", "delta": args
+                        }));
+                    }
+                }
+            }
+
+            // --- Actual content ---
+            if let Some(delta_content) = choice["delta"]["content"].as_str() {
+                close_reasoning(&mut result, &mut reasoning_started, &mut reasoning_done, &reasoning_id, &full_reasoning);
+
+                if !msg_started {
+                    msg_started = true;
+                    let msg_idx = if reasoning_done { 1 } else { 0 };
+                    let _ = write!(result, "event: response.output_item.added\ndata: {}\n\n", serde_json::json!({
+                        "type": "response.output_item.added", "output_index": msg_idx, "item": {
+                            "id": item_id, "object": "realtime.item", "type": "message", "status": "in_progress", "role": "assistant", "content": []
+                        }
+                    }));
+                    let _ = write!(result, "event: response.content_part.added\ndata: {}\n\n", serde_json::json!({
+                        "type": "response.content_part.added", "output_index": msg_idx, "content_index": 0, "item_id": item_id,
+                        "part": {"id": part_id, "object": "realtime.item", "type": "output_text", "text": ""}
+                    }));
+                }
+                full_text.push_str(delta_content);
+                let msg_idx = if reasoning_done { 1 } else { 0 };
+                let _ = write!(result, "event: response.output_text.delta\ndata: {}\n\n", serde_json::json!({
+                    "type": "response.output_text.delta", "item_id": item_id, "output_index": msg_idx, "content_index": 0, "delta": delta_content
+                }));
+            }
+
+            if let Some(usage) = chunk.get("usage") {
+                input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
+                total_tokens = usage["total_tokens"].as_u64().unwrap_or(total_tokens);
+            }
+        }
+
+        result
+    }
 }
 
 /// Convert OpenAI Chat Completions SSE stream → Responses API SSE stream.
@@ -1082,6 +1309,167 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str) -> String {
     }).to_string()
 }
 
+/// Returns a closure that converts OpenAI Chat Completions SSE lines
+/// → Anthropic Messages API SSE format, line by line (for streaming).
+fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u8> {
+    use std::collections::HashMap;
+    let msg_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
+    let mut started = false;
+    let mut next_block_idx: u32 = 0;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut finish_reason = String::new();
+    let mut thinking_block: Option<u32> = None;
+    let mut text_block: Option<u32> = None;
+    let mut tool_blocks: HashMap<usize, (u32, bool, String)> = HashMap::new();
+
+    let mut close_thinking = |result: &mut Vec<u8>, tb: &mut Option<u32>| {
+        if let Some(bi) = tb.take() {
+            let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                "type": "content_block_stop", "index": bi
+            }));
+        }
+    };
+    let mut close_text = |result: &mut Vec<u8>, tb: &mut Option<u32>| {
+        if let Some(bi) = tb.take() {
+            let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                "type": "content_block_stop", "index": bi
+            }));
+        }
+    };
+    let mut close_tools = |result: &mut Vec<u8>, tbs: &mut HashMap<usize, (u32, bool, String)>| {
+        for (_, (bi, started, _)) in tbs.iter() {
+            if *started {
+                let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                    "type": "content_block_stop", "index": bi
+                }));
+            }
+        }
+        tbs.clear();
+    };
+
+    move |line: &str| -> Vec<u8> {
+        let mut result = Vec::new();
+
+        let data = match line.strip_prefix("data: ") {
+            Some(d) => d,
+            None => return result,
+        };
+
+        if data == "[DONE]" {
+            close_thinking(&mut result, &mut thinking_block);
+            close_tools(&mut result, &mut tool_blocks);
+            close_text(&mut result, &mut text_block);
+
+            if started {
+                let stop_reason = if finish_reason == "tool_calls" { "tool_use" } else { "end_turn" };
+                let _ = write!(result, "event: message_delta\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": null},
+                    "usage": {"output_tokens": output_tokens}
+                }));
+                let _ = write!(result, "event: message_stop\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_stop"
+                }));
+            }
+            return result;
+        }
+
+        if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            if !started {
+                started = true;
+                let _ = write!(result, "event: message_start\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_start",
+                    "message": {"id": msg_id, "type": "message", "role": "assistant", "content": [], "model": model_name, "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}
+                }));
+            }
+
+            let delta = &chunk["choices"][0]["delta"];
+
+            // ---- Thinking / reasoning ----
+            if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                if text_block.is_none() && tool_blocks.is_empty() {
+                    if thinking_block.is_none() {
+                        let bi = next_block_idx; next_block_idx += 1;
+                        thinking_block = Some(bi);
+                        let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_start", "index": bi,
+                            "content_block": {"type": "thinking", "thinking": ""}
+                        }));
+                    }
+                    let bi = thinking_block.unwrap();
+                    let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                        "type": "content_block_delta", "index": bi,
+                        "delta": {"type": "thinking_delta", "thinking": reasoning}
+                    }));
+                }
+            }
+
+            // ---- Tool calls → tool_use content blocks ----
+            if let Some(tool_calls) = delta["tool_calls"].as_array() {
+                close_thinking(&mut result, &mut thinking_block);
+                close_text(&mut result, &mut text_block);
+
+                for tc in tool_calls {
+                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                    let entry = tool_blocks.entry(idx).or_insert((0, false, String::new()));
+
+                    if let Some(id) = tc["id"].as_str() {
+                        if !entry.1 {
+                            entry.1 = true;
+                            let name = tc["function"]["name"].as_str().unwrap_or("");
+                            entry.2 = name.to_string();
+                            let bi = next_block_idx; next_block_idx += 1;
+                            entry.0 = bi;
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
+                            }));
+                        }
+                    }
+
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_delta", "index": entry.0,
+                            "delta": {"type": "input_json_delta", "partial_json": args}
+                        }));
+                    }
+                }
+            }
+
+            // ---- Text content ----
+            if let Some(content) = delta["content"].as_str() {
+                close_thinking(&mut result, &mut thinking_block);
+                close_tools(&mut result, &mut tool_blocks);
+
+                if text_block.is_none() {
+                    let bi = next_block_idx; next_block_idx += 1;
+                    text_block = Some(bi);
+                    let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                        "type": "content_block_start", "index": bi,
+                        "content_block": {"type": "text", "text": ""}
+                    }));
+                }
+                let bi = text_block.unwrap();
+                let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                    "type": "content_block_delta", "index": bi,
+                    "delta": {"type": "text_delta", "text": content}
+                }));
+            }
+
+            if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                finish_reason = fr.to_string();
+            }
+            if let Some(usage) = chunk.get("usage") {
+                input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
+            }
+        }
+
+        result
+    }
+}
+
 fn convert_openai_sse_to_claude_sse(openai_sse: &str, model_name: &str) -> String {
     use std::collections::HashMap;
 
@@ -1248,8 +1636,8 @@ fn convert_openai_sse_to_claude_sse(openai_sse: &str, model_name: &str) -> Strin
     result
 }
 
-fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferred_ids: Option<&[String]>) -> (StatusCode, String) {
-    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return (StatusCode(400), format!("Invalid JSON: {}", e)) };
+fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferred_ids: Option<&[String]>) -> ProxyResponse {
+    let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return ProxyResponse::Sync(StatusCode(400), format!("Invalid JSON: {}", e)) };
 
     let model_name = extract_model_from_path(path).unwrap_or("gemini-1.5-pro");
 
@@ -1260,14 +1648,15 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
     let is_stream_generate = path.contains(":streamGenerateContent");
     if is_count_tokens {
         // Return a dummy count — Gemini only needs a plausible number
-        return (StatusCode(200), serde_json::json!({"totalTokens": 0}).to_string());
+        return ProxyResponse::Sync(StatusCode(200), serde_json::json!({"totalTokens": 0}).to_string());
     }
     // streamGenerateContent is always streaming; generateContent may or may not be
     let stream = is_stream_generate || req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    rjlog!("[PROXY] Gemini streaming decision: path_stream={}, req_stream={}, stream={}", is_stream_generate, req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false), stream);
 
     // Use safe .get() — Gemini may also send list models / other requests
     let Some(contents) = req.get("contents") else {
-        return (StatusCode(200), "{}".to_string());
+        return ProxyResponse::Sync(StatusCode(200), "{}".to_string());
     };
     
     let max_output_tokens = if let Some(config) = req.get("generationConfig").and_then(|v| v.as_object()) {
@@ -1281,7 +1670,8 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
     let (api_key, base_url, real_model) = if let Some(m) = target {
         (m.api_key.clone(), m.api_base.clone(), m.name.clone())
     } else {
-        return forward_to_gemini(body, path);
+        let (s, b) = forward_to_gemini(body, path);
+        return ProxyResponse::Sync(s, b);
     };
 
     let mut openai_messages: Vec<Value> = vec![];
@@ -1374,20 +1764,26 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
 
     match resp {
         Ok(response) => {
-            let resp_body = response.into_string().unwrap_or_default();
             if stream {
-                let converted = convert_openai_sse_to_gemini_sse(&resp_body);
-                (StatusCode(200), converted)
+                let reader = response.into_reader();
+                let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
+                let converter = SseStreamConverter::new(
+                    buf_reader,
+                    Box::new(make_gemini_sse_converter()),
+                );
+                rjlog!("[PROXY] Gemini: returning streaming response");
+                ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
+                let resp_body = response.into_string().unwrap_or_default();
                 let converted = convert_openai_to_gemini(&resp_body);
-                (StatusCode(200), converted)
+                ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
         Err(e) => {
             let err_body = serde_json::json!({
                 "error": {"code": 502, "message": format!("Proxy error: {}", e)}
             });
-            (StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
     }
 }
@@ -1467,6 +1863,103 @@ fn convert_openai_to_gemini(openai_resp: &str) -> String {
             "totalTokenCount": resp["usage"]["total_tokens"].as_u64().unwrap_or(0),
         }
     }).to_string()
+}
+
+/// Returns a closure that converts OpenAI Chat Completions SSE lines
+/// → Gemini SSE format, line by line (for streaming).
+fn make_gemini_sse_converter() -> impl FnMut(&str) -> Vec<u8> {
+    use std::collections::HashMap;
+    let mut pending_tools: HashMap<usize, (String, String)> = HashMap::new();
+    let mut has_pending_tools = false;
+
+    let flush_tools = |result: &mut Vec<u8>, pending: &mut HashMap<usize, (String, String)>, has: &mut bool| {
+        if !*has { return; }
+        for (_, (name, args_str)) in pending.drain() {
+            let args: Value = serde_json::from_str(&args_str).unwrap_or(Value::Null);
+            let event = serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"functionCall": {"name": name, "args": args}}],
+                        "role": "model"
+                    },
+                    "finishReason": null,
+                    "safetyRatings": []
+                }]
+            });
+            let _ = write!(result, "data: {}\n\n", event);
+        }
+        *has = false;
+    };
+
+    move |line: &str| -> Vec<u8> {
+        let mut result = Vec::new();
+
+        let data = match line.strip_prefix("data: ") {
+            Some(d) => d,
+            None => return result,
+        };
+
+        if data == "[DONE]" {
+            flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+            result.extend_from_slice(b"data: {\"done\":true}\n\n");
+            return result;
+        }
+
+        if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            let delta = &chunk["choices"][0]["delta"];
+
+            // Tool calls — accumulate for later emission
+            if let Some(tcs) = delta["tool_calls"].as_array() {
+                has_pending_tools = true;
+                for tc in tcs {
+                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                    let entry = pending_tools.entry(idx).or_insert_with(|| {
+                        (tc["function"]["name"].as_str().unwrap_or("").to_string(), String::new())
+                    });
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        entry.1.push_str(args);
+                    }
+                }
+            }
+
+            // Reasoning — flush tools first, then emit thought
+            if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+                let reasoning_clean = reasoning.replace('\n', " ");
+                if !reasoning_clean.trim().is_empty() {
+                    let event = serde_json::json!({
+                        "candidates": [{
+                            "content": {
+                                "parts": [{"text": reasoning_clean, "thought": true}],
+                                "role": "model"
+                            },
+                            "finishReason": null,
+                            "safetyRatings": []
+                        }]
+                    });
+                    let _ = write!(result, "data: {}\n\n", event);
+                }
+            }
+
+            // Regular text — flush tools first, then emit text
+            if let Some(content) = delta["content"].as_str() {
+                flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+                let event = serde_json::json!({
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": content}],
+                            "role": "model"
+                        },
+                        "finishReason": null,
+                        "safetyRatings": []
+                    }]
+                });
+                let _ = write!(result, "data: {}\n\n", event);
+            }
+        }
+
+        result
+    }
 }
 
 fn convert_openai_sse_to_gemini_sse(openai_sse: &str) -> String {

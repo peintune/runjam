@@ -454,7 +454,13 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
           if (tc.status === "started" || tc.status === "running") {
             if (!toolName || tc.toolName === toolName) {
               tc.output = p.output || "";
-              tc.status = "completed";
+              // Detect tool failure: check output for known error indicators
+              const output = (p.output || "").toLowerCase();
+              const isFailed = (
+                (output.includes("error:") || output.includes("failed:")) &&
+                !output.includes("completed with no output")
+              );
+              tc.status = isFailed ? "failed" : "completed";
               if (p.duration_ms !== undefined) {
                 tc.durationMs = p.duration_ms;
               }

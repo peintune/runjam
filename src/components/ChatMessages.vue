@@ -2,11 +2,12 @@
 import { ref, watch, nextTick, onBeforeUnmount, reactive, computed } from "vue";
 import {
   ChevronDown, ChevronRight, Clock, Check, Copy,
-  Wrench, MousePointerClick, RefreshCw, Quote,
+  Wrench, MousePointerClick, RefreshCw, Quote, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown } from "../composables/useMarkdown";
 import AgentIcon from "./AgentIcon.vue";
+import { invoke } from "@tauri-apps/api/core";
 
 const { render: renderMd, safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
 
@@ -105,9 +106,16 @@ const tickTimer = setInterval(() => {
   now.value = Date.now();
 }, 200);
 const timers: ReturnType<typeof setInterval>[] = [];
+/** Track one timer per message index so we can avoid duplicate typewriters on streaming updates. */
+const timerMap = new Map<number, { thinking?: ReturnType<typeof setInterval>; content?: ReturnType<typeof setInterval> }>();
 onBeforeUnmount(() => {
   clearInterval(tickTimer);
   timers.forEach(clearInterval);
+  timerMap.forEach((t) => {
+    if (t.thinking) clearInterval(t.thinking);
+    if (t.content) clearInterval(t.content);
+  });
+  timerMap.clear();
 });
 const thinkingRefs = ref<Record<number, HTMLElement>>({});
 
@@ -124,6 +132,13 @@ function startTypewriter(
 
   const current = displayMap[idx][field];
   if (current.length >= fullText.length) return;
+
+  // Clear any existing timer for this field to avoid duplicate timers
+  if (!timerMap.has(idx)) timerMap.set(idx, {});
+  const existing = timerMap.get(idx)!;
+  if (existing[field]) {
+    clearInterval(existing[field]!);
+  }
 
   const timer = setInterval(() => {
     if (!displayMap[idx]) {
@@ -143,9 +158,13 @@ function startTypewriter(
       });
     } else {
       clearInterval(timer);
+      if (timerMap.has(idx)) {
+        delete timerMap.get(idx)![field];
+      }
       frozenDurations[idx][field] = Date.now() - startTimes[idx][field];
     }
   }, speed);
+  existing[field] = timer;
   timers.push(timer);
 }
 
@@ -153,6 +172,95 @@ function elapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return s + "s";
   return Math.floor(s / 60) + "m " + (s % 60) + "s";
+}
+
+/** Detect if a tool call is a file-system operation (mkdir, write, create, edit, etc.) */
+function isFileOperation(tc: ToolCall): boolean {
+  const name = (tc.toolName || "").toLowerCase();
+  const input = (tc.input || "").toLowerCase();
+  // Match by tool name keywords
+  const fileKeywords = ["mkdir", "write_file", "create_file", "edit_file", "file_write", "file_create",
+    "rename_file", "delete_file", "move_file", "copy_file", "read_file", "write_file_to"];
+  if (fileKeywords.some(k => name.includes(k))) return true;
+  // Also match generic keywords when tool name is short (e.g. "Write", "Create", "Edit", "Read")
+  if (name.length <= 8 && ["write", "create", "edit", "read", "file", "rename", "delete", "copy", "move"].some(k => name.includes(k))) return true;
+  // Bash / shell commands that touch the filesystem
+  if (name === "bash" || name === "execute_command" || name === "run_command") {
+    if (input.includes("mkdir") || input.includes("touch ") || input.includes("write_file") ||
+        input.includes("create_file") || input.includes("cat >") || input.includes("echo ") ||
+        input.includes(">") || input.includes("mv ") || input.includes("cp ") || input.includes("rm ")) return true;
+  }
+  // Check input JSON for file_path / path fields
+  try {
+    const parsed = JSON.parse(tc.input);
+    if (parsed.file_path || parsed.path || parsed.file || parsed.filename) return true;
+  } catch { /* not JSON */ }
+  return false;
+}
+
+/** Extract the first file/directory path from a tool call's input */
+function extractFilePath(tc: ToolCall): string | null {
+  try {
+    const parsed = JSON.parse(tc.input);
+    // Direct field: file_path, path, file, filename
+    const pathField = parsed.file_path || parsed.path || parsed.file || parsed.filename;
+    if (pathField && typeof pathField === "string") return pathField;
+    // Command field: extract path from shell command
+    if (parsed.command && typeof parsed.command === "string") {
+      return extractPathFromCommand(parsed.command);
+    }
+    return null;
+  } catch {
+    // Not JSON — try plain text extraction
+    return extractPathFromString(tc.input);
+  }
+}
+
+/** Extract file path from a shell command string */
+function extractPathFromCommand(cmd: string): string | null {
+  // Handle output redirection: echo 'content' > /path/to/file
+  const redirectMatch = cmd.match(/[>]+\s*(\S+)/);
+  if (redirectMatch) return redirectMatch[1];
+  // Handle mkdir -p /path/to/dir
+  const mkdirMatch = cmd.match(/mkdir\s+(-p\s+)?(\S+)/);
+  if (mkdirMatch) return mkdirMatch[2] || mkdirMatch[1];
+  // Handle touch /path/to/file
+  const touchMatch = cmd.match(/touch\s+(\S+)/);
+  if (touchMatch) return touchMatch[1];
+  // Handle mv /from /to — take the last path
+  const mvMatch = cmd.match(/mv\s+(\S+)\s+(\S+)/);
+  if (mvMatch) return mvMatch[2];
+  // Handle cp /from /to — take the last path
+  const cpMatch = cmd.match(/cp\s+(\S+)\s+(\S+)/);
+  if (cpMatch) return cpMatch[2];
+  // Fallback: last argument that looks like a path
+  const parts = cmd.split(/\s+/);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (p.startsWith("/") || p.startsWith("./") || p.startsWith("~") || p.startsWith(".") || p.includes("/")) {
+      return p;
+    }
+  }
+  return null;
+}
+
+/** Extract file path from a non-JSON string */
+function extractPathFromString(input: string): string | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  // If it looks like a file path (starts with /, ~, ., or contains /)
+  if (trimmed.startsWith("/") || trimmed.startsWith("~") || trimmed.startsWith("./") || trimmed.includes("/")) {
+    return trimmed;
+  }
+  // Try to find a path pattern in the string
+  const pathMatch = trimmed.match(/(\/[^\s"'<>|;:]+)/);
+  if (pathMatch) return pathMatch[1];
+  return null;
+}
+
+function openInExplorer(path: string) {
+  // Resolve relative paths relative to the current working directory
+  invoke("open_in_finder", { path }).catch((e: Error) => console.error("Failed to open path:", e));
 }
 
 function thinkingLabel(msg: Message, idx: number): string {
@@ -220,12 +328,16 @@ watch(
   (msgs) => {
     if (msgs !== lastMsgsRef) {
       lastMsgsRef = msgs;
-      for (const k of Object.keys(displayMap)) delete displayMap[Number(k)];
-      for (const k of Object.keys(startTimes)) delete startTimes[Number(k)];
-      for (const k of Object.keys(frozenDurations)) delete frozenDurations[Number(k)];
+      // Remove entries for messages that no longer exist (e.g. session switch)
+      for (const k of Object.keys(displayMap)) {
+        if (Number(k) >= msgs.length) {
+          delete displayMap[Number(k)];
+          delete startTimes[Number(k)];
+          delete frozenDurations[Number(k)];
+        }
+      }
       mermaidRenderedMessages.value.clear();
-      timers.forEach(clearInterval);
-      timers.length = 0;
+      // Don't clear timers — they will naturally complete when content matches
     }
     for (let i = 0; i < msgs.length; i++) {
       const m = msgs[i];
@@ -434,8 +546,8 @@ function truncateLabel(label: string, maxLen = 32): string {
                   <ChevronRight v-else :size="11" />
                   <Wrench :size="12" />
                   <span class="text-gray-500 flex-1 min-w-0 truncate">{{
-                    tc.title || tc.toolName || "Tool"
-                  }}</span>
+  tc.title ? (tc.title + (tc.toolName && tc.title !== tc.toolName ? ' · ' + tc.toolName : '')) : (tc.toolName || "Tool")
+}}</span>
                   <span
                     v-if="tc.status === 'started' || tc.status === 'running'"
                     class="text-gray-400 animate-pulse"
@@ -450,6 +562,11 @@ function truncateLabel(label: string, maxLen = 32): string {
                     class="text-green-500"
                   />
                   <span
+                    v-else-if="tc.status === 'failed' || tc.status === 'error'"
+                    class="text-red-500 text-[11px]"
+                    >failed</span
+                  >
+                  <span
                     v-if="tc.durationMs"
                     class="text-[11px] text-gray-400 ml-auto"
                     >{{ formatDuration(tc.durationMs) }}</span
@@ -459,6 +576,19 @@ function truncateLabel(label: string, maxLen = 32): string {
                     class="text-[11px] text-gray-400 ml-auto"
                     >{{ elapsed(now - tc.startTime) }}</span
                   >
+                  <!-- File explorer button for completed file operations -->
+                  <button
+                    v-if="
+                      tc.status === 'completed' &&
+                      isFileOperation(tc) &&
+                      extractFilePath(tc)
+                    "
+                    @click.stop="openInExplorer(extractFilePath(tc)!)"
+                    class="ml-1 p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Open in file explorer"
+                  >
+                    <FolderOpen :size="11" />
+                  </button>
                 </button>
                 <!-- Tool call details (only when expanded) -->
                 <template v-if="toolExpanded.has(`${item.oi}-${ti}`)">
