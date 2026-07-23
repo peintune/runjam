@@ -40,6 +40,7 @@ src-tauri/gen/schemas
 *.swo
 *~
 Thumbs.db
+runjam.db
 
 # Environment
 .env
