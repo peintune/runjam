@@ -4,14 +4,10 @@ use crate::proxy::ProxyState;
 use tauri::State;
 use std::sync::{Arc, Mutex};
 
-#[tauri::command]
-pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
-    let db_guard = db.lock().unwrap();
-    let conn = db_guard.conn.lock().unwrap();
-    
-    let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags FROM models ORDER BY created_at").unwrap();
+pub fn get_models_from_conn(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
+    let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, support_tools, tags FROM models ORDER BY created_at").unwrap();
     let models_iter = stmt.query_map([], |row| {
-        let tags_str: String = row.get(11)?;
+        let tags_str: String = row.get(12)?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
         Ok(ModelEntry {
             id: row.get(0)?,
@@ -25,6 +21,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
             protocol: row.get(8)?,
             context_window: row.get(9)?,
             support_reasoning: row.get(10)?,
+            support_tools: row.get(11)?,
             tags,
             use_proxy: false,
         })
@@ -37,6 +34,13 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
         }
     }
     models
+}
+
+#[tauri::command]
+pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
+    let db_guard = db.lock().unwrap();
+    let conn = db_guard.conn.lock().unwrap();
+    get_models_from_conn(&conn)
 }
 
 #[tauri::command]
@@ -55,11 +59,11 @@ pub fn save_models(models: Vec<ModelEntry>, db: State<'_, Mutex<Database>>) -> R
         let tags_json = serde_json::to_string(&model.tags).unwrap_or_default();
         let protocol = detect_model_protocol(&model.name, Some(&model.api_base)).as_str().to_string();
         conn.execute(
-            "INSERT INTO models (id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)",
+            "INSERT INTO models (id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, support_tools, tags, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, CURRENT_TIMESTAMP)",
             rusqlite::params![
                 &model.id, &model.name, &model.alias, &model.provider, &model.provider_name,
                 &model.provider_icon, &model.api_base, &model.api_key, &protocol,
-                model.context_window as i64, model.support_reasoning as i64, &tags_json,
+                model.context_window as i64, model.support_reasoning as i64, model.support_tools as i64, &tags_json,
             ],
         ).map_err(|e| format!("Failed to insert model {}: {}", model.name, e))?;
     }
@@ -127,7 +131,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: row.get::<_, i32>(12)? != 0,
         })
     }).unwrap();
@@ -268,7 +272,7 @@ fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -288,7 +292,7 @@ fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -310,7 +314,7 @@ fn get_default_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> V
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -446,7 +450,7 @@ pub fn get_model_by_alias(alias: String, db: State<'_, Mutex<Database>>) -> Opti
                     id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
                     provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
                     api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-                    context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+                    context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
                     use_proxy: false,
                 })
             }).unwrap();

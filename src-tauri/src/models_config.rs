@@ -15,9 +15,15 @@ pub struct ModelEntry {
     pub protocol: String,
     pub context_window: u64,
     pub support_reasoning: bool,
+    #[serde(default = "default_support_tools")]
+    pub support_tools: bool,
     pub tags: Vec<String>,
     #[serde(default)]
     pub use_proxy: bool,
+}
+
+fn default_support_tools() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +116,7 @@ fn parse_claude_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
             let api_key = model_val.get("apiKey").or_else(|| model_val.get("api_key")).and_then(|v| v.as_str()).unwrap_or("");
             let context_window = model_val.get("contextWindow").or_else(|| model_val.get("context_window")).and_then(|v| v.as_u64()).unwrap_or(0);
             let support_reasoning = model_val.get("supportReasoning").or_else(|| model_val.get("support_reasoning")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let support_tools = model_val.get("supportTools").or_else(|| model_val.get("support_tools")).and_then(|v| v.as_bool()).unwrap_or(true);
             let tags: Vec<String> = model_val.get("tags").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
             
             if !id.is_empty() {
@@ -125,6 +132,7 @@ fn parse_claude_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
                     protocol: detect_model_protocol(&name, Some(&api_base)).as_str().to_string(),
                     context_window,
                     support_reasoning,
+                    support_tools,
                     tags,
                     use_proxy: false,
                 });
@@ -154,6 +162,7 @@ fn parse_codex_native_config(doc: &toml::Value) -> Vec<ModelEntry> {
             protocol: detect_model_protocol(model, Some(base_url)).as_str().to_string(),
             context_window: 0,
             support_reasoning: false,
+            support_tools: true,
             tags: vec![],
             use_proxy: false,
         });
@@ -175,6 +184,7 @@ fn parse_codex_native_config(doc: &toml::Value) -> Vec<ModelEntry> {
                     protocol: detect_model_protocol(model, Some(base_url)).as_str().to_string(),
                     context_window: 0,
                     support_reasoning: false,
+                    support_tools: true,
                     tags: vec![],
                     use_proxy: false,
                 });
@@ -197,6 +207,7 @@ fn parse_gemini_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
             let api_key = model_val.get("apiKey").or_else(|| model_val.get("api_key")).and_then(|v| v.as_str()).unwrap_or("");
             let context_window = model_val.get("contextWindow").or_else(|| model_val.get("context_window")).and_then(|v| v.as_u64()).unwrap_or(0);
             let support_reasoning = model_val.get("supportReasoning").or_else(|| model_val.get("support_reasoning")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let support_tools = model_val.get("supportTools").or_else(|| model_val.get("support_tools")).and_then(|v| v.as_bool()).unwrap_or(true);
             let tags: Vec<String> = model_val.get("tags").and_then(|v| v.as_array()).map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
             
             if !id.is_empty() {
@@ -212,6 +223,7 @@ fn parse_gemini_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
                     protocol: detect_model_protocol(&name, Some(&api_base)).as_str().to_string(),
                     context_window,
                     support_reasoning,
+                    support_tools,
                     tags,
                     use_proxy: false,
                 });
@@ -239,13 +251,17 @@ impl ModelConfig {
     pub fn load() -> Self {
         let path = Self::path();
         if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
-        } else {
-            Self::default()
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str(&content) {
+                    return config;
+                }
+            }
         }
+        let mut models = Vec::new();
+        models.extend(read_models_from_agent_config("claude-code"));
+        models.extend(read_models_from_agent_config("codex-cli"));
+        models.extend(read_models_from_agent_config("gemini-cli"));
+        ModelConfig { models }
     }
 
     pub fn save(&self) {

@@ -95,6 +95,11 @@ pub fn run_migrations(conn: &Connection) {
     ).ok();
 
     conn.execute(
+        "ALTER TABLE models ADD COLUMN support_tools INTEGER NOT NULL DEFAULT 1",
+        [],
+    ).ok();
+
+    conn.execute(
         "ALTER TABLE agent_models ADD COLUMN use_proxy INTEGER NOT NULL DEFAULT 0",
         [],
     ).ok();

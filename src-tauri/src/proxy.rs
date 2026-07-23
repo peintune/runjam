@@ -263,12 +263,13 @@ fn handle_request(
 
     rjlog!("[PROXY] <<< body ({} chars) first 300: {}", body.len(), &body[..body.len().min(300)]);
 
-    // Reload models on each request so saved models take effect without restart
-    {
-        let mut s = state.lock().unwrap();
-        s.models = ModelConfig::load().models;
-    }
+    // Use models from proxy state (loaded from database at startup)
     let models = { state.lock().unwrap().models.clone() };
+    
+    rjlog!("[PROXY] Using {} models from proxy state", models.len());
+    for m in &models {
+        rjlog!("[PROXY] Model: {} (id={}, support_tools={})", m.name, m.id, m.support_tools);
+    }
 
     // Identify the calling agent from the request path so we can prefer the
     // model ids actually assigned to that agent (names may collide).
@@ -325,8 +326,8 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Find matching model in our config
     let target = find_model(models, model_name, preferred_ids);
 
-    let (api_key, base_url, real_model) = if let Some(m) = target {
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone())
+    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
     } else {
         // No match — try to forward as-is to Anthropic
         let (s, b) = forward_to_anthropic(body);
@@ -447,13 +448,15 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         "max_tokens": max_tokens,
         "stream": stream,
     });
-    if !openai_tools.is_empty() {
+    if !openai_tools.is_empty() && support_tools {
         openai_body["tools"] = serde_json::json!(openai_tools);
         if let Some(tc) = req.get("tool_choice") {
             let converted_tc = convert_tool_choice_anthropic_to_openai(tc);
             rjlog!("[PROXY] Anthropic→OpenAI: tool_choice raw={:?}, converted={:?}", tc, converted_tc);
             openai_body["tool_choice"] = converted_tc;
         }
+    } else if !openai_tools.is_empty() && !support_tools {
+        rjlog!("[PROXY] Anthropic→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
     }
 
     // Forward to OpenAI-compatible endpoint
@@ -670,12 +673,12 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     // Find matching model in config
     let target = find_model(models, model_name, preferred_ids);
-    let (api_key, base_url, real_model) = if let Some(m) = target {
+    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
         let masked_key = if m.api_key.len() > 8 {
             format!("{}...{}", &m.api_key[..4], &m.api_key[m.api_key.len()-4..])
         } else { m.api_key.clone() };
         rjlog!("[PROXY] Responses→Chat: Found model '{}' api_key={} base_url={}", m.name, masked_key, m.api_base);
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone())
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
     } else {
         rjlog!("[PROXY] Responses→Chat: Model '{}' NOT FOUND in {} models. Available: {:?}",
             model_name, models.len(),
@@ -703,9 +706,13 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 })
             })
             .collect();
-        chat_body["tools"] = serde_json::Value::Array(chat_tools);
-        if let Some(tc) = req.get("tool_choice") {
-            chat_body["tool_choice"] = tc.clone();
+        if support_tools {
+            chat_body["tools"] = serde_json::Value::Array(chat_tools);
+            if let Some(tc) = req.get("tool_choice") {
+                chat_body["tool_choice"] = tc.clone();
+            }
+        } else {
+            rjlog!("[PROXY] Responses→Chat: model {} does not support tools, skipping tool definitions", real_model);
         }
     }
 
@@ -1667,8 +1674,8 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
 
     let target = find_model(models, model_name, preferred_ids);
 
-    let (api_key, base_url, real_model) = if let Some(m) = target {
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone())
+    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
     } else {
         let (s, b) = forward_to_gemini(body, path);
         return ProxyResponse::Sync(s, b);
@@ -1752,8 +1759,10 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
         "max_tokens": max_output_tokens,
         "stream": stream,
     });
-    if !openai_tools.is_empty() {
+    if !openai_tools.is_empty() && support_tools {
         openai_body["tools"] = serde_json::json!(openai_tools);
+    } else if !openai_tools.is_empty() && !support_tools {
+        rjlog!("[PROXY] Gemini→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));

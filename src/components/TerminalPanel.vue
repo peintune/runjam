@@ -364,7 +364,7 @@ onBeforeUnmount(() => {
         style="scrollbar-width: none;"
         ref="tabsScrollEl"
       >
-        <button
+        <div
           v-for="(tab, i) in tabs"
           :key="tab.id"
           @click="switchTab(i)"
@@ -385,7 +385,7 @@ onBeforeUnmount(() => {
           >
             <X :size="8" />
           </button>
-        </button>
+        </div>
         <button
           @click="addTab"
           class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#484f58] hover:text-[#8b949e] hover:bg-white/[0.06] transition-colors shrink-0"

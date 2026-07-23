@@ -15,8 +15,10 @@
         "title": "RunJam",
         "width": 1200,
         "height": 800,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "center": true,
+        "visible": true,
+        "alwaysOnTop": false,
+        "decorations": true
       }
     ],
     "security": {
