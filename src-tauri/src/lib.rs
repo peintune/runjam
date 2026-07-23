@@ -27,9 +27,10 @@ pub fn run() {
         .map(|d| d.data_local_dir().to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     
+    search::init_db();
+    
     let db = Database::new(&app_dir).expect("Failed to create database");
     db::migrations::run_migrations(&db.conn.lock().unwrap());
-    search::init_db();
     
     // Ensure default session working directory exists
     if let Some(home) = directories::UserDirs::new() {
@@ -53,7 +54,7 @@ pub fn run() {
         proxy_state.lock().unwrap().agent_models = map;
         
         // Load all models from database into proxy state
-        let models: Vec<crate::models_config::ModelEntry> = commands::models_cmd::get_models_from_conn(&db.conn.lock().unwrap());
+        let models: Vec<crate::models_config::ModelEntry> = commands::models_cmd::get_models_from_conn(&conn);
         proxy_state.lock().unwrap().models = models;
     }
     commands::proxy_cmd::init_proxy(proxy_state.clone());
