@@ -2,49 +2,96 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ProtocolType = "anthropic" | "openai_chat" | "openai_responses" | "gemini";
 
-export interface OllamaModel {
+export interface LlamaModel {
   name: string;
-  size: string;
-  digest: string;
+  size: number;
   modified_at: string;
-  size_bytes: number;
 }
 
-export interface OllamaPullProgress {
+export interface LlamaPullProgress {
   status: string;
-  digest?: string;
   total?: number;
   completed?: number;
   percentage: number;
 }
 
-export async function checkOllamaInstalled(): Promise<boolean> {
-  return invoke<boolean>("check_ollama_installed");
+export async function checkLlamaServerAvailable(): Promise<boolean> {
+  return invoke<boolean>("check_llama_server_available");
 }
 
-export async function getOllamaStatus(): Promise<string> {
-  return invoke<string>("get_ollama_status");
+export async function getLlamaServerStatus(): Promise<string> {
+  return invoke<string>("get_llama_server_status");
 }
 
-export async function listOllamaModels(): Promise<OllamaModel[]> {
-  return invoke<OllamaModel[]>("list_ollama_models");
+export async function listLlamaModels(): Promise<LlamaModel[]> {
+  return invoke<LlamaModel[]>("list_llama_models");
 }
 
-export async function pullOllamaModel(modelName: string): Promise<void> {
-  return invoke("pull_ollama_model", { modelName });
+export async function startLlamaServer(modelPath: string): Promise<number> {
+  return invoke<number>("start_llama_server", { modelPath });
 }
 
-export async function createOllamaModel(modelName: string): Promise<string> {
-  return invoke<string>("create_ollama_model", { modelName });
+export async function stopLlamaServer(): Promise<void> {
+  return invoke("stop_llama_server");
+}
+
+export async function downloadLlamaModel(hfRepo: string, filename: string): Promise<void> {
+  return invoke("download_llama_model", { hfRepo, filename });
+}
+
+export async function createLlamaModel(modelName: string, port: number): Promise<string> {
+  return invoke<string>("create_llama_model", { modelName, port });
 }
 
 export const recommendedLocalModels = [
-  { name: "llama3", alias: "LLaMA 3", size: "4.7GB", desc: "综合性能最强的开源模型" },
-  { name: "mistral", alias: "Mistral", size: "4.1GB", desc: "代码能力优秀，响应速度快" },
-  { name: "qwen2:7b", alias: "Qwen 2 7B", size: "3.8GB", desc: "中文支持优秀" },
-  { name: "phi3", alias: "Phi-3", size: "2.1GB", desc: "轻量高效，适合资源有限环境" },
-  { name: "codellama", alias: "CodeLlama", size: "4.7GB", desc: "专为代码任务优化" },
-  { name: "gemma2", alias: "Gemma 2", size: "2.5GB", desc: "Google 开源模型，质量优秀" },
+  { 
+    name: "deepreinforce-ai/Ornith-1.0-9B-GGUF", 
+    filename: "Ornith-1.0-9B.Q4_K_M.gguf",
+    alias: "Ornith 1.0 9B", 
+    size: "4.9GB", 
+    desc: "高性能开源模型，代码能力强",
+    hfRepo: "deepreinforce-ai/Ornith-1.0-9B-GGUF"
+  },
+  { 
+    name: "Qwen/Qwen2-7B-Instruct-GGUF", 
+    filename: "qwen2-7b-instruct-q4_k_m.gguf",
+    alias: "Qwen 2 7B", 
+    size: "3.8GB", 
+    desc: "中文支持优秀，响应速度快",
+    hfRepo: "Qwen/Qwen2-7B-Instruct-GGUF"
+  },
+  { 
+    name: "meta-llama/Meta-Llama-3-8B-Instruct-GGUF", 
+    filename: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
+    alias: "LLaMA 3 8B", 
+    size: "4.7GB", 
+    desc: "综合性能最强的开源模型",
+    hfRepo: "meta-llama/Meta-Llama-3-8B-Instruct-GGUF"
+  },
+  { 
+    name: "mistralai/Mistral-7B-Instruct-v0.3-GGUF", 
+    filename: "mistral-7b-instruct-v0.3-q4_k_m.gguf",
+    alias: "Mistral 7B", 
+    size: "4.1GB", 
+    desc: "代码能力优秀，响应速度快",
+    hfRepo: "mistralai/Mistral-7B-Instruct-v0.3-GGUF"
+  },
+  { 
+    name: "microsoft/Phi-3-mini-4k-instruct-gguf", 
+    filename: "Phi-3-mini-4k-instruct-q4_k_m.gguf",
+    alias: "Phi-3 Mini", 
+    size: "2.1GB", 
+    desc: "轻量高效，适合资源有限环境",
+    hfRepo: "microsoft/Phi-3-mini-4k-instruct-gguf"
+  },
+  { 
+    name: "codellama/CodeLlama-7b-Instruct-hf", 
+    filename: "codellama-7b-instruct-q4_k_m.gguf",
+    alias: "CodeLlama 7B", 
+    size: "4.7GB", 
+    desc: "专为代码任务优化",
+    hfRepo: "codellama/CodeLlama-7b-Instruct-hf"
+  },
 ];
 
 export interface ModelEntry {
@@ -323,15 +370,15 @@ export const providers: ProviderConfig[] = [
     homepage: "https://groq.com/",
   },
   {
-    id: "ollama",
-    name: "Ollama",
+    id: "llama",
+    name: "Llama.cpp",
     icon: "🦙",
     color: "#000000",
-    defaultBase: "http://localhost:11434/v1",
+    defaultBase: "http://localhost:8080/v1",
     protocol: "openai_chat",
     models: [],
-    desc: "Local models",
-    homepage: "https://ollama.com/",
+    desc: "Local models (GGUF)",
+    homepage: "https://github.com/ggerganov/llama.cpp",
   },
 ];
 

@@ -653,7 +653,7 @@ impl AcpClient {
                                         rjlog!("[ACP DEBUG] Agent message end");
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string() }
+                                            AcpEvent::Finish { stop_reason: "end".to_string(), input_tokens: None, output_tokens: None }
                                         ));
                                     }
                                     "agent_thought_chunk" => {
@@ -699,7 +699,7 @@ impl AcpClient {
                                         rjlog!("[ACP DEBUG] Message end");
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string() }
+                                            AcpEvent::Finish { stop_reason: "end".to_string(), input_tokens: None, output_tokens: None }
                                         ));
                                     }
                                     "usage_update" => {
@@ -850,7 +850,7 @@ impl AcpClient {
                                     .unwrap_or("unknown");
                                 let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                     &session_id_clone, "0", "0",
-                                    AcpEvent::Finish { stop_reason: stop_reason.to_string() }
+                                    AcpEvent::Finish { stop_reason: stop_reason.to_string(), input_tokens: None, output_tokens: None }
                                 ));
                             }
                         }
@@ -868,7 +868,7 @@ impl AcpClient {
             let event_name = format!("acp:{}", session_id_clone);
             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                 &session_id_clone, "0", "0",
-                AcpEvent::Finish { stop_reason: "process_exit".to_string() }
+                AcpEvent::Finish { stop_reason: "process_exit".to_string(), input_tokens: None, output_tokens: None }
             ));
         });
 

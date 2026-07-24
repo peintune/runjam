@@ -25,6 +25,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
             protocol: row.get(8)?,
             context_window: row.get(9)?,
             support_reasoning: row.get(10)?,
+            support_tools: true,
             tags,
             use_proxy: false,
         })
@@ -127,7 +128,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: row.get::<_, i32>(12)? != 0,
         })
     }).unwrap();
@@ -268,7 +269,7 @@ fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -288,7 +289,7 @@ fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -310,7 +311,7 @@ fn get_default_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> V
             id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-            context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+            context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: false,
         })
     }).unwrap();
@@ -446,7 +447,7 @@ pub fn get_model_by_alias(alias: String, db: State<'_, Mutex<Database>>) -> Opti
                     id: row.get(0)?, name: row.get(1)?, alias: row.get(2)?,
                     provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
                     api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
-                    context_window: row.get(9)?, support_reasoning: row.get(10)?, tags,
+                    context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
                     use_proxy: false,
                 })
             }).unwrap();

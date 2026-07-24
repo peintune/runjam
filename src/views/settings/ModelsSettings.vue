@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, RefreshCw } from "lucide-vue-next";
+import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, RefreshCw, Play, Square, Server } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkOllamaInstalled, getOllamaStatus, listOllamaModels, pullOllamaModel, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type OllamaModel, type OllamaPullProgress } from "../../api/models";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -42,11 +42,12 @@ const selectedProvider = ref(providers[0]);
 const showDeleteDialog = ref(false);
 const deletingModelId = ref<string | null>(null);
 
-const ollamaInstalled = ref(false);
-const ollamaStatus = ref("");
-const ollamaModels = ref<OllamaModel[]>([]);
+const llamaServerAvailable = ref(false);
+const llamaServerStatus = ref("");
+const llamaModels = ref<LlamaModel[]>([]);
 const pullingModel = ref<string | null>(null);
-const pullProgress = ref<OllamaPullProgress | null>(null);
+const pullProgress = ref<LlamaPullProgress | null>(null);
+const runningServerPort = ref(0);
 
 onMounted(async () => {
   if (route.query.action === "add") {
@@ -72,81 +73,129 @@ onMounted(async () => {
     agents.value = await getAgentStatuses();
   } catch {}
   
-  await loadOllamaInfo();
+  await loadLlamaInfo();
   
-  listen<OllamaPullProgress>("ollama_pull_progress", (event) => {
+  listen<LlamaPullProgress>("llama_pull_progress", (event) => {
     pullProgress.value = event.payload;
     if (event.payload.status === "completed" || event.payload.status === "failed") {
       pullingModel.value = null;
-      loadOllamaModels();
+      loadLlamaModels();
     }
   });
 
-  listen<string>("ollama_pull_error", (event) => {
+  listen<string>("llama_pull_error", (event) => {
     pullError.value = event.payload;
-    console.error("Ollama pull error:", event.payload);
+    console.error("Llama pull error:", event.payload);
+  });
+
+  listen<string>("llama_server_log", (event) => {
+    console.log("Llama server log:", event.payload);
   });
 });
 
 onUnmounted(() => {
 });
 
-async function loadOllamaInfo() {
+async function loadLlamaInfo() {
   try {
-    ollamaInstalled.value = await checkOllamaInstalled();
-    ollamaStatus.value = await getOllamaStatus();
-    await loadOllamaModels();
+    llamaServerAvailable.value = await checkLlamaServerAvailable();
+    llamaServerStatus.value = await getLlamaServerStatus();
+    await loadLlamaModels();
+    
+    if (llamaServerStatus.value.startsWith("running")) {
+      const portStr = llamaServerStatus.value.split(":")[1];
+      runningServerPort.value = parseInt(portStr) || 8080;
+    }
   } catch (err) {
-    console.error("Failed to load Ollama info:", err);
+    console.error("Failed to load Llama info:", err);
   }
 }
 
-async function loadOllamaModels() {
+async function loadLlamaModels() {
   try {
-    ollamaModels.value = await listOllamaModels();
+    llamaModels.value = await listLlamaModels();
   } catch {
-    ollamaModels.value = [];
+    llamaModels.value = [];
   }
 }
 
-function isModelInstalled(modelName: string): boolean {
-  return ollamaModels.value.some(m => m.name === modelName);
+function isModelInstalled(filename: string): boolean {
+  return llamaModels.value.some(m => m.name === filename);
 }
 
 const pullError = ref("");
 
-async function downloadModel(modelName: string) {
+async function downloadModel(hfRepo: string, filename: string) {
   if (pullingModel.value) return;
-  pullingModel.value = modelName;
+  pullingModel.value = filename;
   pullProgress.value = { status: "downloading", percentage: 0 };
   pullError.value = "";
   try {
-    await pullOllamaModel(modelName);
+    await downloadLlamaModel(hfRepo, filename);
   } catch (err: any) {
     pullError.value = err.message || err;
-    console.error("Failed to pull model:", err);
+    console.error("Failed to download model:", err);
     pullingModel.value = null;
   }
 }
 
-async function addLocalModel(modelName: string) {
-  const provider = getProviderById("ollama")!;
-  const modelExists = models.value.some(m => m.name === modelName && m.provider === "ollama");
+async function addLocalModel(filename: string) {
+  const provider = getProviderById("llama")!;
+  const modelExists = models.value.some(m => m.name === filename && m.provider === "llama");
   if (modelExists) return;
   
   models.value.push({
-    id: `ollama-${modelName}-${Date.now().toString(36)}`,
-    name: modelName,
-    alias: modelName,
-    provider: "ollama",
+    id: `llama-${filename}-${Date.now().toString(36)}`,
+    name: filename,
+    alias: filename,
+    provider: "llama",
     apiBase: provider.defaultBase,
-    apiKey: "ollama",
+    apiKey: "llama",
     protocol: provider.protocol,
     showKey: false,
     assignedAgents: [],
     useProxy: {},
   });
   await persistModels();
+}
+
+async function handleStartServer(filename: string) {
+  try {
+    const port = await startLlamaServer(filename);
+    runningServerPort.value = port;
+    await loadLlamaInfo();
+    
+    const provider = getProviderById("llama")!;
+    const modelExists = models.value.some(m => m.name === filename && m.provider === "llama");
+    
+    if (!modelExists) {
+      models.value.push({
+        id: `llama-${filename}-${Date.now().toString(36)}`,
+        name: filename,
+        alias: filename,
+        provider: "llama",
+        apiBase: `http://localhost:${port}/v1`,
+        apiKey: "llama",
+        protocol: provider.protocol,
+        showKey: false,
+        assignedAgents: [],
+        useProxy: {},
+      });
+      await persistModels();
+    }
+  } catch (err: any) {
+    console.error("Failed to start server:", err);
+  }
+}
+
+async function handleStopServer() {
+  try {
+    await stopLlamaServer();
+    runningServerPort.value = 0;
+    await loadLlamaInfo();
+  } catch (err: any) {
+    console.error("Failed to stop server:", err);
+  }
 }
 
 async function loadAgentModelMap() {
@@ -282,15 +331,21 @@ function getAgentDisplayName(agentId: string): string {
 }
 
 function getStatusText(): string {
-  if (ollamaStatus.value.startsWith("installed")) {
-    return "Ollama running";
+  if (llamaServerStatus.value.startsWith("running")) {
+    return "Llama.cpp running";
   }
-  return "Ollama not installed";
+  if (llamaServerAvailable.value) {
+    return "Llama.cpp available";
+  }
+  return "Llama.cpp not available";
 }
 
 function getStatusColor(): string {
-  if (ollamaStatus.value.startsWith("installed")) {
+  if (llamaServerStatus.value.startsWith("running")) {
     return "bg-emerald-500";
+  }
+  if (llamaServerAvailable.value) {
+    return "bg-blue-500";
   }
   return "bg-gray-300";
 }
@@ -313,9 +368,9 @@ function getStatusColor(): string {
       <div class="flex items-center justify-between px-5 py-3 bg-gray-700 border-b border-gray-600">
         <div class="flex items-center gap-3">
           <div class="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden bg-gray-200">
-            <img :src="getProviderLogo('ollama')" alt="Ollama" class="w-5 h-5 object-contain" />
+            <img :src="getProviderLogo('llama')" alt="Llama.cpp" class="w-5 h-5 object-contain" />
           </div>
-          <span class="text-[15px] font-semibold text-white">Local Models (Ollama)</span>
+          <span class="text-[15px] font-semibold text-white">Local Models (Llama.cpp)</span>
         </div>
         <div class="flex items-center gap-2">
           <span :class="['w-2 h-2 rounded-full', getStatusColor()]"></span>
@@ -323,14 +378,14 @@ function getStatusColor(): string {
         </div>
       </div>
 
-      <div v-if="!ollamaInstalled" class="px-5 py-6">
+      <div v-if="!llamaServerAvailable" class="px-5 py-6">
         <div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
           <div class="text-amber-500">💡</div>
           <div class="flex-1">
-            <p class="text-[13px] font-medium text-amber-800">Ollama is not installed</p>
-            <p class="text-[12px] text-amber-600 mt-0.5">Install Ollama to run models locally without cloud API keys</p>
+            <p class="text-[13px] font-medium text-amber-800">Llama.cpp server not available</p>
+            <p class="text-[12px] text-amber-600 mt-0.5">Please ensure llama-server binaries are present in the correct location</p>
           </div>
-          <button @click="openUrl('https://ollama.com/download')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 transition-colors cursor-pointer">
+          <button @click="openUrl('https://github.com/ggerganov/llama.cpp')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 transition-colors cursor-pointer">
             Download <ExternalLink :size="12" />
           </button>
         </div>
@@ -341,7 +396,7 @@ function getStatusColor(): string {
           <div class="flex items-center gap-2">
             <span class="text-[14px] font-medium text-gray-600">Recommended Models</span>
           </div>
-          <button @click="loadOllamaModels" class="flex items-center gap-1.5 text-[12px] text-gray-500 hover:text-gray-700 transition-colors cursor-pointer">
+          <button @click="loadLlamaModels" class="flex items-center gap-1.5 text-[12px] text-gray-500 hover:text-gray-700 transition-colors cursor-pointer">
             <RefreshCw :size="14" /> Refresh
           </button>
         </div>
@@ -352,7 +407,7 @@ function getStatusColor(): string {
             :key="rm.name"
             :class="[
               'relative rounded-xl border transition-all duration-150',
-              isModelInstalled(rm.name) ? 'border-gray-200 bg-gray-50' : 'border-gray-100 bg-white hover:border-gray-200'
+              isModelInstalled(rm.filename) ? 'border-gray-200 bg-gray-50' : 'border-gray-100 bg-white hover:border-gray-200'
             ]"
           >
             <div class="p-5">
@@ -360,7 +415,7 @@ function getStatusColor(): string {
                 <div>
                   <div class="flex items-center gap-2">
                     <span class="text-[17px] font-semibold text-gray-900">{{ rm.alias }}</span>
-                    <span v-if="isModelInstalled(rm.name)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                    <span v-if="isModelInstalled(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                       <Check :size="11" /> Installed
                     </span>
                   </div>
@@ -371,7 +426,7 @@ function getStatusColor(): string {
               <p class="text-[13px] text-gray-500 mb-4">{{ rm.desc }}</p>
 
               <div class="flex items-center gap-2">
-                <template v-if="pullingModel === rm.name">
+                <template v-if="pullingModel === rm.filename">
                   <div class="flex-1">
                     <div class="h-1.5 bg-gray-200 rounded-full overflow-hidden">
                       <div 
@@ -385,9 +440,15 @@ function getStatusColor(): string {
                     <p v-if="pullError" class="text-[10px] text-red-500 mt-1.5 truncate">{{ pullError }}</p>
                   </div>
                 </template>
-                <template v-else-if="isModelInstalled(rm.name)">
+                <template v-else-if="isModelInstalled(rm.filename)">
                   <button 
-                    @click="addLocalModel(rm.name)"
+                    @click="handleStartServer(rm.filename)"
+                    class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  >
+                    <Play :size="12" /> Start Server
+                  </button>
+                  <button 
+                    @click="addLocalModel(rm.filename)"
                     class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
                   >
                     <Plus :size="12" /> Add to Models
@@ -395,7 +456,7 @@ function getStatusColor(): string {
                 </template>
                 <template v-else>
                   <button 
-                    @click="downloadModel(rm.name)"
+                    @click="downloadModel(rm.hfRepo, rm.filename)"
                     class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
                   >
                     <Download :size="12" /> Download
@@ -406,31 +467,51 @@ function getStatusColor(): string {
           </div>
         </div>
 
-        <div v-if="ollamaModels.length > 0" class="mt-6 pt-5 border-t border-gray-100">
-          <div class="flex items-center gap-2 mb-4">
-            <span class="text-[14px] font-medium text-gray-600">Installed Models</span>
-            <span class="text-[12px] text-gray-400">({{ ollamaModels.length }})</span>
+        <div v-if="llamaModels.length > 0" class="mt-6 pt-5 border-t border-gray-100">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <span class="text-[14px] font-medium text-gray-600">Installed Models</span>
+              <span class="text-[12px] text-gray-400">({{ llamaModels.length }})</span>
+            </div>
+            <button v-if="runningServerPort > 0" @click="handleStopServer" 
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer">
+              <Square :size="12" /> Stop Server
+            </button>
           </div>
+
+          <div v-if="runningServerPort > 0" class="mb-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-50 border border-emerald-200">
+            <Server :size="14" class="text-emerald-600" />
+            <span class="text-[12px] font-medium text-emerald-700">Server running on http://localhost:{{ runningServerPort }}</span>
+          </div>
+
           <div class="space-y-2.5">
             <div 
-              v-for="om in ollamaModels" 
+              v-for="om in llamaModels" 
               :key="om.name"
               class="flex items-center justify-between px-4 py-3 rounded-xl bg-gray-50"
             >
               <div>
                 <span class="text-[15px] font-medium text-gray-900">{{ om.name }}</span>
-                <span class="text-[12px] text-gray-400 ml-3">{{ om.size }}</span>
+                <span class="text-[12px] text-gray-400 ml-3">{{ (om.size / 1024 / 1024).toFixed(0) }}MB</span>
               </div>
-              <button 
-                v-if="!models.some(m => m.name === om.name && m.provider === 'ollama')"
-                @click="addLocalModel(om.name)"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
-              >
-                <Plus :size="12" /> Add
-              </button>
-              <span v-else class="flex items-center gap-1.5 text-[12px] text-emerald-600">
-                <Check :size="14" /> Added
-              </span>
+              <div class="flex items-center gap-2">
+                <button 
+                  @click="handleStartServer(om.name)"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                >
+                  <Play :size="12" /> Start
+                </button>
+                <button 
+                  v-if="!models.some(m => m.name === om.name && m.provider === 'llama')"
+                  @click="addLocalModel(om.name)"
+                  class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                >
+                  <Plus :size="12" /> Add
+                </button>
+                <span v-else class="flex items-center gap-1.5 text-[12px] text-emerald-600">
+                  <Check :size="14" /> Added
+                </span>
+              </div>
             </div>
           </div>
         </div>

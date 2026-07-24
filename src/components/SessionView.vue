@@ -725,10 +725,6 @@ function handleModelSelect(model: ModelEntry) {
   selectedModel.value = model.id;
   showModelDropdown.value = false;
   
-  if (model.provider_name === "ollama") {
-    selectedAgentId.value = "ollama-cli";
-  }
-  
   saveSessionModel(selectedAgentId.value, model.id);
   // Immediately update agent config so the agent uses the right model name
   setAgentModel(selectedAgentId.value, model.id).catch(() => {});

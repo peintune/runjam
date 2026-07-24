@@ -807,7 +807,7 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
             let arguments = tc["function"]["arguments"].as_str().unwrap_or("");
             output_items.push(serde_json::json!({
                 "type": "function_call",
-                "id": format!("fc_{}", chrono::Utc::now().timestamp_nanos()),
+                "id": format!("fc_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
                 "call_id": call_id,
                 "name": name,
                 "arguments": arguments,

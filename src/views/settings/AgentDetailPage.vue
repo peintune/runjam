@@ -51,7 +51,7 @@ const providerColorMap: Record<string, string> = {
   google: 'border-blue-300 text-blue-700 bg-blue-50',
   gemini: 'border-blue-300 text-blue-700 bg-blue-50',
   deepseek: 'border-violet-300 text-violet-700 bg-violet-50',
-  ollama: 'border-amber-300 text-amber-700 bg-amber-50',
+  llama: 'border-gray-300 text-gray-700 bg-gray-50',
   groq: 'border-rose-300 text-rose-700 bg-rose-50',
   xai: 'border-gray-300 text-gray-700 bg-gray-50',
   grok: 'border-gray-300 text-gray-700 bg-gray-50',
