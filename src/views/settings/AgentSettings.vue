@@ -13,7 +13,7 @@ import { useAgentStore } from "../../stores/useAgentStore";
 import {
   getAgentStatuses, installAgent, setAgentEnabled,
   checkNodejs, getNodejsInstallGuide, testAgent,
-  type AgentInfo,
+  type AgentInfo, type AgentStatus,
 } from "../../api/agents";
 import { readAgentConfigModels } from "../../api/models";
 

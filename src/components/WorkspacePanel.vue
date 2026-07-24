@@ -144,7 +144,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
           class="flex items-center h-full overflow-x-auto [&::-webkit-scrollbar]:hidden"
           style="scrollbar-width: none;"
         >
-          <div
+          <button
             v-for="(filePath, i) in openFiles"
             :key="filePath"
             @click="switchTab(i)"
@@ -163,7 +163,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
             >
               <X :size="10" />
             </button>
-          </div>
+          </button>
         </div>
       </div>
 
