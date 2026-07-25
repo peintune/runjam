@@ -234,10 +234,15 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         })?;
     
     let models_dir = get_models_dir();
+    let model_filename = std::path::Path::new(&model_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| model_path.clone());
+    
     let full_model_path = if std::path::Path::new(&model_path).is_absolute() {
         PathBuf::from(model_path)
     } else {
-        models_dir.join(model_path)
+        models_dir.join(model_filename)
     };
     
     if !full_model_path.exists() {

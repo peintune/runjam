@@ -454,7 +454,8 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
 }
 
 const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
-const customLocalModels = computed(() => models.value.filter(m => m.provider === "llama"));
+const recommendedModelFilenames = ['Ornith-1.0-9B-Q4_K_M.gguf', 'Phi-3.5-mini-instruct-4k-q4.gguf', 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf'];
+const customLocalModels = computed(() => models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name)));
 </script>
 
 <template>
