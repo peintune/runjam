@@ -163,21 +163,34 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                         request.respond(response).ok();
                     }
                 }
-                Ok(ProxyResponse::Stream { reader }) => {
+                Ok(ProxyResponse::Stream { mut reader }) => {
                     rjlog!("[PROXY STREAM] Sending streaming SSE response to agent");
-                    // Streaming SSE response: tiny_http sends chunks as they become available
-                    let response = Response::new(
-                        StatusCode(200),
-                        vec![
-                            Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
-                            Header::from_bytes("Cache-Control", "no-cache").unwrap(),
-                            Header::from_bytes("Connection", "keep-alive").unwrap(),
-                        ],
-                        reader,
-                        None,
-                        None,
-                    );
-                    request.respond(response).ok();
+                    let mut writer = request.into_writer();
+                    let _ = write!(&mut writer, "HTTP/1.1 200 OK\r\n");
+                    let _ = write!(&mut writer, "Content-Type: text/event-stream\r\n");
+                    let _ = write!(&mut writer, "Cache-Control: no-cache, no-store\r\n");
+                    let _ = write!(&mut writer, "Connection: keep-alive\r\n");
+                    let _ = write!(&mut writer, "X-Accel-Buffering: no\r\n");
+                    let _ = write!(&mut writer, "\r\n");
+                    let _ = writer.flush();
+                    
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) => {
+                                rjlog!("[PROXY STREAM] End of stream");
+                                break;
+                            }
+                            Ok(n) => {
+                                let _ = writer.write_all(&buf[..n]);
+                                let _ = writer.flush();
+                            }
+                            Err(e) => {
+                                rjlog!("[PROXY STREAM] Error reading from upstream: {}", e);
+                                break;
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let detail = e.downcast_ref::<String>()
