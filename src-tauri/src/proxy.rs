@@ -110,11 +110,13 @@ pub struct ProxyState {
     /// Maps agent_id → model ids assigned to that agent (used to disambiguate
     /// models that share the same name; lookups prefer the agent's own model).
     pub agent_models: HashMap<String, Vec<String>>,
+    /// Whether reasoning mode is disabled (global state).
+    pub reasoning_disabled: bool,
 }
 
 impl ProxyState {
     pub fn new() -> Self {
-        Self { port: 0, running: false, models: vec![], agent_models: HashMap::new() }
+        Self { port: 0, running: false, models: vec![], agent_models: HashMap::new(), reasoning_disabled: false }
     }
 }
 
@@ -169,7 +171,7 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                     let _ = write!(&mut writer, "HTTP/1.1 200 OK\r\n");
                     let _ = write!(&mut writer, "Content-Type: text/event-stream\r\n");
                     let _ = write!(&mut writer, "Cache-Control: no-cache, no-store\r\n");
-                    let _ = write!(&mut writer, "Connection: keep-alive\r\n");
+                    let _ = write!(&mut writer, "Transfer-Encoding: chunked\r\n");
                     let _ = write!(&mut writer, "X-Accel-Buffering: no\r\n");
                     let _ = write!(&mut writer, "\r\n");
                     let _ = writer.flush();
@@ -179,14 +181,20 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                         match reader.read(&mut buf) {
                             Ok(0) => {
                                 rjlog!("[PROXY STREAM] End of stream");
+                                let _ = write!(&mut writer, "0\r\n\r\n");
+                                let _ = writer.flush();
                                 break;
                             }
                             Ok(n) => {
+                                let _ = write!(&mut writer, "{:x}\r\n", n);
                                 let _ = writer.write_all(&buf[..n]);
+                                let _ = write!(&mut writer, "\r\n");
                                 let _ = writer.flush();
                             }
                             Err(e) => {
                                 rjlog!("[PROXY STREAM] Error reading from upstream: {}", e);
+                                let _ = write!(&mut writer, "0\r\n\r\n");
+                                let _ = writer.flush();
                                 break;
                             }
                         }
@@ -303,31 +311,33 @@ fn handle_request(
         state.lock().unwrap().agent_models.get(agent).cloned()
     };
     let preferred_ref = preferred_ids.as_deref();
+    
+    let reasoning_disabled = state.lock().unwrap().reasoning_disabled;
 
     // Anthropic Messages API → proxy (supports /anthropic/v1/messages prefix)
     if path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages") {
-        return proxy_anthropic_to_openai(&body, &models, preferred_ref);
+        return proxy_anthropic_to_openai(&body, &models, preferred_ref, reasoning_disabled);
     }
 
     // OpenAI Chat Completions → proxy
     if path == "/v1/chat/completions" || path.ends_with("/v1/chat/completions") {
-        return proxy_openai_direct(&body, &models, preferred_ref);
+        return proxy_openai_direct(&body, &models, preferred_ref, reasoning_disabled);
     }
 
     // OpenAI Responses API → Chat Completions (Codex uses /responses)
     if path == "/responses" || path == "/v1/responses" || path.ends_with("/v1/responses") {
-        return proxy_responses_to_openai(&body, &models, preferred_ref);
+        return proxy_responses_to_openai(&body, &models, preferred_ref, reasoning_disabled);
     }
 
     // Gemini GenerateContent API → proxy
     if (path.contains("/v1/") || path.contains("/v1beta/")) && (path.contains(":generateContent") || path.contains("/models/")) {
-        return proxy_gemini_to_openai(&body, &models, &path, preferred_ref);
+        return proxy_gemini_to_openai(&body, &models, &path, preferred_ref, reasoning_disabled);
     }
 
     ProxyResponse::Sync(StatusCode(404), "Not found".to_string())
 }
 
-fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
+fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return ProxyResponse::Sync(StatusCode(400), format!("Invalid JSON: {}", e)) };
 
     // Extract messages and model
@@ -341,8 +351,8 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Find matching model in our config
     let target = find_model(models, model_name, preferred_ids);
 
-    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
+    let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
     } else {
         // No match — try to forward as-is to Anthropic
         let (s, b) = forward_to_anthropic(body);
@@ -351,11 +361,13 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     // Build OpenAI-format request
     let mut openai_messages: Vec<Value> = vec![];
-    if let Some(sys) = system {
-        openai_messages.push(serde_json::json!({"role": "system", "content": sys}));
+    let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
+    let system_content = if let Some(sys) = system {
+        sys.to_string()
     } else {
-        openai_messages.push(serde_json::json!({"role": "system", "content": "You are a helpful assistant."}));
-    }
+        "You are a helpful assistant.".to_string()
+    };
+    openai_messages.push(serde_json::json!({"role": "system", "content": system_content}));
     if let Some(msgs) = messages.as_array() {
         for m in msgs {
             let role = m["role"].as_str().unwrap_or("user");
@@ -477,6 +489,13 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         rjlog!("[PROXY] Anthropic→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
     }
 
+    if reasoning_disabled {
+        openai_body["thinking"] = serde_json::json!({"type": "disabled"});
+        openai_body["reasoning_effort"] = serde_json::json!("low");
+        openai_body["enable_thinking"] = serde_json::json!(false);
+        openai_body["temperature"] = serde_json::json!(0.6);
+    }
+
     // Forward to OpenAI-compatible endpoint
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     rjlog!("[PROXY] Anthropic→OpenAI: POST {} model={} stream={} msgs={}", url, real_model, stream, openai_messages.len());
@@ -571,7 +590,7 @@ fn convert_tool_choice_anthropic_to_openai(tc: &Value) -> Value {
     tc.clone()
 }
 
-fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
+fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
     // For OpenAI requests, forward directly to the target
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return ProxyResponse::Sync(StatusCode(400), "Invalid JSON".into()) };
     let model_name = req["model"].as_str().unwrap_or("gpt-4o");
@@ -584,10 +603,20 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
 
     if let Some(m) = target {
         let url = format!("{}/chat/completions", m.api_base.trim_end_matches('/'));
+        
+        let mut req_body: Value = serde_json::from_str(body).unwrap_or_default();
+        if reasoning_disabled {
+            req_body["thinking"] = serde_json::json!({"type": "disabled"});
+            req_body["reasoning_effort"] = serde_json::json!("low");
+            req_body["enable_thinking"] = serde_json::json!(false);
+            req_body["temperature"] = serde_json::json!(0.6);
+        }
+        let modified_body = req_body.to_string();
+        
         let resp = ureq::post(&url)
             .set("Authorization", &format!("Bearer {}", m.api_key))
             .set("Content-Type", "application/json")
-            .send_string(body);
+            .send_string(&modified_body);
         match resp {
             Ok(r) => {
                 if stream {
@@ -620,7 +649,7 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
 /// Translate OpenAI Responses API → OpenAI Chat Completions.
 /// Codex uses the Responses API (/responses), but most providers (DeepSeek, etc.)
 /// only support Chat Completions (/v1/chat/completions).
-fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>) -> ProxyResponse {
+fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return ProxyResponse::Sync(StatusCode(400), "Invalid JSON".into()) };
     let model_name = req["model"].as_str().unwrap_or("");
     let stream = req["stream"].as_bool().unwrap_or(false);
@@ -698,12 +727,12 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     // Find matching model in config
     let target = find_model(models, model_name, preferred_ids);
-    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
+    let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
         let masked_key = if m.api_key.len() > 8 {
             format!("{}...{}", &m.api_key[..4], &m.api_key[m.api_key.len()-4..])
         } else { m.api_key.clone() };
         rjlog!("[PROXY] Responses→Chat: Found model '{}' api_key={} base_url={}", m.name, masked_key, m.api_base);
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
     } else {
         rjlog!("[PROXY] Responses→Chat: Model '{}' NOT FOUND in {} models. Available: {:?}",
             model_name, models.len(),
@@ -739,6 +768,13 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         } else {
             rjlog!("[PROXY] Responses→Chat: model {} does not support tools, skipping tool definitions", real_model);
         }
+    }
+
+    if reasoning_disabled {
+        chat_body["thinking"] = serde_json::json!({"type": "disabled"});
+        chat_body["reasoning_effort"] = serde_json::json!("low");
+        chat_body["enable_thinking"] = serde_json::json!(false);
+        chat_body["temperature"] = serde_json::json!(0.6);
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -1667,7 +1703,7 @@ fn convert_openai_sse_to_claude_sse(openai_sse: &str, model_name: &str) -> Strin
     result
 }
 
-fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferred_ids: Option<&[String]>) -> ProxyResponse {
+fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return ProxyResponse::Sync(StatusCode(400), format!("Invalid JSON: {}", e)) };
 
     let model_name = extract_model_from_path(path).unwrap_or("gemini-1.5-pro");
@@ -1698,8 +1734,8 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
 
     let target = find_model(models, model_name, preferred_ids);
 
-    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
+    let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
     } else {
         let (s, b) = forward_to_gemini(body, path);
         return ProxyResponse::Sync(s, b);
@@ -1787,6 +1823,13 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
         openai_body["tools"] = serde_json::json!(openai_tools);
     } else if !openai_tools.is_empty() && !support_tools {
         rjlog!("[PROXY] Gemini→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
+    }
+
+    if reasoning_disabled {
+        openai_body["thinking"] = serde_json::json!({"type": "disabled"});
+        openai_body["reasoning_effort"] = serde_json::json!("low");
+        openai_body["enable_thinking"] = serde_json::json!(false);
+        openai_body["temperature"] = serde_json::json!(0.6);
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));

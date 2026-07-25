@@ -96,6 +96,7 @@ function selectRecentDir(p: string) {
 const selectedMode = ref("assistant");
 const selectedPermissionMode = ref("ask_approval");
 const showPermissionDropdown = ref(false);
+const noThinking = ref(false);
 
 const placeholderText = "Ask anything — write code, debug, refactor, run parallel agents, orchestrate multi-agent workflows, or explore your entire codebase. What do you want to build?";
 const typingPlaceholder = ref("");
@@ -734,6 +735,7 @@ async function handleSend() {
 
   if(store.activeSession) {
     const sessionId = store.activeSession.id;
+    invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
     sendInput(sessionId, text).catch(err=>{
       const state = getSessionState(sessionId);
       state.messages.push({role:"agent",content:`Error:${err}`});
@@ -894,6 +896,9 @@ watch(messages, (msgs) => {
                   </div>
                 </div>
 
+                <button v-if="!isProcessing" @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" title="Toggle reasoning mode">
+                  <Sparkles :size="14" />
+                </button>
                 <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 relative" :class="(inputText.trim() && selectedModel)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
                   <Send :size="14" />
                   <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
@@ -1069,6 +1074,10 @@ watch(messages, (msgs) => {
                 </div>
               </div>
 
+              <!-- No thinking toggle -->
+              <button @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" title="Toggle reasoning mode">
+                <Sparkles :size="14" />
+              </button>
               <!-- Send button -->
               <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
                 <Send :size="14" />

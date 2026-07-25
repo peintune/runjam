@@ -133,6 +133,7 @@ pub fn run() {
             commands::app_cmd::open_in_finder,
             commands::proxy_cmd::get_proxy_port,
             commands::proxy_cmd::get_proxy_url,
+            commands::proxy_cmd::set_reasoning_disabled,
             commands::llama_cmd::check_llama_server_available,
             commands::llama_cmd::get_llama_server_status,
             commands::llama_cmd::get_server_status,
