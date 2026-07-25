@@ -26,12 +26,6 @@ pub struct LlamaPullProgress {
     pub percentage: f64,
 }
 
-fn get_binaries_dir() -> PathBuf {
-    let mut path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    path.pop();
-    path.join("binaries").join("llama-server")
-}
-
 fn get_platform_dir() -> String {
     #[cfg(target_os = "macos")]
     {
@@ -56,18 +50,61 @@ fn get_platform_dir() -> String {
 }
 
 fn get_llama_server_path() -> Option<PathBuf> {
-    let binaries_dir = get_binaries_dir();
     let platform_dir = get_platform_dir();
-    let server_path = binaries_dir.join(&platform_dir).join(if cfg!(target_os = "windows") { "llama-server.exe" } else { "llama-server" });
+    let binary_name = if cfg!(target_os = "windows") { "llama-server.exe" } else { "llama-server" };
     
-    if server_path.exists() {
-        return Some(server_path);
+    #[cfg(debug_assertions)]
+    {
+        let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let dev_path = src_dir.join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
+        if dev_path.exists() {
+            return Some(dev_path);
+        }
+    }
+    
+    let mut exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    exe_path.pop();
+    let exe_relative_path = exe_path.join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
+    if exe_relative_path.exists() {
+        return Some(exe_relative_path);
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        let mut bundle_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        bundle_path.pop();
+        bundle_path.pop();
+        bundle_path.pop();
+        let bundle_resources = bundle_path.join("Resources").join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
+        if bundle_resources.exists() {
+            return Some(bundle_resources);
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        let mut exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        exe_path.pop();
+        let resources_path = exe_path.join("resources").join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
+        if resources_path.exists() {
+            return Some(resources_path);
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        let mut exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        exe_path.pop();
+        let resources_path = exe_path.join("share").join("runjam").join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
+        if resources_path.exists() {
+            return Some(resources_path);
+        }
     }
     
     let app_dir = directories::ProjectDirs::from("com", "runjam", "RunJam")
         .map(|d| d.data_local_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let app_server_path = app_dir.join("binaries").join("llama-server").join(platform_dir).join(if cfg!(target_os = "windows") { "llama-server.exe" } else { "llama-server" });
+    let app_server_path = app_dir.join("binaries").join("llama-server").join(platform_dir).join(binary_name);
     
     if app_server_path.exists() {
         return Some(app_server_path);
@@ -91,9 +128,53 @@ pub fn check_llama_server_available() -> bool {
 }
 
 #[tauri::command]
+pub fn open_llama_models_dir() -> Result<(), String> {
+    let models_dir = get_models_dir();
+    if !models_dir.exists() {
+        std::fs::create_dir_all(&models_dir)
+            .map_err(|e| format!("Failed to create models directory: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        Command::new("open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        Command::new("explorer")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        Command::new("xdg-open")
+            .arg(&models_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open directory: {}", e))?;
+    }
+    
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_llama_server_status() -> String {
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
         return format!("running:{}", LLAMA_SERVER_PORT.load(Ordering::Relaxed));
+    }
+    
+    for port in 19090..19100 {
+        if check_server_running(port) {
+            return format!("running:{}", port);
+        }
     }
     
     if !check_llama_server_available() {
@@ -136,8 +217,21 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         return Ok(LLAMA_SERVER_PORT.load(Ordering::Relaxed));
     }
     
+    if check_server_running(19090) {
+        LLAMA_SERVER_PORT.store(19090, Ordering::Relaxed);
+        LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
+        return Ok(19090);
+    }
+    
     let server_path = get_llama_server_path()
-        .ok_or_else(|| "llama-server binary not found".to_string())?;
+        .ok_or_else(|| {
+            let mut msg = "llama-server binary not found. Searched paths:\n".to_string();
+            msg.push_str("- CARGO_MANIFEST_DIR/binaries/\n");
+            msg.push_str("- Executable directory/binaries/\n");
+            msg.push_str("- App resources/binaries/\n");
+            msg.push_str("- User data directory/binaries/");
+            msg
+        })?;
     
     let models_dir = get_models_dir();
     let full_model_path = if std::path::Path::new(&model_path).is_absolute() {
@@ -150,19 +244,20 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         return Err(format!("Model file not found: {}", full_model_path.display()));
     }
     
-    let port = find_free_port(8080);
+    let port = find_free_port(19090);
     LLAMA_SERVER_PORT.store(port, Ordering::Relaxed);
     
     let mut cmd = Command::new(&server_path);
     cmd.arg("-m").arg(&full_model_path)
         .arg("--port").arg(port.to_string())
         .arg("--host").arg("127.0.0.1")
-        .arg("--api-key").arg("llama")
+        .arg("--no-jinja")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     
     let mut child = cmd.spawn()
-        .map_err(|e| format!("Failed to start llama-server: {}", e))?;
+        .map_err(|e| format!("Failed to start llama-server. Server path: {}, Model path: {}, Error: {}", 
+            server_path.display(), full_model_path.display(), e))?;
     
     let pid = child.id();
     LLAMA_SERVER_PID.store(pid, Ordering::Relaxed);
@@ -201,14 +296,14 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         let _ = app_handle.emit("llama_server_log", "llama-server stopped".to_string());
     });
     
-    for _ in 0..20 {
+    for _ in 0..600 {
         std::thread::sleep(Duration::from_millis(500));
         if check_server_running(port) {
             return Ok(port);
         }
     }
     
-    Err("Failed to start llama-server".to_string())
+    Err("Failed to start llama-server: Server did not respond within 5 minutes".to_string())
 }
 
 fn find_free_port(start_port: u16) -> u16 {
@@ -222,39 +317,55 @@ fn find_free_port(start_port: u16) -> u16 {
 }
 
 fn check_server_running(port: u16) -> bool {
-    let url = format!("http://127.0.0.1:{}/health", port);
-    match ureq::get(&url).timeout(Duration::from_secs(2)).call() {
-        Ok(_) => true,
+    let url = format!("http://127.0.0.1:{}/v1/models", port);
+    match ureq::get(&url).timeout(Duration::from_secs(5)).call() {
+        Ok(response) => {
+            let status = response.status();
+            status == 200 || status == 201 || status == 204
+        }
         Err(_) => false,
     }
 }
 
 #[tauri::command]
 pub fn stop_llama_server() -> Result<(), String> {
-    if !LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-    
     LLAMA_SERVER_RUNNING.store(false, Ordering::Relaxed);
-    let pid = LLAMA_SERVER_PID.load(Ordering::Relaxed);
     
-    if pid == 0 {
-        return Ok(());
+    let pid = LLAMA_SERVER_PID.load(Ordering::Relaxed);
+    LLAMA_SERVER_PID.store(0, Ordering::Relaxed);
+    
+    if pid != 0 {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+                .arg("/F")
+                .arg("/PID")
+                .arg(pid.to_string())
+                .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .output();
+        }
     }
     
     #[cfg(target_os = "windows")]
     {
         let _ = Command::new("taskkill")
             .arg("/F")
-            .arg("/PID")
-            .arg(pid.to_string())
+            .arg("/IM")
+            .arg("llama-server.exe")
             .output();
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("kill")
+        let _ = Command::new("pkill")
             .arg("-TERM")
-            .arg(pid.to_string())
+            .arg("-f")
+            .arg("llama-server")
             .output();
     }
     
@@ -276,7 +387,7 @@ pub fn download_llama_model(hf_repo: String, filename: String, app_handle: AppHa
         return Ok(());
     }
     
-    let url = format!("https://huggingface.co/{}/resolve/main/{}", hf_repo, filename);
+    let url = format!("https://huggingface.co/{}/resolve/main/{}?download=true", hf_repo, filename);
     
     std::thread::spawn(move || {
         let app_handle1 = app_handle.clone();

@@ -263,10 +263,10 @@ fn handle_request(
 
     rjlog!("[PROXY] <<< body ({} chars) first 300: {}", body.len(), &body[..body.len().min(300)]);
 
-    // Use models from proxy state (loaded from database at startup)
-    let models = { state.lock().unwrap().models.clone() };
+    // Load models from config file (updated when models are saved)
+    let models = ModelConfig::load().models;
     
-    rjlog!("[PROXY] Using {} models from proxy state", models.len());
+    rjlog!("[PROXY] Using {} models from config file", models.len());
     for m in &models {
         rjlog!("[PROXY] Model: {} (id={}, support_tools={})", m.name, m.id, m.support_tools);
     }
@@ -338,6 +338,8 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     let mut openai_messages: Vec<Value> = vec![];
     if let Some(sys) = system {
         openai_messages.push(serde_json::json!({"role": "system", "content": sys}));
+    } else {
+        openai_messages.push(serde_json::json!({"role": "system", "content": "You are a helpful assistant."}));
     }
     if let Some(msgs) = messages.as_array() {
         for m in msgs {
@@ -448,14 +450,15 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         "max_tokens": max_tokens,
         "stream": stream,
     });
-    if !openai_tools.is_empty() && support_tools {
+    let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
+    if !openai_tools.is_empty() && support_tools && !is_llama_cpp {
         openai_body["tools"] = serde_json::json!(openai_tools);
         if let Some(tc) = req.get("tool_choice") {
             let converted_tc = convert_tool_choice_anthropic_to_openai(tc);
             rjlog!("[PROXY] Anthropic→OpenAI: tool_choice raw={:?}, converted={:?}", tc, converted_tc);
             openai_body["tool_choice"] = converted_tc;
         }
-    } else if !openai_tools.is_empty() && !support_tools {
+    } else if !openai_tools.is_empty() && (is_llama_cpp || !support_tools) {
         rjlog!("[PROXY] Anthropic→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
     }
 
@@ -500,11 +503,19 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
         Err(e) => {
             rjlog!("[PROXY] Anthropic→OpenAI: connection error: {:?}", e);
+            let error_msg = if real_model.contains("llama-") || real_model.ends_with(".gguf") {
+                "Llama.cpp server is not running. Please start the server in the Models settings page first.".to_string()
+            } else {
+                "Proxy connection error".to_string()
+            };
             let err_body = serde_json::json!({
-                "type": "error",
-                "error": {"type": "api_error", "message": format!("Proxy error: {}", e)}
+                "error": {
+                    "code": 503,
+                    "message": error_msg,
+                    "type": "service_unavailable"
+                }
             });
-            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(StatusCode(503), err_body.to_string())
         }
     }
 }

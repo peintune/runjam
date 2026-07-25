@@ -139,6 +139,7 @@ pub fn run() {
             commands::llama_cmd::start_llama_server,
             commands::llama_cmd::stop_llama_server,
             commands::llama_cmd::download_llama_model,
+            commands::llama_cmd::open_llama_models_dir,
             commands::llama_cmd::create_llama_model,
             commands::term_cmd::spawn_terminal,
             commands::term_cmd::write_terminal,
@@ -146,6 +147,11 @@ pub fn run() {
             commands::term_cmd::resize_terminal,
             commands::term_cmd::get_terminal_cwd,
         ])
+        .on_window_event(|_, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let _ = commands::llama_cmd::stop_llama_server();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

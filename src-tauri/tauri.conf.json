@@ -27,7 +27,8 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "nodejs/": "./"
+      "./nodejs/": "./",
+      "./binaries/": "./binaries/"
     },
     "icon": [
       "icons/32x32.png",

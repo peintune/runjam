@@ -39,6 +39,10 @@ export async function downloadLlamaModel(hfRepo: string, filename: string): Prom
   return invoke("download_llama_model", { hfRepo, filename });
 }
 
+export async function openLlamaModelsDir(): Promise<void> {
+  return invoke("open_llama_models_dir");
+}
+
 export async function createLlamaModel(modelName: string, port: number): Promise<string> {
   return invoke<string>("create_llama_model", { modelName, port });
 }
@@ -46,7 +50,7 @@ export async function createLlamaModel(modelName: string, port: number): Promise
 export const recommendedLocalModels = [
   { 
     name: "deepreinforce-ai/Ornith-1.0-9B-GGUF", 
-    filename: "Ornith-1.0-9B.Q4_K_M.gguf",
+    filename: "ornith-1.0-9b-Q4_K_M.gguf",
     alias: "Ornith 1.0 9B", 
     size: "4.9GB", 
     desc: "高性能开源模型，代码能力强",
@@ -67,30 +71,6 @@ export const recommendedLocalModels = [
     size: "4.7GB", 
     desc: "综合性能最强的开源模型",
     hfRepo: "meta-llama/Meta-Llama-3-8B-Instruct-GGUF"
-  },
-  { 
-    name: "mistralai/Mistral-7B-Instruct-v0.3-GGUF", 
-    filename: "mistral-7b-instruct-v0.3-q4_k_m.gguf",
-    alias: "Mistral 7B", 
-    size: "4.1GB", 
-    desc: "代码能力优秀，响应速度快",
-    hfRepo: "mistralai/Mistral-7B-Instruct-v0.3-GGUF"
-  },
-  { 
-    name: "microsoft/Phi-3-mini-4k-instruct-gguf", 
-    filename: "Phi-3-mini-4k-instruct-q4_k_m.gguf",
-    alias: "Phi-3 Mini", 
-    size: "2.1GB", 
-    desc: "轻量高效，适合资源有限环境",
-    hfRepo: "microsoft/Phi-3-mini-4k-instruct-gguf"
-  },
-  { 
-    name: "codellama/CodeLlama-7b-Instruct-hf", 
-    filename: "codellama-7b-instruct-q4_k_m.gguf",
-    alias: "CodeLlama 7B", 
-    size: "4.7GB", 
-    desc: "专为代码任务优化",
-    hfRepo: "codellama/CodeLlama-7b-Instruct-hf"
   },
 ];
 
@@ -282,17 +262,6 @@ export const providers: ProviderConfig[] = [
     homepage: "https://openrouter.ai/",
   },
   {
-    id: "custom",
-    name: "Custom",
-    icon: "⚙️",
-    color: "#9ca3af",
-    defaultBase: "",
-    protocol: "openai_chat",
-    models: [],
-    desc: "Any OpenAI-compatible API",
-    homepage: "",
-  },
-  {
     id: "alibaba",
     name: "Alibaba",
     icon: "☁️",
@@ -370,11 +339,22 @@ export const providers: ProviderConfig[] = [
     homepage: "https://groq.com/",
   },
   {
+    id: "custom",
+    name: "Custom",
+    icon: "⚙️",
+    color: "#9ca3af",
+    defaultBase: "",
+    protocol: "openai_chat",
+    models: [],
+    desc: "Any OpenAI-compatible API",
+    homepage: "",
+  },
+  {
     id: "llama",
     name: "Llama.cpp",
     icon: "🦙",
     color: "#000000",
-    defaultBase: "http://localhost:8080/v1",
+    defaultBase: "http://localhost:19090/v1",
     protocol: "openai_chat",
     models: [],
     desc: "Local models (GGUF)",
