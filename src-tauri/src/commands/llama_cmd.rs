@@ -266,9 +266,10 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     
+    let app_handle_clone = app_handle.clone();
     std::thread::spawn(move || {
-        let app_handle_stdout = app_handle.clone();
-        let app_handle_stderr = app_handle.clone();
+        let app_handle_stdout = app_handle_clone.clone();
+        let app_handle_stderr = app_handle_clone.clone();
         
         std::thread::spawn(move || {
             use std::io::{BufRead, BufReader};
@@ -293,17 +294,22 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         let _ = child.wait();
         LLAMA_SERVER_RUNNING.store(false, Ordering::Relaxed);
         LLAMA_SERVER_PID.store(0, Ordering::Relaxed);
-        let _ = app_handle.emit("llama_server_log", "llama-server stopped".to_string());
+        let _ = app_handle_clone.emit("llama_server_log", "llama-server stopped".to_string());
     });
     
-    for _ in 0..600 {
-        std::thread::sleep(Duration::from_millis(500));
-        if check_server_running(port) {
-            return Ok(port);
+    let app_handle_check = app_handle.clone();
+    std::thread::spawn(move || {
+        for _ in 0..1200 {
+            std::thread::sleep(Duration::from_millis(500));
+            if check_server_running(port) {
+                let _ = app_handle_check.emit("llama_server_started", port);
+                return;
+            }
         }
-    }
+        let _ = app_handle_check.emit("llama_server_started", 0);
+    });
     
-    Err("Failed to start llama-server: Server did not respond within 5 minutes".to_string())
+    Ok(port)
 }
 
 fn find_free_port(start_port: u16) -> u16 {
@@ -324,6 +330,31 @@ fn check_server_running(port: u16) -> bool {
             status == 200 || status == 201 || status == 204
         }
         Err(_) => false,
+    }
+}
+
+#[tauri::command]
+pub fn get_server_status() -> Result<serde_json::Value, String> {
+    let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
+    if port != 0 && check_server_running(port) {
+        Ok(serde_json::json!({
+            "running": true,
+            "port": port
+        }))
+    } else {
+        for p in 19090..19100 {
+            if check_server_running(p) {
+                LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
+                return Ok(serde_json::json!({
+                    "running": true,
+                    "port": p
+                }));
+            }
+        }
+        Ok(serde_json::json!({
+            "running": false,
+            "port": 0
+        }))
     }
 }
 

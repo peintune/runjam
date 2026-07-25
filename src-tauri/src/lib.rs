@@ -135,6 +135,7 @@ pub fn run() {
             commands::proxy_cmd::get_proxy_url,
             commands::llama_cmd::check_llama_server_available,
             commands::llama_cmd::get_llama_server_status,
+            commands::llama_cmd::get_server_status,
             commands::llama_cmd::list_llama_models,
             commands::llama_cmd::start_llama_server,
             commands::llama_cmd::stop_llama_server,

@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
 import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
+import { useToast } from "../composables/useToast";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -50,13 +51,6 @@ const assignedModels = ref<ModelEntry[]>([]);
 // Onboarding state
 const hasAnyAgentInstalled = computed(() => agents.value.some(a => a.installed));
 const hasAnyModel = computed(() => modelList.value.length > 0);
-const currentAgentNeedsSetup = computed(() => {
-  const agent = selectedAgent.value;
-  if (!agent) return true;
-  if (!agent.installed) return true;
-  if (!hasAnyModel.value) return true;
-  return false;
-});
 
 const inputText = ref("");
 const dirPath = ref("");
@@ -223,6 +217,31 @@ const isProcessing = ref(false);
 const messageContainer = ref<HTMLElement | null>(null);
 const newSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const showModelDropdown = ref(false);
+const runningServerPort = ref(0);
+const { showWarning } = useToast();
+
+async function checkServerRunning() {
+  try {
+    const result = await invoke<{ running: boolean; port: number }>("get_server_status");
+    runningServerPort.value = result.running ? result.port : 0;
+    console.log("[DEBUG] Server status:", result);
+  } catch (e) {
+    runningServerPort.value = 0;
+    console.log("[DEBUG] Server status check failed:", e);
+  }
+}
+
+async function toggleModelDropdown() {
+  showModelDropdown.value = !showModelDropdown.value;
+  if (showModelDropdown.value) {
+    await checkServerRunning();
+    console.log("[DEBUG] Model dropdown opened:");
+    console.log("  runningServerPort:", runningServerPort.value);
+    console.log("  modelList:", modelList.value);
+    console.log("  llama models:", modelList.value.filter(m => m.provider === 'llama'));
+    console.log("  all providers:", modelList.value.map(m => m.provider));
+  }
+}
 
 // session title rename
 const sessionRename = ref(false);
@@ -612,6 +631,7 @@ onMounted(() => {
     getModels().then(list => { if(list) modelList.value = list; }).catch(()=>{});
   }
   loadAgentModels();
+  checkServerRunning();
   document.addEventListener('click', closeDropdowns);
   // Auto-focus the textarea on the new session page
   nextTick(() => {
@@ -668,6 +688,12 @@ watch(messages, async () => {
 
 async function handleSend() {
   const text = inputText.value.trim(); if(!text)return;
+  
+  if (!selectedModel.value) {
+    showWarning("Please select a model before sending.");
+    return;
+  }
+  
   inputText.value = "";
 
   if(!store.activeSession) {
@@ -823,7 +849,7 @@ watch(messages, (msgs) => {
 
                 <!-- Model selector -->
                 <div class="relative model-selector">
-                  <button @click.stop="showModelDropdown = !showModelDropdown"
+                  <button @click.stop="toggleModelDropdown"
                     class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                     <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                     <Sparkles v-else :size="11" />
@@ -834,14 +860,32 @@ watch(messages, (msgs) => {
                     </span>
                     <ChevronDown :size="10" />
                   </button>
-                  <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
-                    <div v-for="model in modelList" :key="model.id"
+                  <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
+                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Commercial Models</div>
+                    <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
                       @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                       <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
-                      <div>
-                        <div class="text-[12px] font-medium">{{ model.alias || model.name }}</div>
-                        <div v-if="model.alias" class="text-[10px] text-gray-400">{{ model.name }}</div>
+                      <div class="flex-1 min-w-0">
+                        <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
+                        <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
+                      </div>
+                    </div>
+                    <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
+                      <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                        Local Models
+                        <span :class="['w-2 h-2 rounded-full', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                      </div>
+                      <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
+                        @click="runningServerPort > 0 ? handleModelSelect(model) : router.push('/settings/models')"
+                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', runningServerPort > 0 ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed']">
+                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                        <img :src="getProviderLogo('llama')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
+                        <div class="flex-1 min-w-0">
+                          <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
+                          <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
+                        </div>
+                        <span v-if="!runningServerPort" class="text-[10px] text-gray-400">Start server</span>
                       </div>
                     </div>
                     <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
@@ -850,7 +894,10 @@ watch(messages, (msgs) => {
                   </div>
                 </div>
 
-                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim()" class="p-1.5 rounded-lg transition-colors duration-150" :class="inputText.trim()?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'"><Send :size="14" /></button>
+                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 relative" :class="(inputText.trim() && selectedModel)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                  <Send :size="14" />
+                  <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
+                </button>
                 <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm"><Square :size="12" />Stop</button>
               </div>
             </div>
@@ -968,7 +1015,7 @@ watch(messages, (msgs) => {
 
               <!-- Model selector -->
               <div class="relative model-selector">
-                <button @click.stop="showModelDropdown = !showModelDropdown"
+                <button @click.stop="toggleModelDropdown"
                   class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                   <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                   <Sparkles v-else :size="11" />
@@ -979,22 +1026,40 @@ watch(messages, (msgs) => {
                   </span>
                   <ChevronDown :size="10" />
                 </button>
-                <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
-                  <div v-for="model in modelList" :key="model.id"
-                    @click="handleModelSelect(model)"
-                    :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
-                    <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
-                    <div>
-                      <div class="text-[12px] font-medium">{{ model.alias || model.name }}</div>
-                      <div v-if="model.alias" class="text-[10px] text-gray-400">{{ model.name }}</div>
+                <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
+                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Commercial Models</div>
+                    <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
+                      @click="handleModelSelect(model)"
+                      :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
+                      <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
+                      <div class="flex-1 min-w-0">
+                        <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
+                        <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
+                      </div>
                     </div>
-                  </div>
-                  <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
-                    No models configured
-                  </div>
-                  <div class="border-t border-gray-100">
-                    <button
-                      @click="router.push('/settings/models?action=add')"
+                    <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
+                      <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                        Local Models
+                        <span :class="['w-2 h-2 rounded-full', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                      </div>
+                      <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
+                        @click="runningServerPort > 0 ? handleModelSelect(model) : router.push('/settings/models')"
+                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', runningServerPort > 0 ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed']">
+                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                        <img :src="getProviderLogo('llama')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
+                        <div class="flex-1 min-w-0">
+                          <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
+                          <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
+                        </div>
+                        <span v-if="!runningServerPort" class="text-[10px] text-gray-400">Start server</span>
+                      </div>
+                    </div>
+                    <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
+                      No models configured
+                    </div>
+                    <div class="border-t border-gray-100">
+                      <button
+                        @click="router.push('/settings/models?action=add')"
                       class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer font-medium"
                     >
                       <Plus :size="13" class="text-gray-400" />
@@ -1005,7 +1070,10 @@ watch(messages, (msgs) => {
               </div>
 
               <!-- Send button -->
-              <button @click="handleSend" :disabled="!inputText.trim() || currentAgentNeedsSetup" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0" :class="inputText.trim() && !currentAgentNeedsSetup ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'" :title="currentAgentNeedsSetup ? 'Install an agent and configure a model first' : ''"><Send :size="14" /></button>
+              <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                <Send :size="14" />
+                <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
+              </button>
             </div>
           </div>
 

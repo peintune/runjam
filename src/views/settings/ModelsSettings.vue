@@ -223,35 +223,60 @@ async function handleStartServer(filename: string) {
   try {
     console.log("Starting server with filename:", filename);
     const port = await startLlamaServer(filename);
-    console.log("Server started on port:", port);
-    runningServerPort.value = port;
-    await loadLlamaInfo();
+    console.log("Server starting on port:", port);
     
-    const provider = getProviderById("llama")!;
-    const existingModel = models.value.find(m => m.name === filename && m.provider === "llama");
+    const onServerStarted = (startedPort: number) => {
+      if (startedPort > 0) {
+        runningServerPort.value = startedPort;
+        loadLlamaInfo();
+        
+        const provider = getProviderById("llama")!;
+        const existingModel = models.value.find(m => m.name === filename && m.provider === "llama");
+        
+        if (existingModel) {
+          existingModel.apiBase = `http://localhost:${startedPort}/v1`;
+          persistModels();
+        } else {
+          models.value.push({
+            id: `llama-${filename}-${Date.now().toString(36)}`,
+            name: filename,
+            alias: filename,
+            provider: "llama",
+            apiBase: `http://localhost:${startedPort}/v1`,
+            apiKey: "llama",
+            protocol: provider.protocol,
+            showKey: false,
+            assignedAgents: [],
+            useProxy: {},
+          });
+          persistModels();
+        }
+      } else {
+        serverError.value = "Failed to start server: Server did not respond";
+      }
+      startingServer.value = false;
+    };
     
-    if (existingModel) {
-      existingModel.apiBase = `http://localhost:${port}/v1`;
-      await persistModels();
-    } else {
-      models.value.push({
-        id: `llama-${filename}-${Date.now().toString(36)}`,
-        name: filename,
-        alias: filename,
-        provider: "llama",
-        apiBase: `http://localhost:${port}/v1`,
-        apiKey: "llama",
-        protocol: provider.protocol,
-        showKey: false,
-        assignedAgents: [],
-        useProxy: {},
+    try {
+      const { listen } = await import("@tauri-apps/api/event");
+      const unlisten = await listen<number>("llama_server_started", (event) => {
+        unlisten();
+        onServerStarted(event.payload);
       });
-      await persistModels();
+      
+      setTimeout(() => {
+        onServerStarted(runningServerPort.value);
+      }, 120000);
+    } catch {
+      setTimeout(() => {
+        runningServerPort.value = port;
+        startingServer.value = false;
+        loadLlamaInfo();
+      }, 5000);
     }
   } catch (err: any) {
-    console.error("Failed to start server - full error:", err);
+    console.error("Failed to start server:", err);
     serverError.value = err.message || err || "Failed to start server";
-  } finally {
     startingServer.value = false;
   }
 }
@@ -429,6 +454,7 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
 }
 
 const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
+const customLocalModels = computed(() => models.value.filter(m => m.provider === "llama"));
 </script>
 
 <template>
@@ -512,27 +538,33 @@ const commercialModels = computed(() => models.value.filter(m => m.provider !== 
               </div>
             </template>
             <template v-else-if="isModelInstalled(rm.filename)">
-              <span v-if="startingServer" class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
-                <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
-                Starting...
-              </span>
-              <button 
-                v-else-if="!runningServerPort"
-                @click="handleStartServer(rm.filename)"
-                class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
-              >
-                <Play :size="12" /> Start
-              </button>
-              <button 
-                v-if="!models.some(m => m.name === rm.filename && m.provider === 'llama')"
-                @click="addLocalModel(rm.filename)"
-                class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
-              >
-                <Plus :size="12" /> Add
-              </button>
-              <span v-else class="flex items-center gap-1 text-[12px] text-emerald-600">
-                <Check :size="12" /> Added
-              </span>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <template v-if="startingServer">
+                  <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
+                    <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
+                    Starting...
+                  </span>
+                </template>
+                <template v-else>
+                  <button 
+                    v-if="!runningServerPort"
+                    @click="handleStartServer(rm.filename)"
+                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  >
+                    <Play :size="12" /> Start
+                  </button>
+                  <button 
+                    v-if="!models.some(m => m.name === rm.filename && m.provider === 'llama')"
+                    @click="addLocalModel(rm.filename)"
+                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  >
+                    <Plus :size="12" /> Add
+                  </button>
+                  <span v-else class="flex items-center gap-1 text-[12px] text-emerald-600">
+                    <Check :size="12" /> Added
+                  </span>
+                </template>
+              </div>
             </template>
             <template v-else>
               <button 
@@ -544,12 +576,55 @@ const commercialModels = computed(() => models.value.filter(m => m.provider !== 
             </template>
           </div>
         </div>
+
+        <div v-if="customLocalModels.length > 0" class="mt-4 pt-4 border-t border-gray-100">
+          <div class="text-[12px] font-medium text-gray-400 mb-2">Custom Models</div>
+          <div 
+            v-for="model in customLocalModels" 
+            :key="model.id"
+            class="flex items-center gap-4 px-4 py-3 rounded-xl border border-gray-200 bg-gray-50"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-[15px] font-medium text-gray-900 truncate">{{ model.alias || model.name }}</span>
+                <span class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                  <Check :size="11" /> Added
+                </span>
+              </div>
+              <p class="text-[12px] text-gray-400 mt-0.5">{{ model.name }}</p>
+            </div>
+
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <template v-if="startingServer">
+                <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
+                  <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
+                  Starting...
+                </span>
+              </template>
+              <template v-else>
+                <button 
+                  v-if="!runningServerPort"
+                  @click="handleStartServer(model.name)"
+                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                >
+                  <Play :size="12" /> Start
+                </button>
+                <button 
+                  @click="removeModel(model.id)"
+                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                >
+                  <X :size="12" /> Remove
+                </button>
+              </template>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
 
 
-    <div v-if="(llamaServerAvailable && recommendedLocalModels.length > 0) || llamaModels.length > 0" class="border-t border-gray-100 my-6"></div>
+    <div v-if="(llamaServerAvailable && recommendedLocalModels.length > 0) || llamaModels.length > 0" class="border-t border-gray-200 my-8"></div>
 
     <div v-if="commercialModels.length > 0" class="space-y-2">
       <div class="flex items-center justify-between mb-4">
@@ -686,9 +761,13 @@ const commercialModels = computed(() => models.value.filter(m => m.provider !== 
         <div class="p-6 space-y-4">
           <div>
             <label class="block text-[12px] font-medium text-gray-500 mb-2">Model Name</label>
-            <input v-model="newLocalModelName" type="text" placeholder="e.g. my-model.gguf"
+            <input v-model="newLocalModelName" type="text" placeholder="e.g. deepreinforce-ai/Ornith-1.0-9B-GGUF"
               class="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-[13px] text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-gray-600/20 focus:border-gray-400 transition-all" />
-            <p class="text-[11px] text-gray-400 mt-1.5">Enter the filename of your GGUF model file (must exist in models folder)</p>
+            <p class="text-[11px] text-gray-400 mt-1.5">Enter the full model name (e.g. repo/model.gguf)</p>
+          </div>
+          <div class="bg-blue-50 border border-blue-200 rounded-xl p-3">
+            <p class="text-[12px] text-blue-700">💡 You can download GGUF models from <a href="https://huggingface.co/models" target="_blank" class="text-blue-600 underline hover:text-blue-800">Hugging Face</a> and place them in the models folder.</p>
+            <button @click="openLlamaModelsDir" class="mt-2 text-[11px] text-blue-600 hover:text-blue-800 underline cursor-pointer">Open Models Folder</button>
           </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex gap-2 justify-end">
