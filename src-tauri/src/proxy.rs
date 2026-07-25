@@ -80,9 +80,11 @@ impl Read for SseStreamConverter {
             let converted = if trimmed.starts_with("data: ") {
                 (self.convert)(line.trim_end())
             } else if trimmed.is_empty() {
-                // Empty line in SSE: separator between events, pass through
-                if self.first { self.first = false; return self.read(buf); }
-                b"\n".to_vec()
+                // Empty line in SSE: separator between events, skip it
+                continue;
+            } else if trimmed.starts_with(':') {
+                // SSE comment line (heartbeat/keep-alive), skip it
+                continue;
             } else {
                 // Non-data lines (event: etc.), skip
                 continue;
@@ -468,7 +470,6 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
         .build();
     let resp = agent.post(&url)
         .set("Authorization", &format!("Bearer {}", api_key))
@@ -736,7 +737,6 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
         .build();
     let resp = agent.post(&url)
         .set("Authorization", &format!("Bearer {}", api_key))

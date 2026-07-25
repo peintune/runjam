@@ -11,6 +11,9 @@ static LLAMA_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 static LLAMA_SERVER_PORT: AtomicU16 = AtomicU16::new(8080);
 static LLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
 
+static DOWNLOADING_MODEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static DOWNLOAD_PROGRESS: std::sync::Mutex<Option<LlamaPullProgress>> = std::sync::Mutex::new(None);
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LlamaModel {
     pub name: String,
@@ -414,26 +417,58 @@ pub fn download_llama_model(hf_repo: String, filename: String, app_handle: AppHa
     let output_path = models_dir.join(&filename);
     
     if output_path.exists() {
-        let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
-            status: "completed".to_string(),
-            total: None,
-            completed: None,
-            percentage: 100.0,
-        });
-        return Ok(());
+        let url = format!("https://huggingface.co/{}/resolve/main/{}?download=true", hf_repo, filename);
+        match ureq::head(&url).call() {
+            Ok(response) => {
+                if let Some(content_length) = response.header("Content-Length").and_then(|s| s.parse::<u64>().ok()) {
+                    if let Ok(metadata) = std::fs::metadata(&output_path) {
+                        if metadata.len() >= content_length {
+                            let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                                status: "completed".to_string(),
+                                total: Some(content_length),
+                                completed: Some(metadata.len()),
+                                percentage: 100.0,
+                            });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
     }
     
     let url = format!("https://huggingface.co/{}/resolve/main/{}?download=true", hf_repo, filename);
     
+    *DOWNLOADING_MODEL.lock().unwrap() = Some(filename.clone());
+    
     std::thread::spawn(move || {
-        let app_handle1 = app_handle.clone();
-        let app_handle2 = app_handle.clone();
+        let app_handle_clone = app_handle.clone();
+        let app_handle_download = app_handle.clone();
         
-        let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+        let mut progress = LlamaPullProgress {
             status: "downloading".to_string(),
             total: None,
             completed: None,
             percentage: 0.0,
+        };
+        *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+        let _ = app_handle_clone.emit("llama_pull_progress", progress);
+        
+        std::thread::spawn(move || {
+            let interval_handle = app_handle_clone;
+            loop {
+                std::thread::sleep(Duration::from_millis(500));
+                let current_progress = DOWNLOAD_PROGRESS.lock().unwrap().clone();
+                if let Some(p) = current_progress {
+                    if p.status != "downloading" {
+                        break;
+                    }
+                    let _ = interval_handle.emit("llama_pull_progress", p);
+                } else {
+                    break;
+                }
+            }
         });
         
         match ureq::get(&url).call() {
@@ -444,13 +479,16 @@ pub fn download_llama_model(hf_repo: String, filename: String, app_handle: AppHa
                 let mut file = match std::fs::File::create(&output_path) {
                     Ok(f) => f,
                     Err(e) => {
-                        let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                        let progress = LlamaPullProgress {
                             status: "failed".to_string(),
                             total: None,
                             completed: None,
                             percentage: 0.0,
-                        });
-                        let _ = app_handle.emit("llama_pull_error", format!("Failed to create file: {}", e));
+                        };
+                        *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                        *DOWNLOADING_MODEL.lock().unwrap() = None;
+                        let _ = app_handle_download.emit("llama_pull_progress", progress);
+                        let _ = app_handle_download.emit("llama_pull_error", format!("Failed to create file: {}", e));
                         return;
                     }
                 };
@@ -464,13 +502,16 @@ pub fn download_llama_model(hf_repo: String, filename: String, app_handle: AppHa
                         Ok(0) => break,
                         Ok(n) => {
                             if let Err(e) = file.write_all(&buffer[..n]) {
-                                let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                                let progress = LlamaPullProgress {
                                     status: "failed".to_string(),
                                     total: None,
                                     completed: None,
                                     percentage: 0.0,
-                                });
-                                let _ = app_handle.emit("llama_pull_error", format!("Failed to write file: {}", e));
+                                };
+                                *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                                *DOWNLOADING_MODEL.lock().unwrap() = None;
+                                let _ = app_handle_download.emit("llama_pull_progress", progress);
+                                let _ = app_handle_download.emit("llama_pull_error", format!("Failed to write file: {}", e));
                                 return;
                             }
                             downloaded += n as u64;
@@ -481,46 +522,72 @@ pub fn download_llama_model(hf_repo: String, filename: String, app_handle: AppHa
                                 0.0
                             };
                             
-                            let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                            let progress = LlamaPullProgress {
                                 status: "downloading".to_string(),
                                 total: total_size,
                                 completed: Some(downloaded),
                                 percentage,
-                            });
+                            };
+                            *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                            let _ = app_handle_download.emit("llama_pull_progress", progress);
                         }
                         Err(e) => {
-                            let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                            let progress = LlamaPullProgress {
                                 status: "failed".to_string(),
                                 total: None,
                                 completed: None,
                                 percentage: 0.0,
-                            });
-                            let _ = app_handle.emit("llama_pull_error", format!("Download failed: {}", e));
+                            };
+                            *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                            *DOWNLOADING_MODEL.lock().unwrap() = None;
+                            let _ = app_handle_download.emit("llama_pull_progress", progress);
+                            let _ = app_handle_download.emit("llama_pull_error", format!("Download failed: {}", e));
                             return;
                         }
                     }
                 }
                 
-                let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                let progress = LlamaPullProgress {
                     status: "completed".to_string(),
                     total: total_size,
                     completed: Some(downloaded),
                     percentage: 100.0,
-                });
+                };
+                *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                *DOWNLOADING_MODEL.lock().unwrap() = None;
+                let _ = app_handle_download.emit("llama_pull_progress", progress);
             }
             Err(e) => {
-                let _ = app_handle.emit("llama_pull_progress", LlamaPullProgress {
+                let progress = LlamaPullProgress {
                     status: "failed".to_string(),
                     total: None,
                     completed: None,
                     percentage: 0.0,
-                });
-                let _ = app_handle.emit("llama_pull_error", format!("Download failed: {}", e));
+                };
+                *DOWNLOAD_PROGRESS.lock().unwrap() = Some(progress.clone());
+                *DOWNLOADING_MODEL.lock().unwrap() = None;
+                let _ = app_handle_download.emit("llama_pull_progress", progress);
+                let _ = app_handle_download.emit("llama_pull_error", format!("Download failed: {}", e));
             }
         }
     });
     
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_download_status() -> Result<serde_json::Value, String> {
+    let downloading = DOWNLOADING_MODEL.lock().unwrap().clone();
+    let progress = DOWNLOAD_PROGRESS.lock().unwrap().clone();
+    Ok(serde_json::json!({
+        "downloading": downloading,
+        "progress": progress.unwrap_or(LlamaPullProgress {
+            status: "idle".to_string(),
+            total: None,
+            completed: None,
+            percentage: 0.0,
+        }),
+    }))
 }
 
 #[tauri::command]

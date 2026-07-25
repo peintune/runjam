@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, Server, FolderOpen, ChevronDown, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress } from "../../api/models";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir, getDownloadStatus, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -86,7 +86,13 @@ onMounted(async () => {
   
   listen<LlamaPullProgress>("llama_pull_progress", (event) => {
     pullProgress.value = event.payload;
-    if (event.payload.status === "completed" || event.payload.status === "failed") {
+    if (event.payload.status === "completed") {
+      if (pullingModel.value) {
+        onModelDownloaded(pullingModel.value);
+      }
+      pullingModel.value = null;
+      loadLlamaModels();
+    } else if (event.payload.status === "failed") {
       pullingModel.value = null;
       loadLlamaModels();
     }
@@ -125,6 +131,12 @@ async function loadLlamaInfo() {
       const portStr = llamaServerStatus.value.split(":")[1];
       runningServerPort.value = parseInt(portStr) || 8080;
     }
+    
+    const downloadStatus = await getDownloadStatus();
+    if (downloadStatus.downloading) {
+      pullingModel.value = downloadStatus.downloading;
+      pullProgress.value = downloadStatus.progress;
+    }
   } catch (err) {
     console.error("Failed to load Llama info:", err);
   }
@@ -158,7 +170,7 @@ async function downloadModel(hfRepo: string, filename: string) {
   }
 }
 
-async function addLocalModel(filename: string) {
+async function onModelDownloaded(filename: string) {
   const provider = getProviderById("llama")!;
   const modelExists = models.value.some(m => m.name === filename && m.provider === "llama");
   if (modelExists) return;
@@ -454,8 +466,8 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
 }
 
 const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
-const recommendedModelFilenames = ['Ornith-1.0-9B-Q4_K_M.gguf', 'Phi-3.5-mini-instruct-4k-q4.gguf', 'Mistral-7B-Instruct-v0.3-Q4_K_M.gguf'];
-const customLocalModels = computed(() => models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name)));
+const recommendedModelFilenames = ['ornith-1.0-9b-Q4_K_M.gguf', 'Qwen3-14B.Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf', 'Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf'];
+const userAddedModels = computed(() => models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name)));
 </script>
 
 <template>
@@ -554,14 +566,7 @@ const customLocalModels = computed(() => models.value.filter(m => m.provider ===
                   >
                     <Play :size="12" /> Start
                   </button>
-                  <button 
-                    v-if="!models.some(m => m.name === rm.filename && m.provider === 'llama')"
-                    @click="addLocalModel(rm.filename)"
-                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
-                  >
-                    <Plus :size="12" /> Add
-                  </button>
-                  <span v-else class="flex items-center gap-1 text-[12px] text-emerald-600">
+                  <span v-if="models.some(m => m.name === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
                     <Check :size="12" /> Added
                   </span>
                 </template>
@@ -578,10 +583,9 @@ const customLocalModels = computed(() => models.value.filter(m => m.provider ===
           </div>
         </div>
 
-        <div v-if="customLocalModels.length > 0" class="mt-4 pt-4 border-t border-gray-100">
-          <div class="text-[12px] font-medium text-gray-400 mb-2">Custom Models</div>
+        <div v-if="userAddedModels.length > 0" class="mt-4 pt-4 border-t border-gray-100 space-y-3">
           <div 
-            v-for="model in customLocalModels" 
+            v-for="model in userAddedModels" 
             :key="model.id"
             class="flex items-center gap-4 px-4 py-3 rounded-xl border border-gray-200 bg-gray-50"
           >

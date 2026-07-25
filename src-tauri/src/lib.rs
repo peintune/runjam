@@ -140,6 +140,7 @@ pub fn run() {
             commands::llama_cmd::start_llama_server,
             commands::llama_cmd::stop_llama_server,
             commands::llama_cmd::download_llama_model,
+            commands::llama_cmd::get_download_status,
             commands::llama_cmd::open_llama_models_dir,
             commands::llama_cmd::create_llama_model,
             commands::term_cmd::spawn_terminal,

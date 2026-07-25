@@ -47,6 +47,15 @@ export async function createLlamaModel(modelName: string, port: number): Promise
   return invoke<string>("create_llama_model", { modelName, port });
 }
 
+export interface DownloadStatus {
+  downloading: string | null;
+  progress: LlamaPullProgress;
+}
+
+export async function getDownloadStatus(): Promise<DownloadStatus> {
+  return invoke<DownloadStatus>("get_download_status");
+}
+
 export const recommendedLocalModels = [
   { 
     name: "deepreinforce-ai/Ornith-1.0-9B-GGUF", 
@@ -57,20 +66,28 @@ export const recommendedLocalModels = [
     hfRepo: "deepreinforce-ai/Ornith-1.0-9B-GGUF"
   },
   { 
-    name: "Qwen/Qwen2-7B-Instruct-GGUF", 
-    filename: "qwen2-7b-instruct-q4_k_m.gguf",
-    alias: "Qwen 2 7B", 
-    size: "3.8GB", 
-    desc: "中文支持优秀，响应速度快",
-    hfRepo: "Qwen/Qwen2-7B-Instruct-GGUF"
+    name: "MaziyarPanahi/Qwen3-14B-GGUF", 
+    filename: "Qwen3-14B.Q4_K_M.gguf",
+    alias: "Qwen3 14B", 
+    size: "7.5GB", 
+    desc: "Qwen3大模型，综合能力强",
+    hfRepo: "MaziyarPanahi/Qwen3-14B-GGUF"
   },
   { 
-    name: "meta-llama/Meta-Llama-3-8B-Instruct-GGUF", 
-    filename: "Meta-Llama-3-8B-Instruct-Q4_K_M.gguf",
-    alias: "LLaMA 3 8B", 
-    size: "4.7GB", 
-    desc: "综合性能最强的开源模型",
-    hfRepo: "meta-llama/Meta-Llama-3-8B-Instruct-GGUF"
+    name: "Qwen/Qwen2.5-7B-Instruct-GGUF", 
+    filename: "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+    alias: "Qwen2.5 7B", 
+    size: "4.2GB", 
+    desc: "中文支持优秀，响应速度快",
+    hfRepo: "Qwen/Qwen2.5-7B-Instruct-GGUF"
+  },
+  { 
+    name: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF", 
+    filename: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+    alias: "Qwen3 Coder 30B", 
+    size: "16GB", 
+    desc: "代码专用大模型，推理能力强",
+    hfRepo: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
   },
 ];
 
