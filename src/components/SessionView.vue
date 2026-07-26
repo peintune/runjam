@@ -222,12 +222,37 @@ const runningServerPort = ref(0);
 const runningServerModel = ref<string | null>(null);
 const { showWarning } = useToast();
 
+function getFilename(name: string): string {
+  const parts = name.split('/');
+  return parts[parts.length - 1];
+}
+
 async function checkServerRunning() {
   try {
     const result = await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
     runningServerPort.value = result.running ? result.port : 0;
     runningServerModel.value = result.running ? result.model : null;
     console.log("[DEBUG] Server status:", result);
+    
+    // Auto-add running model to modelList if not already there
+    if (result.running && result.model) {
+      const modelFilename = getFilename(result.model);
+      const existingModel = modelList.value.find(m => getFilename(m.name) === modelFilename && m.provider === 'llama');
+      if (!existingModel) {
+        console.log("[DEBUG] Auto-adding running model to modelList:", result.model);
+        modelList.value.push({
+          id: `llama-${result.model}-auto`,
+          name: result.model,
+          alias: result.model,
+          provider: "llama",
+          provider_name: "Llama",
+          provider_icon: "llama",
+          api_base: `http://localhost:${result.port}/v1`,
+          api_key: "llama",
+          protocol: "openai_chat",
+        });
+      }
+    }
   } catch (e) {
     runningServerPort.value = 0;
     runningServerModel.value = null;
@@ -236,7 +261,9 @@ async function checkServerRunning() {
 }
 
 function isLocalModelRunning(model: any): boolean {
-  return runningServerPort.value > 0 && runningServerModel.value === model.name;
+  const modelFilename = getFilename(model.name);
+  const runningFilename = runningServerModel.value ? getFilename(runningServerModel.value) : '';
+  return runningServerPort.value > 0 && runningFilename === modelFilename;
 }
 
 async function toggleModelDropdown() {

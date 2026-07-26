@@ -61,6 +61,7 @@ impl Read for SseStreamConverter {
 
             // Read next line from upstream SSE
             let mut line = String::new();
+            let read_start = std::time::Instant::now();
             match self.upstream.read_line(&mut line) {
                 Ok(0) => {
                     rjlog!("[PROXY STREAM] EOF from upstream reader");
@@ -76,6 +77,9 @@ impl Read for SseStreamConverter {
             }
 
             let trimmed = line.trim();
+            if read_start.elapsed() > std::time::Duration::from_millis(100) {
+                rjlog!("[PROXY STREAM] Slow read: {}ms, line: {} bytes", read_start.elapsed().as_millis(), trimmed.len());
+            }
             rjlog!("[PROXY STREAM] Read line: {} ({} bytes)", &trimmed[..trimmed.len().min(80)], trimmed.len());
             let converted = if trimmed.starts_with("data: ") {
                 (self.convert)(line.trim_end())
@@ -167,6 +171,7 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                 }
                 Ok(ProxyResponse::Stream { mut reader }) => {
                     rjlog!("[PROXY STREAM] Sending streaming SSE response to agent");
+                    let stream_start = std::time::Instant::now();
                     let mut writer = request.into_writer();
                     let _ = write!(&mut writer, "HTTP/1.1 200 OK\r\n");
                     let _ = write!(&mut writer, "Content-Type: text/event-stream\r\n");
@@ -176,16 +181,21 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
                     let _ = write!(&mut writer, "\r\n");
                     let _ = writer.flush();
                     
-                    let mut buf = [0u8; 1024];
+                    rjlog!("[PROXY STREAM] Headers sent in {:?}", stream_start.elapsed());
+                    let mut buf = [0u8; 4096];
                     loop {
+                        let read_start = std::time::Instant::now();
                         match reader.read(&mut buf) {
                             Ok(0) => {
-                                rjlog!("[PROXY STREAM] End of stream");
+                                rjlog!("[PROXY STREAM] End of stream (total: {:?})", stream_start.elapsed());
                                 let _ = write!(&mut writer, "0\r\n\r\n");
                                 let _ = writer.flush();
                                 break;
                             }
                             Ok(n) => {
+                                if read_start.elapsed() > std::time::Duration::from_millis(100) {
+                                    rjlog!("[PROXY STREAM] Slow upstream read: {}ms, got {} bytes", read_start.elapsed().as_millis(), n);
+                                }
                                 let _ = write!(&mut writer, "{:x}\r\n", n);
                                 let _ = writer.write_all(&buf[..n]);
                                 let _ = write!(&mut writer, "\r\n");
@@ -613,15 +623,18 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
         }
         let modified_body = req_body.to_string();
         
+        let request_start = std::time::Instant::now();
         let resp = ureq::post(&url)
             .set("Authorization", &format!("Bearer {}", m.api_key))
             .set("Content-Type", "application/json")
             .send_string(&modified_body);
+        rjlog!("[PROXY] ureq request completed in {:?}", request_start.elapsed());
         match resp {
             Ok(r) => {
                 if stream {
                     // Pass through the upstream SSE stream as-is (no format conversion needed)
                     let reader = r.into_reader();
+                    rjlog!("[PROXY] got reader in {:?}", request_start.elapsed());
                     let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
                     let converter = SseStreamConverter::new(
                         buf_reader,
@@ -633,7 +646,7 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
                             buf
                         }),
                     );
-                    rjlog!("[PROXY] OpenAI direct: returning streaming response");
+                    rjlog!("[PROXY] OpenAI direct: returning streaming response in {:?}", request_start.elapsed());
                     ProxyResponse::Stream { reader: Box::new(converter) }
                 } else {
                     ProxyResponse::Sync(StatusCode(200), r.into_string().unwrap_or_default())

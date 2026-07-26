@@ -57,8 +57,17 @@ const agentDropdownPosition = ref({ x: 0, y: 0 });
 const startingServer = ref(false);
 const serverError = ref("");
 
+function getFilename(name: string): string {
+  const parts = name.split('/');
+  return parts[parts.length - 1];
+}
+
 function isModelRunning(filename: string): boolean {
-  return runningServerPort.value > 0 && runningServerModel.value === filename;
+  const modelFilename = getFilename(filename);
+  const runningFilename = runningServerModel.value ? getFilename(runningServerModel.value) : '';
+  const result = runningServerPort.value > 0 && runningFilename === modelFilename;
+  console.log("[DEBUG] isModelRunning:", filename, "->", modelFilename, "runningServerPort:", runningServerPort.value, "runningServerModel:", runningServerModel.value, "->", runningFilename, "result:", result);
+  return result;
 }
 
 const showAddLocalModel = ref(false);
@@ -135,17 +144,47 @@ async function loadLlamaInfo() {
     
     try {
       const status = await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
+      console.log("[DEBUG] get_server_status result:", status);
       if (status.running) {
         runningServerPort.value = status.port;
         runningServerModel.value = status.model;
+        console.log("[DEBUG] Set runningServerModel to:", runningServerModel.value);
+        
+        // Auto-add running model to models list if not already there
+        if (status.model) {
+          const provider = getProviderById("llama");
+          const modelFilename = getFilename(status.model);
+          const existingModel = models.value.find(m => getFilename(m.name) === modelFilename && m.provider === "llama");
+          if (existingModel) {
+            console.log("[DEBUG] Model already exists, updating:", existingModel.name);
+            existingModel.apiBase = `http://localhost:${status.port}/v1`;
+            persistModels();
+          } else if (provider) {
+            console.log("[DEBUG] Auto-adding running model to models list:", status.model);
+            models.value.push({
+              id: `llama-${status.model}-auto`,
+              name: status.model,
+              alias: status.model,
+              provider: "llama",
+              apiBase: `http://localhost:${status.port}/v1`,
+              apiKey: "llama",
+              protocol: provider.protocol,
+              showKey: false,
+              assignedAgents: [],
+              useProxy: {},
+            });
+            persistModels();
+          }
+        }
       } else {
         runningServerPort.value = 0;
         runningServerModel.value = null;
       }
-    } catch {
+    } catch (e) {
+      console.log("[DEBUG] get_server_status failed:", e);
       if (llamaServerStatus.value.startsWith("running")) {
         const portStr = llamaServerStatus.value.split(":")[1];
-        runningServerPort.value = parseInt(portStr) || 8080;
+        runningServerPort.value = parseInt(portStr) || 19090;
         runningServerModel.value = null;
       } else {
         runningServerPort.value = 0;
@@ -254,17 +293,17 @@ async function handleStartServer(filename: string) {
   serverError.value = "";
   
   try {
-    console.log("Starting server with filename:", filename);
-    const port = await startLlamaServer(filename);
-    console.log("Server starting on port:", port);
-    
     const onServerStarted = (startedPort: number) => {
+      console.log("[DEBUG] onServerStarted called with port:", startedPort);
       if (startedPort > 0) {
         runningServerPort.value = startedPort;
         loadLlamaInfo();
         
         const provider = getProviderById("llama")!;
-        const existingModel = models.value.find(m => m.name === filename && m.provider === "llama");
+        const modelFilename = getFilename(filename);
+        const existingModel = models.value.find(m => getFilename(m.name) === modelFilename && m.provider === "llama");
+        console.log("[DEBUG] existingModel:", existingModel ? existingModel.name : "not found");
+        console.log("[DEBUG] models before add:", models.value.filter(m => m.provider === "llama").map(m => m.name));
         
         if (existingModel) {
           existingModel.apiBase = `http://localhost:${startedPort}/v1`;
@@ -282,6 +321,7 @@ async function handleStartServer(filename: string) {
             assignedAgents: [],
             useProxy: {},
           });
+          console.log("[DEBUG] models after add:", models.value.filter(m => m.provider === "llama").map(m => m.name));
           persistModels();
         }
       } else {
@@ -290,23 +330,41 @@ async function handleStartServer(filename: string) {
       startingServer.value = false;
     };
     
-    try {
-      const { listen } = await import("@tauri-apps/api/event");
-      const unlisten = await listen<number>("llama_server_started", (event) => {
-        unlisten();
-        onServerStarted(event.payload);
-      });
-      
-      setTimeout(() => {
-        onServerStarted(runningServerPort.value);
-      }, 120000);
-    } catch {
-      setTimeout(() => {
-        runningServerPort.value = port;
-        startingServer.value = false;
-        loadLlamaInfo();
-      }, 5000);
+    // Setup event listener BEFORE calling startLlamaServer
+    let eventReceived = false;
+    const { listen } = await import("@tauri-apps/api/event");
+    console.log("[DEBUG] Setting up event listener BEFORE startLlamaServer");
+    const unlisten = await listen<number>("llama_server_started", (event) => {
+      console.log("[DEBUG] Received llama_server_started event:", event.payload);
+      eventReceived = true;
+      unlisten();
+      onServerStarted(event.payload);
+    });
+    
+    console.log("Starting server with filename:", filename);
+    const port = await startLlamaServer(filename);
+    console.log("Server startLlamaServer returned port:", port);
+    
+    // Check if server was already running (no event will be fired)
+    if (port > 0 && runningServerPort.value > 0) {
+      console.log("[DEBUG] Server already running, calling onServerStarted directly");
+      unlisten();
+      onServerStarted(port);
+      return;
     }
+    
+    // If server started successfully and event was received, onServerStarted already called
+    // If server started but event wasn't received (new server), wait for it
+    if (port > 0 && !eventReceived) {
+      console.log("[DEBUG] New server starting, waiting for event...");
+      setTimeout(() => {
+        if (!eventReceived) {
+          console.log("[DEBUG] Timeout fallback, calling onServerStarted with port:", port);
+          onServerStarted(port);
+        }
+      }, 120000);
+    }
+    
   } catch (err: any) {
     console.error("Failed to start server:", err);
     serverError.value = err.message || err || "Failed to start server";
@@ -488,7 +546,13 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
 
 const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
 const recommendedModelFilenames = ['ornith-1.0-9b-Q4_K_M.gguf', 'Qwen3-14B.Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf', 'Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf'];
-const userAddedModels = computed(() => models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name)));
+const userAddedModels = computed(() => {
+  const result = models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name));
+  console.log("[DEBUG] userAddedModels computed: models with provider=llama:", models.value.filter(m => m.provider === "llama").map(m => m.name));
+  console.log("[DEBUG] userAddedModels result:", result.map(m => m.name));
+  console.log("[DEBUG] runningServerModel:", runningServerModel.value);
+  return result;
+});
 </script>
 
 <template>
@@ -591,7 +655,7 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
                     <Play :size="12" /> Start
                   </button>
                 </template>
-                <span v-if="models.some(m => m.name === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
+                <span v-if="models.some(m => getFilename(m.name) === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
                   <Check :size="12" /> Added
                 </span>
               </div>

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 static LLAMA_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
-static LLAMA_SERVER_PORT: AtomicU16 = AtomicU16::new(8080);
+static LLAMA_SERVER_PORT: AtomicU16 = AtomicU16::new(19090);
 static LLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
 static LLAMA_SERVER_MODEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -222,17 +222,19 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| model_path.clone());
     
+    println!("[DEBUG] start_llama_server: model_path={}, model_filename={}", model_path, model_filename);
+    
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
-        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename);
-        let _ = app_handle.emit("llama_server_started", LLAMA_SERVER_PORT.load(Ordering::Relaxed));
+        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
+        println!("[DEBUG] Server already running (flag), set LLAMA_SERVER_MODEL to: {}", model_filename);
         return Ok(LLAMA_SERVER_PORT.load(Ordering::Relaxed));
     }
     
     if check_server_running(19090) {
         LLAMA_SERVER_PORT.store(19090, Ordering::Relaxed);
         LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
-        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename);
-        let _ = app_handle.emit("llama_server_started", 19090);
+        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
+        println!("[DEBUG] Server detected on port 19090, set LLAMA_SERVER_MODEL to: {}", model_filename);
         return Ok(19090);
     }
     
@@ -352,7 +354,11 @@ fn check_server_running(port: u16) -> bool {
 pub fn get_server_status() -> Result<serde_json::Value, String> {
     let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
     let model = LLAMA_SERVER_MODEL.lock().unwrap().clone();
+    
+    println!("[DEBUG] get_server_status: port={}, model={:?}, LLAMA_SERVER_RUNNING={}", port, model, LLAMA_SERVER_RUNNING.load(Ordering::Relaxed));
+    
     if port != 0 && check_server_running(port) {
+        println!("[DEBUG] Server running on port {}, model={:?}", port, model);
         Ok(serde_json::json!({
             "running": true,
             "port": port,
@@ -362,6 +368,7 @@ pub fn get_server_status() -> Result<serde_json::Value, String> {
         for p in 19090..19100 {
             if check_server_running(p) {
                 LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
+                println!("[DEBUG] Detected server on port {}, model={:?}", p, model);
                 return Ok(serde_json::json!({
                     "running": true,
                     "port": p,
@@ -369,6 +376,7 @@ pub fn get_server_status() -> Result<serde_json::Value, String> {
                 }));
             }
         }
+        println!("[DEBUG] No server running");
         Ok(serde_json::json!({
             "running": false,
             "port": 0,
