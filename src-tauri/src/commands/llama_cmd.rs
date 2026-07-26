@@ -267,7 +267,7 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     cmd.arg("-m").arg(&full_model_path)
         .arg("--port").arg(port.to_string())
         .arg("--host").arg("127.0.0.1")
-        .arg("--no-jinja")
+        .arg("--jinja")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     

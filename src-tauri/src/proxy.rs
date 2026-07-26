@@ -464,19 +464,32 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
     }
 
+    let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
+
     // Convert Anthropic tools format → OpenAI tools format
     let mut openai_tools: Vec<Value> = vec![];
     if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
         for tool in tools {
             let name = tool["name"].as_str().unwrap_or("");
             let description = tool["description"].as_str().unwrap_or("");
-            let input_schema = &tool["input_schema"];
+            
+            let parameters = if is_llama_cpp {
+                // Simplified schema for llama.cpp - complex schemas cause GBNF parse failures
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "description": description
+                })
+            } else {
+                tool["input_schema"].clone()
+            };
+            
             openai_tools.push(serde_json::json!({
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": description,
-                    "parameters": input_schema
+                    "parameters": parameters
                 }
             }));
         }
@@ -488,16 +501,21 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         "max_tokens": max_tokens,
         "stream": stream,
     });
-    let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
-    if !openai_tools.is_empty() && support_tools && !is_llama_cpp {
-        openai_body["tools"] = serde_json::json!(openai_tools);
+    if !openai_tools.is_empty() && support_tools {
+        // llama.cpp has limits on tool count for GBNF grammar parsing
+        let limited_tools = if is_llama_cpp && openai_tools.len() > 20 {
+            rjlog!("[PROXY] Anthropic→OpenAI: limiting tools from {} to 20 for llama.cpp", openai_tools.len());
+            openai_tools[..20].to_vec()
+        } else {
+            openai_tools.clone()
+        };
+        openai_body["tools"] = serde_json::json!(limited_tools);
         if let Some(tc) = req.get("tool_choice") {
             let converted_tc = convert_tool_choice_anthropic_to_openai(tc);
             rjlog!("[PROXY] Anthropic→OpenAI: tool_choice raw={:?}, converted={:?}", tc, converted_tc);
             openai_body["tool_choice"] = converted_tc;
         }
-    } else if !openai_tools.is_empty() && (is_llama_cpp || !support_tools) {
-        rjlog!("[PROXY] Anthropic→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
+        rjlog!("[PROXY] Anthropic→OpenAI: tools enabled for model={} is_llama={} count={}", real_model, is_llama_cpp, openai_tools.len());
     }
 
     if reasoning_disabled {
@@ -651,21 +669,20 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
         match resp {
             Ok(r) => {
                 if stream {
-                    // Pass through the upstream SSE stream as-is (no format conversion needed)
                     let reader = r.into_reader();
                     rjlog!("[PROXY] got reader in {:?}", request_start.elapsed());
                     let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
+                    
+                    let model_name_clone = model_name.to_string();
                     let converter = SseStreamConverter::new(
                         buf_reader,
-                        Box::new(|line: &str| -> Vec<u8> {
-                            // Pass through each SSE line as-is
-                            let mut buf = line.as_bytes().to_vec();
-                            buf.push(b'\n');
-                            buf.push(b'\n');
-                            buf
-                        }),
+                        if is_llama_cpp {
+                            Box::new(make_llama_cpp_sse_converter(model_name_clone))
+                        } else {
+                            Box::new(make_anthropic_sse_converter(model_name_clone))
+                        },
                     );
-                    rjlog!("[PROXY] OpenAI direct: returning streaming response in {:?}", request_start.elapsed());
+                    rjlog!("[PROXY] OpenAI direct: returning streaming response is_llama={} in {:?}", is_llama_cpp, request_start.elapsed());
                     ProxyResponse::Stream { reader: Box::new(converter) }
                 } else {
                     ProxyResponse::Sync(StatusCode(200), r.into_string().unwrap_or_default())
@@ -1554,6 +1571,253 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
                     "type": "content_block_delta", "index": bi,
                     "delta": {"type": "text_delta", "text": content}
                 }));
+            }
+
+            if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                finish_reason = fr.to_string();
+            }
+            if let Some(usage) = chunk.get("usage") {
+                input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
+            }
+        }
+
+        result
+    }
+}
+
+fn make_llama_cpp_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u8> {
+    use std::collections::HashMap;
+    let msg_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
+    let mut started = false;
+    let mut next_block_idx: u32 = 0;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut finish_reason = String::new();
+    let mut thinking_block: Option<u32> = None;
+    let mut text_block: Option<u32> = None;
+    let mut tool_blocks: HashMap<usize, (u32, bool, String)> = HashMap::new();
+    let mut in_think_tag = false;
+    let mut think_buffer = String::new();
+
+    let mut close_thinking = |result: &mut Vec<u8>, tb: &mut Option<u32>| {
+        if let Some(bi) = tb.take() {
+            let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                "type": "content_block_stop", "index": bi
+            }));
+        }
+    };
+    let mut close_text = |result: &mut Vec<u8>, tb: &mut Option<u32>| {
+        if let Some(bi) = tb.take() {
+            let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                "type": "content_block_stop", "index": bi
+            }));
+        }
+    };
+    let mut close_tools = |result: &mut Vec<u8>, tbs: &mut HashMap<usize, (u32, bool, String)>| {
+        for (_, (bi, started, _)) in tbs.iter() {
+            if *started {
+                let _ = write!(result, "event: content_block_stop\ndata: {}\n\n", serde_json::json!({
+                    "type": "content_block_stop", "index": bi
+                }));
+            }
+        }
+        tbs.clear();
+    };
+
+    move |line: &str| -> Vec<u8> {
+        let mut result = Vec::new();
+
+        let data = match line.strip_prefix("data: ") {
+            Some(d) => d,
+            None => return result,
+        };
+
+        if data == "[DONE]" {
+            if !think_buffer.is_empty() {
+                if thinking_block.is_none() {
+                    let bi = next_block_idx; next_block_idx += 1;
+                    thinking_block = Some(bi);
+                    let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                        "type": "content_block_start", "index": bi,
+                        "content_block": {"type": "thinking", "thinking": ""}
+                    }));
+                }
+                let bi = thinking_block.unwrap();
+                let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                    "type": "content_block_delta", "index": bi,
+                    "delta": {"type": "thinking_delta", "thinking": &think_buffer}
+                }));
+                think_buffer.clear();
+            }
+            close_thinking(&mut result, &mut thinking_block);
+            close_tools(&mut result, &mut tool_blocks);
+            close_text(&mut result, &mut text_block);
+
+            if started {
+                let stop_reason = if finish_reason == "tool_calls" { "tool_use" } else { "end_turn" };
+                let _ = write!(result, "event: message_delta\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": null},
+                    "usage": {"output_tokens": output_tokens}
+                }));
+                let _ = write!(result, "event: message_stop\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_stop"
+                }));
+            }
+            return result;
+        }
+
+        if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            if !started {
+                started = true;
+                let _ = write!(result, "event: message_start\ndata: {}\n\n", serde_json::json!({
+                    "type": "message_start",
+                    "message": {"id": msg_id, "type": "message", "role": "assistant", "content": [], "model": model_name, "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}
+                }));
+            }
+
+            let delta = &chunk["choices"][0]["delta"];
+
+            if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                if text_block.is_none() && tool_blocks.is_empty() {
+                    if thinking_block.is_none() {
+                        let bi = next_block_idx; next_block_idx += 1;
+                        thinking_block = Some(bi);
+                        let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_start", "index": bi,
+                            "content_block": {"type": "thinking", "thinking": ""}
+                        }));
+                    }
+                    let bi = thinking_block.unwrap();
+                    let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                        "type": "content_block_delta", "index": bi,
+                        "delta": {"type": "thinking_delta", "thinking": reasoning}
+                    }));
+                }
+            }
+
+            if let Some(tool_calls) = delta["tool_calls"].as_array() {
+                close_thinking(&mut result, &mut thinking_block);
+                close_text(&mut result, &mut text_block);
+
+                for tc in tool_calls {
+                    let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                    let entry = tool_blocks.entry(idx).or_insert((0, false, String::new()));
+
+                    if let Some(id) = tc["id"].as_str() {
+                        if !entry.1 {
+                            entry.1 = true;
+                            let name = tc["function"]["name"].as_str().unwrap_or("");
+                            entry.2 = name.to_string();
+                            let bi = next_block_idx; next_block_idx += 1;
+                            entry.0 = bi;
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
+                            }));
+                        }
+                    }
+
+                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_delta", "index": entry.0,
+                            "delta": {"type": "input_json_delta", "partial_json": args}
+                        }));
+                    }
+                }
+            }
+
+            if let Some(content) = delta["content"].as_str() {
+                close_tools(&mut result, &mut tool_blocks);
+
+                let mut remaining = content.to_string();
+                while !remaining.is_empty() {
+                    if in_think_tag {
+                        if let Some(end_pos) = remaining.find("<｜end_of_thought｜>") {
+                            think_buffer.push_str(&remaining[..end_pos]);
+                            remaining = remaining[end_pos + "<｜end_of_thought｜>".len()..].to_string();
+                            in_think_tag = false;
+                        } else if let Some(end_pos) = remaining.find("</think>") {
+                            think_buffer.push_str(&remaining[..end_pos]);
+                            remaining = remaining[end_pos + "</think>".len()..].to_string();
+                            in_think_tag = false;
+                        } else {
+                            think_buffer.push_str(&remaining);
+                            remaining.clear();
+                        }
+                    } else if let Some(start_pos) = remaining.find("<｜begin_of_thought｜>") {
+                        let before = &remaining[..start_pos];
+                        if !before.is_empty() {
+                            if text_block.is_none() {
+                                let bi = next_block_idx; next_block_idx += 1;
+                                text_block = Some(bi);
+                                let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                    "type": "content_block_start", "index": bi,
+                                    "content_block": {"type": "text", "text": ""}
+                                }));
+                            }
+                            let bi = text_block.unwrap();
+                            let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_delta", "index": bi,
+                                "delta": {"type": "text_delta", "text": before}
+                            }));
+                        }
+                        remaining = remaining[start_pos + "<｜begin_of_thought｜>".len()..].to_string();
+                        in_think_tag = true;
+                    } else if let Some(start_pos) = remaining.find("<think>") {
+                        let before = &remaining[..start_pos];
+                        if !before.is_empty() {
+                            if text_block.is_none() {
+                                let bi = next_block_idx; next_block_idx += 1;
+                                text_block = Some(bi);
+                                let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                    "type": "content_block_start", "index": bi,
+                                    "content_block": {"type": "text", "text": ""}
+                                }));
+                            }
+                            let bi = text_block.unwrap();
+                            let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_delta", "index": bi,
+                                "delta": {"type": "text_delta", "text": before}
+                            }));
+                        }
+                        remaining = remaining[start_pos + "<think>".len()..].to_string();
+                        in_think_tag = true;
+                    } else {
+                        if text_block.is_none() {
+                            let bi = next_block_idx; next_block_idx += 1;
+                            text_block = Some(bi);
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "text", "text": ""}
+                            }));
+                        }
+                        let bi = text_block.unwrap();
+                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_delta", "index": bi,
+                            "delta": {"type": "text_delta", "text": &remaining}
+                        }));
+                        remaining.clear();
+                    }
+                }
+
+                if !think_buffer.is_empty() {
+                    if thinking_block.is_none() {
+                        let bi = next_block_idx; next_block_idx += 1;
+                        thinking_block = Some(bi);
+                        let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_start", "index": bi,
+                            "content_block": {"type": "thinking", "thinking": ""}
+                        }));
+                    }
+                    let bi = thinking_block.unwrap();
+                    let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                        "type": "content_block_delta", "index": bi,
+                        "delta": {"type": "thinking_delta", "thinking": &think_buffer}
+                    }));
+                    think_buffer.clear();
+                }
             }
 
             if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
