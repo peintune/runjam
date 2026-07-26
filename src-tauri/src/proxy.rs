@@ -354,9 +354,10 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     let model_name = req["model"].as_str().unwrap_or("claude-3-5-sonnet");
     let messages = &req["messages"];
     let system = req["system"].as_str();
-    let max_tokens = req["max_tokens"].as_u64().unwrap_or(4096);
+    let is_llama_cpp_check = req["model"].as_str().map(|m| m.contains("llama-") || m.ends_with(".gguf")).unwrap_or(false);
+    let max_tokens = req["max_tokens"].as_u64().unwrap_or(if is_llama_cpp_check { 2048 } else { 4096 });
     let stream = req["stream"].as_bool().unwrap_or(false);
-    rjlog!("[PROXY] Anthropic→OpenAI stream={}", stream);
+    rjlog!("[PROXY] Anthropic→OpenAI stream={} max_tokens={} is_llama={}", stream, max_tokens, is_llama_cpp_check);
 
     // Find matching model in our config
     let target = find_model(models, model_name, preferred_ids);
@@ -372,12 +373,12 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Build OpenAI-format request
     let mut openai_messages: Vec<Value> = vec![];
     let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
-    let system_content = if let Some(sys) = system {
-        sys.to_string()
-    } else {
-        "You are a helpful assistant.".to_string()
-    };
-    openai_messages.push(serde_json::json!({"role": "system", "content": system_content}));
+    if let Some(sys) = system {
+        openai_messages.push(serde_json::json!({"role": "system", "content": sys.to_string()}));
+    } else if !is_llama_cpp {
+        openai_messages.push(serde_json::json!({"role": "system", "content": "You are a helpful assistant."}));
+    }
+    rjlog!("[PROXY] system: {:?}, is_llama={}", system, is_llama_cpp);
     if let Some(msgs) = messages.as_array() {
         for m in msgs {
             let role = m["role"].as_str().unwrap_or("user");
@@ -508,15 +509,21 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
 
     // Forward to OpenAI-compatible endpoint
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    rjlog!("[PROXY] Anthropic→OpenAI: POST {} model={} stream={} msgs={}", url, real_model, stream, openai_messages.len());
+    let request_body_str = openai_body.to_string();
+    let body_preview: String = if request_body_str.len() > 500 { request_body_str[..500].to_string() } else { request_body_str.clone() };
+    rjlog!("[PROXY] Anthropic→OpenAI: POST {} model={} stream={} msgs={} max_tokens={} body_len={}", 
+        url, real_model, stream, openai_messages.len(), max_tokens, request_body_str.len());
+    rjlog!("[PROXY] Request body preview: {}...", body_preview);
 
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))
         .build();
+    let request_start = std::time::Instant::now();
     let resp = agent.post(&url)
         .set("Authorization", &format!("Bearer {}", api_key))
         .set("Content-Type", "application/json")
-        .send_string(&openai_body.to_string());
+        .send_string(&request_body_str);
+    rjlog!("[PROXY] Request completed in {:?}", request_start.elapsed());
 
     match resp {
         Ok(response) => {
@@ -605,7 +612,8 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(_) => return ProxyResponse::Sync(StatusCode(400), "Invalid JSON".into()) };
     let model_name = req["model"].as_str().unwrap_or("gpt-4o");
     let stream = req["stream"].as_bool().unwrap_or(false);
-    rjlog!("[PROXY] OpenAI direct stream={}", stream);
+    let is_llama_cpp = model_name.contains("llama-") || model_name.ends_with(".gguf");
+    rjlog!("[PROXY] OpenAI direct stream={} is_llama={}", stream, is_llama_cpp);
 
     // Find matching model config
     let models = ModelConfig::load().models;
@@ -615,13 +623,24 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
         let url = format!("{}/chat/completions", m.api_base.trim_end_matches('/'));
         
         let mut req_body: Value = serde_json::from_str(body).unwrap_or_default();
+        
+        if is_llama_cpp {
+            let current_max = req_body["max_tokens"].as_u64().unwrap_or(4096);
+            if current_max > 2048 {
+                req_body["max_tokens"] = serde_json::json!(2048);
+                rjlog!("[PROXY] llama_cpp: reduced max_tokens from {} to 2048", current_max);
+            }
+        }
+        
         if reasoning_disabled {
             req_body["thinking"] = serde_json::json!({"type": "disabled"});
             req_body["reasoning_effort"] = serde_json::json!("low");
             req_body["enable_thinking"] = serde_json::json!(false);
             req_body["temperature"] = serde_json::json!(0.6);
+            rjlog!("[PROXY] reasoning_disabled=true, modified body: enable_thinking=false, temperature=0.6");
         }
         let modified_body = req_body.to_string();
+        rjlog!("[PROXY] Forwarding to {} with stream={} body_len={}", url, stream, modified_body.len());
         
         let request_start = std::time::Instant::now();
         let resp = ureq::post(&url)

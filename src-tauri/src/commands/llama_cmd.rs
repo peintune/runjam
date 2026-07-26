@@ -271,58 +271,93 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     
+    println!("[DEBUG] Starting llama-server: path={}, model={}, port={}", 
+        server_path.display(), full_model_path.display(), port);
+    
     let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to start llama-server. Server path: {}, Model path: {}, Error: {}", 
             server_path.display(), full_model_path.display(), e))?;
     
     let pid = child.id();
-    LLAMA_SERVER_PID.store(pid, Ordering::Relaxed);
-    LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
-    *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
+    println!("[DEBUG] llama-server started with PID: {}", pid);
     
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     
-    let app_handle_clone = app_handle.clone();
+    let app_handle_stdout = app_handle.clone();
+    let app_handle_stderr = app_handle.clone();
+    let app_handle_stderr_report = app_handle.clone();
+    let app_handle_exit = app_handle.clone();
+    let model_filename_exit = model_filename.clone();
+    let port_for_exit = port;
+    
     std::thread::spawn(move || {
-        let app_handle_stdout = app_handle_clone.clone();
-        let app_handle_stderr = app_handle_clone.clone();
-        
-        std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let _ = app_handle_stdout.emit("llama_server_log", line);
-                }
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                println!("[llama-server stdout] {}", line);
+                let _ = app_handle_stdout.emit("llama_server_log", line);
             }
-        });
-        
-        std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    let _ = app_handle_stderr.emit("llama_server_log", line);
-                }
+        }
+    });
+    
+    let mut stderr_lines: Vec<String> = Vec::new();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                println!("[llama-server stderr] {}", line);
+                stderr_lines.push(line.clone());
+                let _ = app_handle_stderr.emit("llama_server_log", line);
             }
-        });
+        }
         
-        let _ = child.wait();
+        let _ = app_handle_stderr_report.emit("llama_server_stderr", stderr_lines);
+    });
+    
+    std::thread::spawn(move || {
+        let status = child.wait();
         LLAMA_SERVER_RUNNING.store(false, Ordering::Relaxed);
         LLAMA_SERVER_PID.store(0, Ordering::Relaxed);
-        let _ = app_handle_clone.emit("llama_server_log", "llama-server stopped".to_string());
+        
+        match status {
+            Ok(exit_status) => {
+                let exit_code = exit_status.code().unwrap_or(-1);
+                println!("[DEBUG] llama-server exited with code: {}", exit_code);
+                let _ = app_handle_exit.emit("llama_server_log", 
+                    format!("llama-server stopped (exit code: {})", exit_code));
+                
+                if exit_code != 0 && !check_server_running(port_for_exit) {
+                    let error_msg = format!("llama-server failed to start (exit code: {}). Model: {}", exit_code, model_filename_exit);
+                    println!("[ERROR] {}", error_msg);
+                    let _ = app_handle_exit.emit("llama_server_failed", error_msg);
+                }
+            }
+            Err(e) => {
+                println!("[ERROR] Failed to wait for llama-server: {}", e);
+                let _ = app_handle_exit.emit("llama_server_failed", 
+                    format!("Failed to monitor llama-server: {}", e));
+            }
+        }
     });
     
     let app_handle_check = app_handle.clone();
+    let port_check = port;
     std::thread::spawn(move || {
-        for _ in 0..1200 {
+        println!("[DEBUG] Waiting for llama-server to become ready on port {}...", port_check);
+        for i in 0..1200 {
             std::thread::sleep(Duration::from_millis(500));
-            if check_server_running(port) {
-                let _ = app_handle_check.emit("llama_server_started", port);
+            if check_server_running(port_check) {
+                println!("[DEBUG] llama-server is ready on port {} after {} attempts", port_check, i + 1);
+                LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
+                *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
+                let _ = app_handle_check.emit("llama_server_started", port_check);
                 return;
             }
         }
+        println!("[ERROR] llama-server failed to become ready on port {} after 60 seconds", port_check);
         let _ = app_handle_check.emit("llama_server_started", 0);
     });
     

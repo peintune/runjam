@@ -56,6 +56,9 @@ const agentDropdownPosition = ref({ x: 0, y: 0 });
 
 const startingServer = ref(false);
 const serverError = ref("");
+const serverLogs = ref<string[]>([]);
+const serverStartFailed = ref(false);
+const serverFailureReason = ref("");
 
 function getFilename(name: string): string {
   const parts = name.split('/');
@@ -120,6 +123,26 @@ onMounted(async () => {
 
   listen<string>("llama_server_log", (event) => {
     console.log("Llama server log:", event.payload);
+    if (startingServer.value) {
+      serverLogs.value.push(event.payload);
+      if (serverLogs.value.length > 100) {
+        serverLogs.value = serverLogs.value.slice(-50);
+      }
+    }
+  });
+
+  listen<string>("llama_server_failed", (event) => {
+    console.error("Llama server failed:", event.payload);
+    serverStartFailed.value = true;
+    serverFailureReason.value = event.payload;
+    startingServer.value = false;
+  });
+
+  listen<string[]>("llama_server_stderr", (event) => {
+    console.error("Llama server stderr:", event.payload);
+    if (startingServer.value) {
+      serverLogs.value.push(...event.payload.map(l => `[ERROR] ${l}`));
+    }
   });
 
   document.addEventListener("click", closeAgentDropdown);
@@ -291,6 +314,9 @@ async function handleStartServer(filename: string) {
   
   startingServer.value = true;
   serverError.value = "";
+  serverLogs.value = [];
+  serverStartFailed.value = false;
+  serverFailureReason.value = "";
   
   try {
     const onServerStarted = (startedPort: number) => {
@@ -324,8 +350,11 @@ async function handleStartServer(filename: string) {
           console.log("[DEBUG] models after add:", models.value.filter(m => m.provider === "llama").map(m => m.name));
           persistModels();
         }
+        serverStartFailed.value = false;
       } else {
-        serverError.value = "Failed to start server: Server did not respond";
+        serverStartFailed.value = true;
+        serverFailureReason.value = serverFailureReason.value || "Failed to start server: Server did not respond within timeout";
+        serverError.value = serverFailureReason.value;
       }
       startingServer.value = false;
     };
@@ -886,19 +915,41 @@ const userAddedModels = computed(() => {
     </div>
 
     <Teleport to="body">
-      <div v-if="startingServer" class="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+      <div v-if="startingServer || serverStartFailed" class="fixed inset-0 z-[9999] flex items-center justify-center p-4">
         <div class="absolute inset-0 bg-black/40 backdrop-blur-sm"></div>
-        <div class="relative bg-white rounded-2xl shadow-xl border border-gray-100 p-6">
-          <div class="flex items-center gap-3">
+        <div class="relative bg-white rounded-2xl shadow-xl border border-gray-100 p-6 w-full max-w-lg">
+          <div v-if="startingServer" class="flex items-center gap-3 mb-4">
             <div class="w-8 h-8 border-4 border-gray-200 border-t-gray-700 rounded-full animate-spin"></div>
             <span class="text-[14px] font-medium text-gray-700">Starting Llama.cpp server...</span>
           </div>
-          <p class="text-[12px] text-gray-400 mt-3">This may take a while as the model loads into memory.</p>
+          <div v-else-if="serverStartFailed" class="flex items-center gap-3 mb-4">
+            <div class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
+              <span class="text-red-500 text-lg">✕</span>
+            </div>
+            <span class="text-[14px] font-medium text-red-700">Failed to start server</span>
+          </div>
+          
+          <p v-if="startingServer" class="text-[12px] text-gray-400 mb-3">This may take a while as the model loads into memory.</p>
+          <p v-else-if="serverStartFailed" class="text-[12px] text-red-500 mb-3">{{ serverFailureReason }}</p>
+          
+          <div v-if="serverLogs.length > 0" class="bg-gray-900 rounded-lg p-3 max-h-48 overflow-y-auto">
+            <div v-for="(log, index) in serverLogs.slice(-20)" :key="index" 
+              :class="['text-[11px] font-mono leading-relaxed', log.includes('[ERROR]') ? 'text-red-400' : 'text-gray-300']">
+              {{ log }}
+            </div>
+          </div>
+          
+          <div v-if="serverStartFailed" class="flex gap-2 mt-4">
+            <button @click="serverStartFailed = false; serverFailureReason = ''; serverLogs = []" 
+              class="flex-1 px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer">
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </Teleport>
 
-    <div v-if="serverError" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div v-if="serverError && !serverStartFailed" class="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity" @click="serverError = ''"></div>
       <div class="relative bg-white rounded-2xl shadow-xl border border-gray-100 p-6 animate-in fade-in zoom-in duration-200 max-w-sm">
         <div class="flex items-center gap-2 mb-3">
