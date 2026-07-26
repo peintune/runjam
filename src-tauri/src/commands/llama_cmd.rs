@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 static LLAMA_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 static LLAMA_SERVER_PORT: AtomicU16 = AtomicU16::new(8080);
 static LLAMA_SERVER_PID: AtomicU32 = AtomicU32::new(0);
+static LLAMA_SERVER_MODEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 static DOWNLOADING_MODEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static DOWNLOAD_PROGRESS: std::sync::Mutex<Option<LlamaPullProgress>> = std::sync::Mutex::new(None);
@@ -216,13 +217,22 @@ pub fn list_llama_models() -> Result<Vec<LlamaModel>, String> {
 
 #[tauri::command]
 pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u16, String> {
+    let model_filename = std::path::Path::new(&model_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| model_path.clone());
+    
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
+        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename);
+        let _ = app_handle.emit("llama_server_started", LLAMA_SERVER_PORT.load(Ordering::Relaxed));
         return Ok(LLAMA_SERVER_PORT.load(Ordering::Relaxed));
     }
     
     if check_server_running(19090) {
         LLAMA_SERVER_PORT.store(19090, Ordering::Relaxed);
         LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
+        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename);
+        let _ = app_handle.emit("llama_server_started", 19090);
         return Ok(19090);
     }
     
@@ -237,15 +247,11 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
         })?;
     
     let models_dir = get_models_dir();
-    let model_filename = std::path::Path::new(&model_path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| model_path.clone());
     
     let full_model_path = if std::path::Path::new(&model_path).is_absolute() {
         PathBuf::from(model_path)
     } else {
-        models_dir.join(model_filename)
+        models_dir.join(&model_filename)
     };
     
     if !full_model_path.exists() {
@@ -270,6 +276,7 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     let pid = child.id();
     LLAMA_SERVER_PID.store(pid, Ordering::Relaxed);
     LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
+    *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
     
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -344,10 +351,12 @@ fn check_server_running(port: u16) -> bool {
 #[tauri::command]
 pub fn get_server_status() -> Result<serde_json::Value, String> {
     let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
+    let model = LLAMA_SERVER_MODEL.lock().unwrap().clone();
     if port != 0 && check_server_running(port) {
         Ok(serde_json::json!({
             "running": true,
-            "port": port
+            "port": port,
+            "model": model
         }))
     } else {
         for p in 19090..19100 {
@@ -355,13 +364,15 @@ pub fn get_server_status() -> Result<serde_json::Value, String> {
                 LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
                 return Ok(serde_json::json!({
                     "running": true,
-                    "port": p
+                    "port": p,
+                    "model": model
                 }));
             }
         }
         Ok(serde_json::json!({
             "running": false,
-            "port": 0
+            "port": 0,
+            "model": null
         }))
     }
 }
@@ -372,6 +383,7 @@ pub fn stop_llama_server() -> Result<(), String> {
     
     let pid = LLAMA_SERVER_PID.load(Ordering::Relaxed);
     LLAMA_SERVER_PID.store(0, Ordering::Relaxed);
+    *LLAMA_SERVER_MODEL.lock().unwrap() = None;
     
     if pid != 0 {
         #[cfg(target_os = "windows")]

@@ -219,17 +219,24 @@ const messageContainer = ref<HTMLElement | null>(null);
 const newSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const showModelDropdown = ref(false);
 const runningServerPort = ref(0);
+const runningServerModel = ref<string | null>(null);
 const { showWarning } = useToast();
 
 async function checkServerRunning() {
   try {
-    const result = await invoke<{ running: boolean; port: number }>("get_server_status");
+    const result = await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
     runningServerPort.value = result.running ? result.port : 0;
+    runningServerModel.value = result.running ? result.model : null;
     console.log("[DEBUG] Server status:", result);
   } catch (e) {
     runningServerPort.value = 0;
+    runningServerModel.value = null;
     console.log("[DEBUG] Server status check failed:", e);
   }
+}
+
+function isLocalModelRunning(model: any): boolean {
+  return runningServerPort.value > 0 && runningServerModel.value === model.name;
 }
 
 async function toggleModelDropdown() {
@@ -876,18 +883,17 @@ watch(messages, (msgs) => {
                     <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
                       <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
                         Local Models
-                        <span :class="['w-2 h-2 rounded-full', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
                       </div>
                       <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
-                        @click="runningServerPort > 0 ? handleModelSelect(model) : router.push('/settings/models')"
-                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', runningServerPort > 0 ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed']">
-                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                        @click="isLocalModelRunning(model) ? handleModelSelect(model) : router.push('/settings/models')"
+                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', isLocalModelRunning(model) ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed opacity-60']">
+                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', isLocalModelRunning(model) ? 'bg-emerald-500' : 'bg-gray-300']"></span>
                         <img :src="getProviderLogo('llama')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                         <div class="flex-1 min-w-0">
                           <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
                           <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
                         </div>
-                        <span v-if="!runningServerPort" class="text-[10px] text-gray-400">Start server</span>
+                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">Start server</span>
                       </div>
                     </div>
                     <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
@@ -1045,18 +1051,17 @@ watch(messages, (msgs) => {
                     <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
                       <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
                         Local Models
-                        <span :class="['w-2 h-2 rounded-full', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
                       </div>
                       <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
-                        @click="runningServerPort > 0 ? handleModelSelect(model) : router.push('/settings/models')"
-                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', runningServerPort > 0 ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed']">
-                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', runningServerPort > 0 ? 'bg-emerald-500' : 'bg-gray-300']"></span>
+                        @click="isLocalModelRunning(model) ? handleModelSelect(model) : router.push('/settings/models')"
+                        :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', isLocalModelRunning(model) ? (selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50') : 'text-gray-400 cursor-not-allowed opacity-60']">
+                        <span :class="['w-2 h-2 rounded-full flex-shrink-0', isLocalModelRunning(model) ? 'bg-emerald-500' : 'bg-gray-300']"></span>
                         <img :src="getProviderLogo('llama')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
                         <div class="flex-1 min-w-0">
                           <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
                           <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
                         </div>
-                        <span v-if="!runningServerPort" class="text-[10px] text-gray-400">Start server</span>
+                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">Start server</span>
                       </div>
                     </div>
                     <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">

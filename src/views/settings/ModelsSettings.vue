@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, Server, FolderOpen, ChevronDown, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir, getDownloadStatus, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
@@ -48,12 +49,17 @@ const llamaModels = ref<LlamaModel[]>([]);
 const pullingModel = ref<string | null>(null);
 const pullProgress = ref<LlamaPullProgress | null>(null);
 const runningServerPort = ref(0);
+const runningServerModel = ref<string | null>(null);
 
 const showAgentDropdown = ref<string | null>(null);
 const agentDropdownPosition = ref({ x: 0, y: 0 });
 
 const startingServer = ref(false);
 const serverError = ref("");
+
+function isModelRunning(filename: string): boolean {
+  return runningServerPort.value > 0 && runningServerModel.value === filename;
+}
 
 const showAddLocalModel = ref(false);
 const newLocalModelName = ref("");
@@ -127,9 +133,24 @@ async function loadLlamaInfo() {
     llamaServerStatus.value = await getLlamaServerStatus();
     await loadLlamaModels();
     
-    if (llamaServerStatus.value.startsWith("running")) {
-      const portStr = llamaServerStatus.value.split(":")[1];
-      runningServerPort.value = parseInt(portStr) || 8080;
+    try {
+      const status = await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
+      if (status.running) {
+        runningServerPort.value = status.port;
+        runningServerModel.value = status.model;
+      } else {
+        runningServerPort.value = 0;
+        runningServerModel.value = null;
+      }
+    } catch {
+      if (llamaServerStatus.value.startsWith("running")) {
+        const portStr = llamaServerStatus.value.split(":")[1];
+        runningServerPort.value = parseInt(portStr) || 8080;
+        runningServerModel.value = null;
+      } else {
+        runningServerPort.value = 0;
+        runningServerModel.value = null;
+      }
     }
     
     const downloadStatus = await getDownloadStatus();
@@ -506,16 +527,7 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer">
             <Plus :size="12" /> Add Model
           </button>
-          <button v-if="runningServerPort > 0" @click="handleStopServer" 
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer">
-            <Square :size="12" /> Stop Server
-          </button>
         </div>
-      </div>
-
-      <div v-if="runningServerPort > 0" class="mb-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-50 border border-emerald-200">
-        <Server :size="14" class="text-emerald-600" />
-        <span class="text-[12px] font-medium text-emerald-700">Server running on http://localhost:{{ runningServerPort }}</span>
       </div>
 
       <div class="space-y-2.5">
@@ -524,13 +536,17 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
           :key="rm.name"
           :class="[
             'flex items-center gap-4 px-4 py-3 rounded-xl border transition-all duration-150',
+            isModelRunning(rm.filename) ? 'border-emerald-300 bg-emerald-50' : 
             isModelInstalled(rm.filename) ? 'border-gray-200 bg-gray-50' : 'border-gray-100 bg-white hover:border-gray-200'
           ]"
         >
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-2">
               <span class="text-[15px] font-medium text-gray-900 truncate">{{ rm.alias }}</span>
-              <span v-if="isModelInstalled(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+              <span v-if="isModelRunning(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
+              </span>
+              <span v-else-if="isModelInstalled(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                 <Check :size="11" /> Installed
               </span>
             </div>
@@ -552,11 +568,19 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
             </template>
             <template v-else-if="isModelInstalled(rm.filename)">
               <div class="flex items-center gap-2 flex-shrink-0">
-                <template v-if="startingServer">
+                <template v-if="startingServer && !isModelRunning(rm.filename)">
                   <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
                     <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
                     Starting...
                   </span>
+                </template>
+                <template v-else-if="isModelRunning(rm.filename)">
+                  <button 
+                    @click="handleStopServer"
+                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                  >
+                    <Square :size="12" /> Stop
+                  </button>
                 </template>
                 <template v-else>
                   <button 
@@ -566,10 +590,10 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
                   >
                     <Play :size="12" /> Start
                   </button>
-                  <span v-if="models.some(m => m.name === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
-                    <Check :size="12" /> Added
-                  </span>
                 </template>
+                <span v-if="models.some(m => m.name === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
+                  <Check :size="12" /> Added
+                </span>
               </div>
             </template>
             <template v-else>
@@ -587,12 +611,18 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
           <div 
             v-for="model in userAddedModels" 
             :key="model.id"
-            class="flex items-center gap-4 px-4 py-3 rounded-xl border border-gray-200 bg-gray-50"
+            :class="[
+              'flex items-center gap-4 px-4 py-3 rounded-xl border transition-all duration-150',
+              isModelRunning(model.name) ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200 bg-gray-50'
+            ]"
           >
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2">
                 <span class="text-[15px] font-medium text-gray-900 truncate">{{ model.alias || model.name }}</span>
-                <span class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                <span v-if="isModelRunning(model.name)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                  <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
+                </span>
+                <span v-else class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                   <Check :size="11" /> Added
                 </span>
               </div>
@@ -600,11 +630,19 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
             </div>
 
             <div class="flex items-center gap-2 flex-shrink-0">
-              <template v-if="startingServer">
+              <template v-if="startingServer && !isModelRunning(model.name)">
                 <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
                   <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
                   Starting...
                 </span>
+              </template>
+              <template v-else-if="isModelRunning(model.name)">
+                <button 
+                  @click="handleStopServer"
+                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                >
+                  <Square :size="12" /> Stop
+                </button>
               </template>
               <template v-else>
                 <button 
@@ -616,9 +654,10 @@ const userAddedModels = computed(() => models.value.filter(m => m.provider === "
                 </button>
                 <button 
                   @click="removeModel(model.id)"
-                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                  class="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
+                  title="Remove model"
                 >
-                  <X :size="12" /> Remove
+                  <Trash2 :size="14" />
                 </button>
               </template>
             </div>
