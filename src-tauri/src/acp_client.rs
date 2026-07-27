@@ -13,6 +13,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest {
     jsonrpc: String,
@@ -781,7 +793,7 @@ impl AcpClient {
                                                 tool_times.get(&tool_name).copied()
                                             };
                                             rjlog!("[ACP DEBUG] Tool call: {} status={} start_time={:?} input={}", tool_name, status, start_time,
-                                                &input[..input.len().min(100)]);
+                                                safe_truncate(&input, 100));
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                                 &session_id_clone, "0", "0",
                                                 AcpEvent::ToolCall { tool_name, input, status: status.to_string(), start_time, title }
@@ -816,7 +828,7 @@ impl AcpClient {
                                     _ => {
                                         rjlog!("[ACP DEBUG] Unknown update type: {} — raw update JSON keys: {:?}",
                                             update.params.update.session_update,
-                                            &line[..line.len().min(300)]
+                                            safe_truncate(&line, 300)
                                         );
                                     }
                                 }
@@ -886,11 +898,21 @@ impl AcpClient {
         Ok(client)
     }
 
-    pub fn initialize_session(&mut self) -> Result<(), String> {
+    pub fn initialize_session(&mut self, app: &AppHandle, session_id: &str) -> Result<(), String> {
         rjlog!("[ACP DEBUG] Performing ACP handshake...");
         self.initialize()?;
         self.new_session()?;
         rjlog!("[ACP DEBUG] ACP handshake completed");
+        
+        // Notify frontend of the ACP session ID
+        let acp_session_id = self.session_id.lock().unwrap().clone();
+        rjlog!("[ACP DEBUG] Notifying frontend of ACP session ID: {}", acp_session_id);
+        let event_name = format!("acp:{}", session_id);
+        let _ = app.emit(&event_name, &AcpMessage::new(
+            session_id, "0", "0",
+            AcpEvent::Text { content: format!("__ACP_SESSION_ID__{}", acp_session_id) }
+        ));
+        
         Ok(())
     }
 

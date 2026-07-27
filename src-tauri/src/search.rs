@@ -2,6 +2,7 @@ use rusqlite::{Connection, Result, params};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use crate::rjlog;
 
 #[derive(Debug, Serialize)]
 pub struct SearchResult {
@@ -23,6 +24,7 @@ pub struct SessionRecord {
     pub pinned: i64,
     pub archived: i64,
     pub created_at: String,
+    pub acp_session_id: String,
 }
 
 fn db_path() -> PathBuf {
@@ -57,6 +59,7 @@ pub fn init_db() {
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS directory TEXT;
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pinned INTEGER DEFAULT 0;
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived INTEGER DEFAULT 0;
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS acp_session_id TEXT DEFAULT '';
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
@@ -150,23 +153,27 @@ pub fn save_session(
     pid: Option<i64>,
     pinned: i64,
     archived: i64,
+    acp_session_id: &str,
 ) {
     if let Ok(conn) = get_conn() {
-        conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, archived)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived],
-        ).ok();
+        match conn.execute(
+            "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, archived, acp_session_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), ?9, ?10)",
+            params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id],
+        ) {
+            Ok(_) => {},
+            Err(e) => rjlog!("[DB ERROR] save_session failed: {}", e),
+        }
     }
 }
 
 pub fn get_sessions() -> Vec<SessionRecord> {
-    let conn = match get_conn() { Ok(c) => c, Err(_) => return vec![] };
+    let conn = match get_conn() { Ok(c) => c, Err(e) => { rjlog!("[DB ERROR] get_conn failed: {}", e); return vec![]; } };
     let mut stmt = match conn.prepare(
-        "SELECT id, cli, cli_display_name, title, directory, status, pid, pinned, archived, created_at
+        "SELECT id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, archived, acp_session_id
          FROM sessions
          ORDER BY pinned DESC, created_at DESC"
-    ) { Ok(s) => s, Err(_) => return vec![] };
+    ) { Ok(s) => s, Err(e) => { rjlog!("[DB ERROR] prepare get_sessions failed: {}", e); return vec![]; } };
 
     let results = stmt.query_map([], |row| {
         Ok(SessionRecord {
@@ -178,8 +185,9 @@ pub fn get_sessions() -> Vec<SessionRecord> {
             status: row.get(5)?,
             pid: row.get(6)?,
             pinned: row.get(7)?,
-            archived: row.get(8)?,
-            created_at: row.get(9)?,
+            created_at: row.get(8)?,
+            archived: row.get(9)?,
+            acp_session_id: row.get(10)?,
         })
     });
 

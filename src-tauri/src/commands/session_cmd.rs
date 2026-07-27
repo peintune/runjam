@@ -61,6 +61,7 @@ pub async fn start_session(
         None,
         0,
         0,
+        "",
     );
 
     Ok(session)

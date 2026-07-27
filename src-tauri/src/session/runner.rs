@@ -62,7 +62,7 @@ impl SessionManager {
         let cli_display_name_clone = cli_display_name.to_string();
         thread::spawn(move || {
             let mut client = acp_client_arc.lock().unwrap();
-            if let Err(e) = client.initialize_session() {
+            if let Err(e) = client.initialize_session(&app_clone, &id_clone) {
                 rjlog!("[ACP ERROR] Initialize session failed: {}", e);
                 let _ = app_clone.emit(&format!("acp:{}", id_clone), &AcpMessage::new(&id_clone, "init", "init", AcpEvent::Text {
                     content: format!("Error: {}", e),
@@ -79,7 +79,7 @@ impl SessionManager {
         })
     }
 
-    pub fn send_input(&self, app: &AppHandle, id: &str, text: &str, _history: Option<&[String]>) -> Result<(), String> {
+    pub fn send_input(&self, app: &AppHandle, id: &str, text: &str, history: Option<&[String]>) -> Result<(), String> {
         let clients = self.clients.lock().unwrap();
         rjlog!("[SESSION DEBUG] send_input called for session: {}, clients in map: {}", id, clients.len());
         let client = clients.get(id)
@@ -97,7 +97,7 @@ impl SessionManager {
         match client {
             ClientType::Acp(acp) => {
                 let mut acp_client = acp.lock().unwrap();
-                let prompt = match _history {
+                let prompt = match history {
                     Some(h) if !h.is_empty() => format!("Previous conversation:\n{}\n---\nNew message: {}", h.join("\n"), text),
                     _ => text.to_string(),
                 };

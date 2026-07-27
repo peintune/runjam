@@ -91,10 +91,13 @@ async function loadAgents(forceRefresh = false) {
   try { 
     agents.value = await getAgentStatuses(forceRefresh); 
     agentStore.agents = agents.value;
-    await Promise.all(agents.value.map(a => loadAgentConfigModels(a.id)));
+    loading.value = false;
+    // 模型配置数量异步加载，不阻塞 agent 列表显示
+    agents.value.forEach(a => {
+      loadAgentConfigModels(a.id);
+    });
   } catch (e) {
     console.error("loadAgents error", e);
-  } finally {
     loading.value = false;
   }
 }

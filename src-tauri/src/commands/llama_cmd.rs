@@ -76,9 +76,9 @@ fn get_llama_server_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let mut bundle_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        bundle_path.pop();
-        bundle_path.pop();
-        bundle_path.pop();
+        bundle_path.pop(); // remove "runjam" -> Contents/MacOS
+        bundle_path.pop(); // remove "MacOS" -> Contents
+        // bundle_path is now RunJam.app/Contents/
         let bundle_resources = bundle_path.join("Resources").join("binaries").join("llama-server").join(&platform_dir).join(binary_name);
         if bundle_resources.exists() {
             return Some(bundle_resources);

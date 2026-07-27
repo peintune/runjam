@@ -16,15 +16,18 @@ export interface Session {
   title: string;
   directoryId: string | null;
   model: string | null;
-  status: "running" | "waiting" | "stopped" | "error";
+  status: "running" | "idle" | "waiting" | "stopped" | "error";
   pid: number | null;
   pinned: boolean;
   archived: boolean;
   createdAt: string;
   lastActiveAt: string;
   unread: boolean;
+  acpSessionId: string;
   /** True when session just finished generating and hasn't been opened yet */
   newlyCompleted: boolean;
+  /** True when agent process is freshly started (after restart), needs history context */
+  freshAgentProcess: boolean;
 }
 
 function generateId(): string {
@@ -40,14 +43,16 @@ function recordToSession(record: SessionRecord): Session {
     model: record.model || null,
     directoryId: record.directory || null,
     // After a page reload, no session is truly running/waiting — backend process is gone
-    status: (record.status === 'running' || record.status === 'waiting') ? 'stopped' : record.status as Session["status"],
+    status: (record.status === 'running' || record.status === 'waiting' || record.status === 'idle') ? 'stopped' : record.status as Session["status"],
     pid: record.pid || null,
     pinned: record.pinned === 1,
     archived: record.archived === 1,
     createdAt: record.created_at,
     lastActiveAt: record.created_at,
     unread: false,
+    acpSessionId: record.acp_session_id || "",
     newlyCompleted: false,
+    freshAgentProcess: false,
   };
 }
 
@@ -78,7 +83,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       sessions.value = records.map(record => {
         const session = recordToSession(record);
         if (session.directoryId) {
-          session.directoryId = ensureDirectory(session.directoryId);
+          if (session.directoryId.startsWith('/')) {
+            session.directoryId = ensureDirectory(session.directoryId);
+          } else {
+            console.warn(`Skipping invalid directory path: ${session.directoryId} for session ${session.id}`);
+            session.directoryId = null;
+          }
         }
         return session;
       });
@@ -108,13 +118,13 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const session: Session = {
       id: sessionId, cli, cliDisplayName,
       title: title || cliDisplayName, directoryId, model: model || null, pinned: false, archived: false,
-      status: "running", pid: null, createdAt: now, lastActiveAt: now, unread: false, newlyCompleted: false,
+      status: "running", pid: null, createdAt: now, lastActiveAt: now, unread: false, acpSessionId: "", newlyCompleted: false, freshAgentProcess: true,
     };
     sessions.value.push(session);
     activeSessionId.value = session.id;
 
     try {
-      await saveSession(sessionId, cli, cliDisplayName, session.title, dirPath || "", "running", null, 0, 0);
+      await saveSession(sessionId, cli, cliDisplayName, session.title, dirPath || "", "running", null, 0, 0, "");
     } catch (err) {
       console.error("saveSession failed:", err);
     }
@@ -129,7 +139,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
         if (info.status === 'stopped') {
           s.newlyCompleted = true;
         }
-        saveSession(sessionId, cli, cliDisplayName, s.title, dirPath || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0).catch(() => {});
+        saveSession(sessionId, cli, cliDisplayName, s.title, dirPath || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
       }
     }).catch(err => {
       console.error("Failed to start session:", err);
@@ -148,7 +158,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const s = sessions.value.find(s => s.id === id); 
     if (s) {
       s.pinned = !s.pinned;
-      saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0).catch(() => {});
+      saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     }
   }
 
@@ -207,7 +217,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     });
     ids.forEach(id => {
       const s = sessions.value.find(s => s.id === id);
-      if (s) saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId || "", s.status, s.pid, 1, s.archived ? 1 : 0).catch(() => {});
+      if (s) saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", s.status, s.pid, 1, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     });
   }
 
@@ -217,7 +227,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (s) {
       s.status = "stopped";
       s.newlyCompleted = true;
-      saveSession(id, s.cli, s.cliDisplayName, s.title, s.directoryId || "", "stopped", s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0).catch(() => {});
+      saveSession(id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", "stopped", s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     }
   }
 

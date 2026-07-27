@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{
-  status: "running" | "waiting" | "stopped" | "error" | "completed";
+  status: "running" | "idle" | "waiting" | "stopped" | "error" | "completed";
 }>();
 </script>
 
@@ -11,7 +11,9 @@ defineProps<{
         'w-1.5 h-1.5 rounded-full',
         status === 'running'
           ? 'bg-emerald-500'
-          : status === 'waiting'
+          : status === 'idle'
+            ? 'bg-emerald-400'
+            : status === 'waiting'
             ? 'bg-amber-400'
             : status === 'error'
               ? 'bg-red-500'

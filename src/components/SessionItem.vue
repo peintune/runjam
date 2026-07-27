@@ -99,6 +99,12 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
         class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-blink"
         title="Running"
       />
+      <!-- Idle → solid green dot (process alive, waiting for next message) -->
+      <span
+        v-else-if="session.status === 'idle'"
+        class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
+        title="Idle"
+      />
       <!-- Completed but not yet opened → solid green dot -->
       <span
         v-else-if="session.newlyCompleted && !active"

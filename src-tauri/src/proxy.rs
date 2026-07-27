@@ -16,6 +16,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tiny_http::{Header, Response, Server, StatusCode};
 
+/// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Response from handle_request: either a completed String response,
 /// or a streaming data source for SSE endpoints.
 enum ProxyResponse {
@@ -80,7 +92,7 @@ impl Read for SseStreamConverter {
             if read_start.elapsed() > std::time::Duration::from_millis(100) {
                 rjlog!("[PROXY STREAM] Slow read: {}ms, line: {} bytes", read_start.elapsed().as_millis(), trimmed.len());
             }
-            rjlog!("[PROXY STREAM] Read line: {} ({} bytes)", &trimmed[..trimmed.len().min(80)], trimmed.len());
+            rjlog!("[PROXY STREAM] Read line: {} ({} bytes)", safe_truncate(trimmed, 80), trimmed.len());
             let converted = if trimmed.starts_with("data: ") {
                 (self.convert)(line.trim_end())
             } else if trimmed.is_empty() {
@@ -294,7 +306,7 @@ fn handle_request(
         buf
     };
 
-    rjlog!("[PROXY] <<< body ({} chars) first 300: {}", body.len(), &body[..body.len().min(300)]);
+    rjlog!("[PROXY] <<< body ({} chars) first 300: {}", body.len(), safe_truncate(&body, 300));
 
     // Load models from config file (updated when models are saved)
     let models = ModelConfig::load().models;
@@ -528,7 +540,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Forward to OpenAI-compatible endpoint
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let request_body_str = openai_body.to_string();
-    let body_preview: String = if request_body_str.len() > 500 { request_body_str[..500].to_string() } else { request_body_str.clone() };
+    let body_preview: String = safe_truncate(&request_body_str, 500).to_string();
     rjlog!("[PROXY] Anthropic→OpenAI: POST {} model={} stream={} msgs={} max_tokens={} body_len={}", 
         url, real_model, stream, openai_messages.len(), max_tokens, request_body_str.len());
     rjlog!("[PROXY] Request body preview: {}...", body_preview);
@@ -562,10 +574,10 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
         Err(ureq::Error::Status(st, r)) => {
             let body = r.into_string().unwrap_or_default();
-            rjlog!("[PROXY] Anthropic→OpenAI: upstream HTTP {}: {}", st, &body[..body.len().min(500)]);
+            rjlog!("[PROXY] Anthropic→OpenAI: upstream HTTP {}: {}", st, safe_truncate(&body, 500));
             let err_body = serde_json::json!({
                 "type": "error",
-                "error": {"type": "api_error", "message": format!("Upstream {}: {}", st, &body[..body.len().min(200)])}
+                "error": {"type": "api_error", "message": format!("Upstream {}: {}", st, safe_truncate(&body, 200))}
             });
             ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
@@ -871,7 +883,7 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
         Err(ureq::Error::Status(status, r)) => {
             let body = r.into_string().unwrap_or_default();
-            rjlog!("[PROXY] Upstream HTTP {}: {}", status, &body[..body.len().min(1000)]);
+            rjlog!("[PROXY] Upstream HTTP {}: {}", status, safe_truncate(&body, 1000));
             ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Upstream {}: {}"}}"#, status, body))
         }
         Err(e) => {

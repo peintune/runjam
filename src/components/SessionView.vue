@@ -8,13 +8,13 @@ import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
 import { sendInput, startSession as apiStartSession } from "../api/sessions";
-import { saveConversationMessage, getConversationMessages } from "../api/search";
+import { saveConversationMessage, getConversationMessages, saveSession } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
-import { Send, Square, Download, Shield, ChevronDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
+import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
@@ -37,6 +37,80 @@ const agentStore = useAgentStore();
 const messages = ref<Message[]>([]);
 const unlisteners = new Map<string, UnlistenFn>();
 const isSessionLoading = ref(false);
+
+// Scroll-to-bottom state
+const showScrollToBottom = ref(false);
+// Floating message list state
+const showMessageList = ref(false);
+let hideMessageListTimer: ReturnType<typeof setTimeout> | null = null;
+
+function handleMouseLeave() {
+  hideMessageListTimer = setTimeout(() => {
+    showMessageList.value = false;
+  }, 150);
+}
+
+function handleMouseEnterTrigger() {
+  if (hideMessageListTimer) {
+    clearTimeout(hideMessageListTimer);
+    hideMessageListTimer = null;
+  }
+  showMessageList.value = true;
+}
+
+function closeMessageList() {
+  if (hideMessageListTimer) {
+    clearTimeout(hideMessageListTimer);
+    hideMessageListTimer = null;
+  }
+  showMessageList.value = false;
+}
+
+function toggleMessageList() {
+  if (hideMessageListTimer) {
+    clearTimeout(hideMessageListTimer);
+    hideMessageListTimer = null;
+  }
+  showMessageList.value = !showMessageList.value;
+}
+
+// Compute user messages for the floating list
+const userMessages = computed(() => {
+  return messages.value
+    .map((m, i) => ({ index: i, content: m.content, role: m.role }))
+    .filter(m => m.role === 'user' && m.content);
+});
+
+function checkScrollPosition() {
+  const el = messageContainer.value;
+  if (!el) return;
+  const threshold = 100;
+  showScrollToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight > threshold;
+}
+
+function scrollToMessage(msgIndex: number) {
+  closeMessageList();
+  nextTick(() => {
+    const el = messageContainer.value;
+    if (!el) return;
+    // Find the user message element by data attribute
+    // msgIndex is the index in messages array, but we need to find the group index
+    const userMsgEl = el.querySelector(`[data-user-msg-index]`);
+    // Since we have the message index, we need to find the corresponding group
+    // The data-user-msg-index is the group index, not the message index
+    // Let's find all user message elements and match by content
+    const allUserEls = el.querySelectorAll('[data-user-msg-index]');
+    const targetMsg = messages.value[msgIndex];
+    if (!targetMsg) return;
+    for (const userEl of allUserEls) {
+      const textEl = userEl.querySelector('.msg-user-bubble');
+      if (textEl && textEl.textContent === targetMsg.content) {
+        userEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+    }
+  });
+}
 
 const agents = ref<AgentInfo[]>(agentStore.agents.length > 0 ? agentStore.agents : []);
 const selectedAgentId = ref<string>("claude-code");
@@ -288,6 +362,7 @@ function doSessionRename() {
 }
 
 function scrollToBottom() {
+  showScrollToBottom.value = false;
   nextTick(() => {
     if (messageContainer.value) {
       messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
@@ -379,6 +454,43 @@ async function loadSessionMessages(sessionId: string) {
   }
 }
 
+/**
+ * When a new think/tool comes after text, we push a new message for linear display.
+ */
+
+/**
+ * Find the last agent message that has toolCalls (for routing tool_result).
+ * Falls back to the last agent message.
+ */
+function lastToolMsg(msgs: Message[]): Message | null {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "agent" && msgs[i].toolCalls && msgs[i].toolCalls!.length > 0) {
+      return msgs[i];
+    }
+  }
+  return lastAgentMsg(msgs);
+}
+
+/**
+ * Push a new agent message for the current phase (think or tool).
+ * This ensures each think → tool sequence displays linearly rather than
+ * all accumulating in the first message.
+ */
+function pushPhaseMessage(state: SessionState, phase: 'thinking' | 'tool') {
+  const msg: Message = {
+    role: "agent",
+    content: "",
+    startTime: Date.now(),
+    isProcessing: true,
+  };
+  if (phase === 'thinking') {
+    msg.thinking = "";
+    msg.thoughtDuration = "";
+  }
+  state.messages.push(msg);
+  return msg;
+}
+
 function handleAcpEvent(sessionId: string, p: AcpPayload) {
   const detail = {
     type: p.type,
@@ -408,14 +520,24 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "thinking":
+      // If the last message already has content or tools, push a new message
+      // so this thinking block displays linearly as a separate entry
+      const lastThinkCheck = lastAgentMsg(state.messages);
+      if (lastThinkCheck && (lastThinkCheck.content || (lastThinkCheck.toolCalls && lastThinkCheck.toolCalls.length > 0))) {
+        pushPhaseMessage(state, 'thinking');
+        state.activeThinking = "";
+        state.thoughtDuration = "";
+        state.thinkingStartTime = 0;
+      }
+
       if (p.content) {
         // Track thinking start time on first chunk
         if (state.thinkingStartTime === 0) {
           state.thinkingStartTime = Date.now();
         }
-        state.activeThinking += p.content; 
-        const l = ensureAgentMsg(state); 
-        l.thinking = state.activeThinking; 
+        state.activeThinking += p.content;
+        const l = ensureAgentMsg(state);
+        l.thinking = state.activeThinking;
       }
       if (p.status==="done") {
         // agent_thought_end: freeze the thinking timer
@@ -425,12 +547,12 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         } else {
           state.thoughtDuration = p.duration || state.thoughtDuration;
         }
-        const l = ensureAgentMsg(state); 
+        const l = ensureAgentMsg(state);
         l.thoughtDuration = state.thoughtDuration;
       } else if (p.duration) {
-        state.thoughtDuration = p.duration; 
-        const l = ensureAgentMsg(state); 
-        l.thoughtDuration = p.duration; 
+        state.thoughtDuration = p.duration;
+        const l = ensureAgentMsg(state);
+        l.thoughtDuration = p.duration;
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
@@ -438,6 +560,17 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "text":
+      // Handle ACP session ID notification (special marker)
+      if (p.content && p.content.startsWith("__ACP_SESSION_ID__")) {
+        const acpSessionId = p.content.substring("__ACP_SESSION_ID__".length);
+        console.log(`[ACP] Received ACP session ID: ${acpSessionId}`);
+        const s = store.sessions.find(s => s.id === sessionId);
+        if (s) {
+          s.acpSessionId = acpSessionId;
+          saveSession(sessionId, s.cli, s.cliDisplayName, s.title, s.directoryId ? store.directories.find(d => d.id === s.directoryId)?.path || "" : "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, acpSessionId).catch(() => {});
+        }
+        break;
+      }
       // Transition from thinking to text: freeze the thinking timer
       if (state.thinkingStartTime > 0) {
         state.thoughtDuration = formatDuration(Date.now() - state.thinkingStartTime);
@@ -445,8 +578,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         const lt2 = ensureAgentMsg(state);
         lt2.thoughtDuration = state.thoughtDuration;
       }
-      state.activeContent += (p.content||""); 
-      const lt = ensureAgentMsg(state); 
+      state.activeContent += (p.content||"");
+      const lt = ensureAgentMsg(state);
       lt.content = state.activeContent;
       if (isActiveSession) {
         messages.value = [...state.messages];
@@ -454,6 +587,12 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "tool_call": {
+      // If the last message already has text content, push a new message for this tool
+      const lastToolCheck = lastAgentMsg(state.messages);
+      if (lastToolCheck && lastToolCheck.content) {
+        pushPhaseMessage(state, 'tool');
+      }
+
       const tc = ensureAgentMsg(state);
       if (!tc.toolCalls) tc.toolCalls = [];
       const toolName = p.tool_name || "";
@@ -498,7 +637,10 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       break;
     }
     case "tool_result": {
-      const tr = ensureAgentMsg(state);
+      // Use lastToolMsg to find the message that has toolCalls (not the last agent msg)
+      // This ensures tool_result goes to the right message even if a new thinking
+      // message was pushed after the tool_call
+      const tr = lastToolMsg(state.messages) || ensureAgentMsg(state);
       if (tr.toolCalls && tr.toolCalls.length > 0) {
         // Find the last tool call with matching tool_name that's still started/running
         const toolName = p.tool_name || "";
@@ -574,17 +716,19 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
     case "finish":
       state.isProcessing = false;
       state.thinkingStartTime = 0;
-      const lm = ensureAgentMsg(state);
-      lm.isProcessing = false;
+      // Mark all agent messages in this turn as not processing
+      for (const m of state.messages) {
+        if (m.role === 'agent') m.isProcessing = false;
+      }
       if (sessionId && state.activeContent) {
         saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
       }
-      // Mark session as stopped + newlyCompleted so sidebar shows solid green dot
+      // Mark session as idle (process still alive, waiting for next message)
       const sess = store.sessions.find(s => s.id === sessionId);
       if (sess && sess.status === 'running') {
-        sess.status = 'stopped';
+        sess.status = 'idle';
         sess.newlyCompleted = true;
-        store.sessions = [...store.sessions]; // trigger reactivity
+        store.sessions = [...store.sessions];
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
@@ -592,15 +736,17 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       }
       msgStore.setMessages(sessionId, [...state.messages]);
       break;
-    case "error": 
+    case "error":
       state.isProcessing = false;
       state.thinkingStartTime = 0;
+      // Mark all agent messages as not processing
+      for (const m of state.messages) {
+        if (m.role === 'agent') m.isProcessing = false;
+      }
       // Remove empty "start" placeholder so "..." dots disappear
       const le = lastAgentMsg(state.messages);
       if (le && !le.content && !le.thinking) {
         state.messages.pop();
-      } else if (le) {
-        le.isProcessing = false;
       }
       state.messages.push({ role: "agent", content: `Error: ${p.message||"Unknown"}` });
       if (isActiveSession) {
@@ -636,11 +782,12 @@ function formatDuration(ms: number): string {
 
 function closeDropdowns(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector')) {
+  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector') && !target.closest('.message-list-dropdown')) {
     showPermissionDropdown.value = false;
     showModelDropdown.value = false;
     showDirMenu.value = false;
     showMoreAgents.value = false;
+    closeMessageList();
   }
 }
 
@@ -733,19 +880,21 @@ async function handleSend() {
 
   if(!store.activeSession) {
     const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
-    const title = text.substring(0, 7) + (text.length > 7 ? '...' : '');
+    const title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
     await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value);
-  } else if (store.activeSession.status !== 'running') {
-    // Restart backend if session is not running (stopped/error/unknown)
+  } else if (store.activeSession.status === 'stopped' || store.activeSession.status === 'error') {
+    // Restart backend only if process is truly dead
     const s = store.activeSession;
     try {
-      // Resolve actual directory path from directoryId (UUID) — not the ID itself
       const dirPathForRestart = s.directoryId
         ? store.directories.find(d => d.id === s.directoryId)?.path
         : undefined;
       await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value);
       s.status = 'running';
+      s.freshAgentProcess = true;
       store.sessions = [...store.sessions];
+      // 加载历史消息用于恢复会话上下文
+      await loadSessionMessages(s.id);
     } catch (err) {
       console.error("Failed to restart session:", err);
       // Show error in chat instead of calling sendInput (which would fail with "No client for session")
@@ -769,8 +918,27 @@ async function handleSend() {
 
   if(store.activeSession) {
     const sessionId = store.activeSession.id;
+    if (store.activeSession.status === 'idle') {
+      store.activeSession.status = 'running';
+      store.sessions = [...store.sessions];
+    }
+    // 如果是新启动的Agent进程，把历史消息传给后端作为上下文（最多2轮）
+    let history: string[] | undefined = undefined;
+    if (store.activeSession?.freshAgentProcess) {
+      const sessionMsgs = msgStore.getMessages(sessionId);
+      if (sessionMsgs.length > 1) {
+        // 最多取最后2轮对话（4条消息：user/agent/user/agent）
+        const recentMsgs = sessionMsgs.slice(-4);
+        history = recentMsgs
+          .filter(m => m.content)
+          .map(m => `${m.role}: ${m.content}`);
+      }
+      // 发送完历史消息后，标记为非新进程
+      store.activeSession.freshAgentProcess = false;
+      store.sessions = [...store.sessions];
+    }
     invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
-    sendInput(sessionId, text).catch(err=>{
+    sendInput(sessionId, text, history).catch(err=>{
       const state = getSessionState(sessionId);
       state.messages.push({role:"agent",content:`Error:${err}`});
       state.isProcessing = false;
@@ -830,26 +998,85 @@ watch(messages, (msgs) => {
         <div class="max-w-4xl mx-auto px-5 py-2">
           <div class="flex items-center gap-3">
             <AgentIcon :agent-id="store.activeSession.cli" />
-            <span v-if="sessionRename" class="text-[13px] font-semibold text-gray-900">
+            <span v-if="sessionRename" class="text-[13px] font-semibold text-gray-900 flex-1 min-w-0">
               <input v-model="sessionRenameText" @blur="doSessionRename" @keydown.enter="doSessionRename" @click.stop @mousedown.stop
-                class="bg-transparent border-b border-gray-300 outline-none text-[13px] font-semibold w-40" />
+                class="bg-transparent border-b border-gray-300 outline-none text-[13px] font-semibold w-full max-w-[400px]" />
             </span>
-            <span v-else @click="startSessionRename" class="text-[13px] font-semibold text-gray-900 cursor-pointer hover:text-gray-600">{{ store.activeSession.title || store.activeSession.cliDisplayName }}</span>
+            <span v-else @click="startSessionRename" class="text-[13px] font-semibold text-gray-900 cursor-pointer hover:text-gray-600 truncate max-w-[400px]">{{ store.activeSession.title || store.activeSession.cliDisplayName }}</span>
             
             <span class="flex-1" />
           </div>
         </div>
       </div>
       
-      <div ref="messageContainer" class="flex-1 overflow-y-auto">
-        <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
-          <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
-          <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
-            <div class="flex items-center gap-2 text-gray-400">
-              <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
-              <span class="text-[13px]">Loading...</span>
+      <div class="flex-1 relative min-h-0">
+        <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="checkScrollPosition">
+          <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
+            <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
+            <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
+              <div class="flex items-center gap-2 text-gray-400">
+                <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
+                <span class="text-[13px]">Loading...</span>
+              </div>
             </div>
           </div>
+        </div>
+
+        <!-- Scroll-to-bottom button -->
+        <button
+          v-if="showScrollToBottom"
+          @click="scrollToBottom()"
+          class="absolute bottom-6 left-1/2 -translate-x-1/2 w-9 h-9 rounded-full bg-white border border-gray-200 shadow-md flex items-center justify-center text-gray-500 hover:text-gray-700 hover:border-gray-300 hover:shadow-lg transition-all duration-200 cursor-pointer z-10"
+          title="Scroll to bottom"
+        >
+          <ArrowDown :size="16" />
+        </button>
+
+        <!-- Right-side message list strip -->
+        <div
+          v-if="userMessages.length > 0"
+          class="absolute right-0 top-1/2 -translate-y-1/2 z-10 message-list-dropdown"
+          @mouseenter="handleMouseEnterTrigger"
+          @mouseleave="handleMouseLeave"
+        >
+          <!-- Message list panel (hover area extends through gap) -->
+          <div
+            v-if="showMessageList"
+            class="absolute right-full top-1/2 -translate-y-1/2 w-72 max-h-[70vh] overflow-y-auto bg-white rounded-xl shadow-xl border border-gray-100 z-50 py-1"
+            style="margin-right: 8px;"
+            @click.stop
+            @mouseenter="handleMouseEnterTrigger"
+          >
+            <div class="px-3 py-2 flex items-center justify-between border-b border-gray-100">
+              <span class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Messages</span>
+              <span class="text-[10px] text-gray-400">{{ userMessages.length }} items</span>
+            </div>
+            <button
+              v-for="msg in userMessages"
+              :key="msg.index"
+              @click="scrollToMessage(msg.index)"
+              class="w-full text-left px-3 py-2.5 text-[12px] text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer border-b border-gray-50 last:border-b-0"
+            >
+              <span class="line-clamp-2 leading-relaxed">{{ msg.content }}</span>
+            </button>
+          </div>
+          
+          <!-- Trigger button -->
+          <button
+            @click.stop="toggleMessageList"
+            :class="[
+              'relative flex flex-col items-center justify-center gap-1.5 py-3 px-1.5 rounded-l-xl bg-white/85 backdrop-blur-sm border border-r-0 border-gray-200 shadow-sm text-gray-500 hover:text-gray-800 hover:bg-white transition-all duration-200 cursor-pointer',
+              showMessageList ? 'bg-white text-gray-800 shadow-md' : ''
+            ]"
+            title="Message list"
+            @mouseenter="handleMouseEnterTrigger"
+          >
+            <span
+              v-for="i in 4"
+              :key="i"
+              class="block h-[2px] w-4 rounded-full bg-current opacity-70"
+            ></span>
+          </button>
         </div>
       </div>
       

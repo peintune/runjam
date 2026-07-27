@@ -19,6 +19,7 @@ export interface SessionRecord {
   pinned: number;
   archived: number;
   created_at: string;
+  acp_session_id: string;
 }
 
 export async function searchConversations(query: string): Promise<SearchResult[]> {
@@ -43,8 +44,9 @@ export async function saveSession(
   pid: number | null,
   pinned: number,
   archived: number,
+  acp_session_id?: string,
 ): Promise<void> {
-  return invoke("save_session", { id, cli, cli_display_name, title, directory, status, pid, pinned, archived });
+  return invoke("save_session", { id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id: acp_session_id ?? "" });
 }
 
 export async function getSessions(): Promise<SessionRecord[]> {

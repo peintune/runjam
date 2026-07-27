@@ -26,8 +26,9 @@ pub fn save_session(
     pid: Option<i64>,
     pinned: i64,
     archived: i64,
+    acp_session_id: String,
 ) {
-    search::save_session(&id, &cli, &cli_display_name, &title, &directory, &status, pid, pinned, archived);
+    search::save_session(&id, &cli, &cli_display_name, &title, &directory, &status, pid, pinned, archived, &acp_session_id);
 }
 
 #[tauri::command]

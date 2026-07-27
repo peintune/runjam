@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, Server, FolderOpen, ChevronDown, X } from "lucide-vue-next";
+import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, FolderOpen, ChevronDown, X } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -76,31 +76,41 @@ function isModelRunning(filename: string): boolean {
 const showAddLocalModel = ref(false);
 const newLocalModelName = ref("");
 
-onMounted(async () => {
+onMounted(() => {
   if (route.query.action === "add") {
     showAdd.value = true;
   }
-  try { 
-    const list = await getModels(); 
-    models.value = list.map(m => ({ 
-      id: m.id, 
-      name: m.name, 
-      alias: m.alias || m.name,
-      provider: m.provider, 
-      apiBase: m.api_base, 
-      apiKey: m.api_key,
-      protocol: m.protocol || "unknown",
-      showKey: false,
-      assignedAgents: [],
-      useProxy: {},
-    })); 
-    await loadAgentModelMap();
-  } catch {}
-  try {
-    agents.value = await getAgentStatuses();
-  } catch {}
-  
-  await loadLlamaInfo();
+
+  // 并行加载：模型数据 + Agent 列表同时发起，减少等待时间
+  Promise.all([
+    (async () => {
+      try {
+        const list = await getModels();
+        models.value = list.map(m => ({
+          id: m.id,
+          name: m.name,
+          alias: m.alias || m.name,
+          provider: m.provider,
+          apiBase: m.api_base,
+          apiKey: m.api_key,
+          protocol: m.protocol || "unknown",
+          showKey: false,
+          assignedAgents: [],
+          useProxy: {},
+        }));
+        // loadAgentModelMap 和 loadLlamaInfo 都依赖 models 已加载，但互不依赖，可并行
+        await Promise.all([
+          loadAgentModelMap(),
+          loadLlamaInfo(),
+        ]);
+      } catch {}
+    })(),
+    (async () => {
+      try {
+        agents.value = await getAgentStatuses();
+      } catch {}
+    })(),
+  ]);
   
   listen<LlamaPullProgress>("llama_pull_progress", (event) => {
     pullProgress.value = event.payload;
@@ -161,35 +171,49 @@ function closeAgentDropdown(e: MouseEvent) {
 
 async function loadLlamaInfo() {
   try {
-    llamaServerAvailable.value = await checkLlamaServerAvailable();
-    llamaServerStatus.value = await getLlamaServerStatus();
-    await loadLlamaModels();
-    
-    try {
-      const status = await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
-      console.log("[DEBUG] get_server_status result:", status);
-      if (status.running) {
-        runningServerPort.value = status.port;
-        runningServerModel.value = status.model;
+    // 并行发起所有独立的后端调用
+    const [available, status, serverStatus, downloadStatus] = await Promise.all([
+      checkLlamaServerAvailable(),
+      getLlamaServerStatus(),
+      (async () => {
+        await loadLlamaModels();
+        try {
+          return await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
+        } catch (e) {
+          console.log("[DEBUG] get_server_status failed:", e);
+          return null;
+        }
+      })(),
+      getDownloadStatus().catch(() => ({ downloading: null as string | null, progress: { status: "", percentage: 0 } as LlamaPullProgress })),
+    ]);
+
+    llamaServerAvailable.value = available;
+    llamaServerStatus.value = status;
+
+    if (serverStatus) {
+      console.log("[DEBUG] get_server_status result:", serverStatus);
+      if (serverStatus.running) {
+        runningServerPort.value = serverStatus.port;
+        runningServerModel.value = serverStatus.model;
         console.log("[DEBUG] Set runningServerModel to:", runningServerModel.value);
-        
+
         // Auto-add running model to models list if not already there
-        if (status.model) {
+        if (serverStatus.model) {
           const provider = getProviderById("llama");
-          const modelFilename = getFilename(status.model);
+          const modelFilename = getFilename(serverStatus.model);
           const existingModel = models.value.find(m => getFilename(m.name) === modelFilename && m.provider === "llama");
           if (existingModel) {
             console.log("[DEBUG] Model already exists, updating:", existingModel.name);
-            existingModel.apiBase = `http://localhost:${status.port}/v1`;
+            existingModel.apiBase = `http://localhost:${serverStatus.port}/v1`;
             persistModels();
           } else if (provider) {
-            console.log("[DEBUG] Auto-adding running model to models list:", status.model);
+            console.log("[DEBUG] Auto-adding running model to models list:", serverStatus.model);
             models.value.push({
-              id: `llama-${status.model}-auto`,
-              name: status.model,
-              alias: status.model,
+              id: `llama-${serverStatus.model}-auto`,
+              name: serverStatus.model,
+              alias: serverStatus.model,
               provider: "llama",
-              apiBase: `http://localhost:${status.port}/v1`,
+              apiBase: `http://localhost:${serverStatus.port}/v1`,
               apiKey: "llama",
               protocol: provider.protocol,
               showKey: false,
@@ -203,10 +227,10 @@ async function loadLlamaInfo() {
         runningServerPort.value = 0;
         runningServerModel.value = null;
       }
-    } catch (e) {
-      console.log("[DEBUG] get_server_status failed:", e);
-      if (llamaServerStatus.value.startsWith("running")) {
-        const portStr = llamaServerStatus.value.split(":")[1];
+    } else {
+      // get_server_status 失败，使用 llamaServerStatus 回退
+      if (status.startsWith("running")) {
+        const portStr = status.split(":")[1];
         runningServerPort.value = parseInt(portStr) || 19090;
         runningServerModel.value = null;
       } else {
@@ -214,8 +238,7 @@ async function loadLlamaInfo() {
         runningServerModel.value = null;
       }
     }
-    
-    const downloadStatus = await getDownloadStatus();
+
     if (downloadStatus.downloading) {
       pullingModel.value = downloadStatus.downloading;
       pullProgress.value = downloadStatus.progress;

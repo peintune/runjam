@@ -2,7 +2,7 @@
 import { ref, watch, nextTick, onBeforeUnmount, reactive, computed } from "vue";
 import {
   ChevronDown, ChevronRight, Clock, Check, Copy,
-  Wrench, MousePointerClick, RefreshCw, Quote, FolderOpen,
+  Wrench, MousePointerClick, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown } from "../composables/useMarkdown";
@@ -474,6 +474,7 @@ function truncateLabel(label: string, maxLen = 32): string {
       <div
         v-if="group.type === 'user'"
         class="msg-row flex gap-3 justify-end"
+        :data-user-msg-index="gIdx"
       >
         <div class="msg-user-bubble max-w-[75%] px-4 py-2.5 text-[15px] leading-relaxed">
           {{ group.items[0].msg.content }}
@@ -782,12 +783,6 @@ function truncateLabel(label: string, maxLen = 32): string {
                   ? "Copied"
                   : "Copy"
               }}</span>
-            </button>
-            <button class="msg-action-btn" title="Retry">
-              <RefreshCw :size="12" />
-            </button>
-            <button class="msg-action-btn" title="Quote">
-              <Quote :size="12" />
             </button>
           </div>
         </div>
