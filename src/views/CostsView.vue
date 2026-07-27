@@ -254,16 +254,12 @@ async function changeDays(d: number) {
             <thead>
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Date</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Input</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Output</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Total</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="d in [...store.byDay].reverse()" :key="d.date" class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                 <td class="px-5 py-3 text-[13px] text-gray-800 font-medium">{{ fmtDate(d.date) }}</td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(d.input_tokens) }}</td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(d.output_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(d.total_tokens) }}</td>
               </tr>
             </tbody>
@@ -274,9 +270,7 @@ async function changeDays(d: number) {
             <thead>
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Input</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Output</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Total</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
               </tr>
             </thead>
@@ -288,8 +282,6 @@ async function changeDays(d: number) {
                     <span class="text-[13px] text-gray-800 font-medium">{{ a.agent_name }}</span>
                   </div>
                 </td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(a.input_tokens) }}</td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(a.output_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(a.total_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ a.sessions }}</td>
               </tr>
@@ -331,9 +323,7 @@ async function changeDays(d: number) {
             <thead>
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project Directory</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Input</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Output</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Total</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
               </tr>
             </thead>
@@ -343,8 +333,6 @@ async function changeDays(d: number) {
                   <span class="text-[13px] text-gray-800 font-medium font-mono">{{ shortDir(d.directory) }}</span>
                   <p v-if="d.directory !== 'Unknown'" class="text-[11px] text-gray-400 mt-0.5 truncate max-w-[250px]">{{ d.directory }}</p>
                 </td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(d.input_tokens) }}</td>
-                <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ fmtTokens(d.output_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(d.total_tokens) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ d.sessions }}</td>
               </tr>

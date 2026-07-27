@@ -53,7 +53,7 @@ pub fn init_db() {
                 status TEXT NOT NULL DEFAULT 'running',
                 pid INTEGER,
                 pinned INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT;
             ALTER TABLE sessions ADD COLUMN IF NOT EXISTS directory TEXT;
@@ -65,7 +65,7 @@ pub fn init_db() {
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -158,7 +158,7 @@ pub fn save_session(
     if let Ok(conn) = get_conn() {
         match conn.execute(
             "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, archived, acp_session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now', 'localtime'), ?9, ?10)",
             params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id],
         ) {
             Ok(_) => {},

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, FolderOpen, ChevronDown, X } from "lucide-vue-next";
+import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, FolderOpen, ChevronDown, X, RefreshCw } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +11,7 @@ import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
 import AgentIcon from "../../components/AgentIcon.vue";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
+import { useAgentStore } from "../../stores/useAgentStore";
 
 interface UIModel { 
   id: string; 
@@ -25,11 +26,13 @@ interface UIModel {
   useProxy: Record<string, boolean>;
 }
 
+const agentStore = useAgentStore();
 const models = ref<UIModel[]>([]);
 const showAdd = ref(false);
 const agents = ref<AgentInfo[]>([]);
 const agentModelMap = ref<Record<string, AgentModelInfo[]>>({});
 const route = useRoute();
+const refreshing = ref(false);
 
 const newModel = ref({ 
   provider: "openai", 
@@ -76,41 +79,59 @@ function isModelRunning(filename: string): boolean {
 const showAddLocalModel = ref(false);
 const newLocalModelName = ref("");
 
+async function refreshModels() {
+  refreshing.value = true;
+  try {
+    const list = await getModels();
+    models.value = list.map(m => ({
+      id: m.id,
+      name: m.name,
+      alias: m.alias || m.name,
+      provider: m.provider,
+      apiBase: m.api_base,
+      apiKey: m.api_key,
+      protocol: m.protocol || "unknown",
+      showKey: false,
+      assignedAgents: [],
+      useProxy: {},
+    }));
+    await Promise.all([
+      loadAgentModelMap(),
+      loadLlamaInfo(),
+    ]);
+  } catch {} finally {
+    refreshing.value = false;
+  }
+}
+
 onMounted(() => {
   if (route.query.action === "add") {
     showAdd.value = true;
   }
 
-  // 并行加载：模型数据 + Agent 列表同时发起，减少等待时间
-  Promise.all([
-    (async () => {
-      try {
-        const list = await getModels();
-        models.value = list.map(m => ({
-          id: m.id,
-          name: m.name,
-          alias: m.alias || m.name,
-          provider: m.provider,
-          apiBase: m.api_base,
-          apiKey: m.api_key,
-          protocol: m.protocol || "unknown",
-          showKey: false,
-          assignedAgents: [],
-          useProxy: {},
-        }));
-        // loadAgentModelMap 和 loadLlamaInfo 都依赖 models 已加载，但互不依赖，可并行
-        await Promise.all([
-          loadAgentModelMap(),
-          loadLlamaInfo(),
-        ]);
-      } catch {}
-    })(),
-    (async () => {
-      try {
-        agents.value = await getAgentStatuses();
-      } catch {}
-    })(),
-  ]);
+  if (agentStore.models.length > 0) {
+    models.value = agentStore.models.map(m => ({
+      id: m.id,
+      name: m.name,
+      alias: m.alias || m.name,
+      provider: m.provider,
+      apiBase: m.api_base,
+      apiKey: m.api_key,
+      protocol: m.protocol || "unknown",
+      showKey: false,
+      assignedAgents: [],
+      useProxy: {},
+    }));
+    Promise.all([loadAgentModelMap(), loadLlamaInfo()]);
+  } else {
+    refreshModels();
+  }
+
+  if (agentStore.agents.length > 0) {
+    agents.value = agentStore.agents;
+  } else {
+    getAgentStatuses().then(list => { agents.value = list; }).catch(() => {});
+  }
   
   listen<LlamaPullProgress>("llama_pull_progress", (event) => {
     pullProgress.value = event.payload;
@@ -468,7 +489,9 @@ async function persistModels() {
       protocol: m.protocol as ProtocolType,
       context_window: 0,
       support_reasoning: false,
+      support_tools: true,
       tags: [],
+      use_proxy: true,
     };
   });
   try { await saveModels(list); } catch (err) { console.error("saveModels failed:", err); }
@@ -609,9 +632,19 @@ const userAddedModels = computed(() => {
 
 <template>
   <div class="max-w-3xl mx-auto p-8">
-    <div class="mb-6">
-      <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">Models</h2>
-      <p class="text-[13px] text-gray-500 mt-0.5">Configure LLM providers shared across all agents</p>
+    <div class="mb-6 flex items-center justify-between">
+      <div>
+        <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">Models</h2>
+        <p class="text-[13px] text-gray-500 mt-0.5">Configure LLM providers shared across all agents</p>
+      </div>
+      <button
+        @click="refreshModels"
+        :disabled="refreshing"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-all duration-150 cursor-pointer active:scale-[0.98]"
+      >
+        <RefreshCw :size="14" :class="{ 'animate-spin': refreshing }" />
+        {{ refreshing ? 'Refreshing...' : 'Refresh' }}
+      </button>
     </div>
 
     <div v-if="!llamaServerAvailable" class="mb-6">

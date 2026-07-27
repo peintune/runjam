@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
+use chrono::Local;
 
 enum ClientType {
     Acp(Arc<Mutex<AcpClient>>),
@@ -75,7 +76,7 @@ impl SessionManager {
         Ok(Session {
             id, cli: cli.to_string(), cli_display_name: cli_display_name.to_string(),
             directory: directory.map(|s| s.to_string()), pid: None,
-            status: "running".to_string(), created_at: chrono::Utc::now().to_rfc3339(),
+            status: "running".to_string(), created_at: Local::now().to_rfc3339(),
         })
     }
 
@@ -88,8 +89,8 @@ impl SessionManager {
                 format!("No client for session: {}", id)
             })?;
 
-        let turn_id = format!("turn_{}", chrono::Utc::now().timestamp_millis());
-        let msg_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
+        let turn_id = format!("turn_{}", Local::now().timestamp_millis());
+        let msg_id = format!("msg_{}", Local::now().timestamp_millis());
         let sid = id.to_string();
         let ev = format!("acp:{}", sid);
         let _ = app.emit(&ev, &AcpMessage::new(&sid, &turn_id, &msg_id, AcpEvent::Start));

@@ -69,11 +69,17 @@ function timeAgo(iso: string): string {
 }
 
 onMounted(() => {
-  requestAnimationFrame(() => {
-    loadAgents();
-    checkNode();
-    getInstallGuide();
-  });
+  if (agentStore.agents.length > 0) {
+    agents.value = agentStore.agents;
+    loading.value = false;
+    agents.value.forEach(a => { loadAgentConfigModels(a.id); });
+  } else {
+    requestAnimationFrame(() => {
+      loadAgents();
+    });
+  }
+  checkNode();
+  getInstallGuide();
 });
 
 async function checkNode() {

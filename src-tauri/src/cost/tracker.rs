@@ -1,5 +1,6 @@
 use rusqlite::{Connection, params};
 use serde::Serialize;
+use chrono::Local;
 
 #[derive(Debug, Serialize)]
 pub struct CostSummary {
@@ -74,8 +75,8 @@ pub fn record_usage(
     output_tokens: i64,
     cost_estimate: f64,
 ) {
-    let id = format!("tu_{}", chrono::Utc::now().timestamp_nanos());
-    let now = chrono::Utc::now().to_rfc3339();
+    let id = format!("tu_{}", Local::now().timestamp_nanos());
+    let now = Local::now().to_rfc3339();
     conn.execute(
         "INSERT INTO token_usage (id, session_id, model, input_tokens, output_tokens, cost_estimate, recorded_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -85,9 +86,9 @@ pub fn record_usage(
 
 /// Get overall cost summary (today / this week / this month / all time).
 pub fn get_cost_summary(conn: &Connection) -> CostSummary {
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let week_ago = (chrono::Utc::now() - chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
-    let month_ago = (chrono::Utc::now() - chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    let week_ago = (Local::now() - chrono::Duration::days(7)).format("%Y-%m-%d").to_string();
+    let month_ago = (Local::now() - chrono::Duration::days(30)).format("%Y-%m-%d").to_string();
 
     let query = |since: &str| -> (i64, f64) {
         conn.query_row(
@@ -146,7 +147,7 @@ pub fn get_cost_by_agent(conn: &Connection) -> Vec<AgentCost> {
 
 /// Get daily cost trend for the last N days.
 pub fn get_cost_by_day(conn: &Connection, days: i32) -> Vec<DailyCost> {
-    let since = (chrono::Utc::now() - chrono::Duration::days(days as i64))
+    let since = (Local::now() - chrono::Duration::days(days as i64))
         .format("%Y-%m-%d").to_string();
 
     let mut stmt = conn.prepare(

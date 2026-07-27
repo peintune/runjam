@@ -101,6 +101,11 @@ export interface ModelEntry {
   api_base: string;
   api_key: string;
   protocol: ProtocolType;
+  context_window: number;
+  support_reasoning: boolean;
+  support_tools: boolean;
+  tags: string[];
+  use_proxy: boolean;
 }
 
 export async function getModels(): Promise<ModelEntry[]> {

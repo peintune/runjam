@@ -73,7 +73,7 @@ pub fn run_migrations(conn: &Connection) {
             session_id      TEXT NOT NULL,
             role            TEXT NOT NULL,
             content         TEXT NOT NULL,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
         );
         ",
     )

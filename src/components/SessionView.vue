@@ -95,7 +95,7 @@ function scrollToMessage(msgIndex: number) {
     if (!el) return;
     // Find the user message element by data attribute
     // msgIndex is the index in messages array, but we need to find the group index
-    const userMsgEl = el.querySelector(`[data-user-msg-index]`);
+    el.querySelector(`[data-user-msg-index]`);
     // Since we have the message index, we need to find the corresponding group
     // The data-user-msg-index is the group index, not the message index
     // Let's find all user message elements and match by content
@@ -324,6 +324,11 @@ async function checkServerRunning() {
           api_base: `http://localhost:${result.port}/v1`,
           api_key: "llama",
           protocol: "openai_chat",
+          context_window: 0,
+          support_reasoning: false,
+          support_tools: true,
+          tags: [],
+          use_proxy: false,
         });
       }
     }

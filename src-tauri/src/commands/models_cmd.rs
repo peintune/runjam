@@ -462,9 +462,14 @@ pub fn sync_model_to_all_agents(model_id: String, db: State<'_, Mutex<Database>>
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     for agent_id in &["claude-code", "codex-cli", "gemini-cli"] {
+        let existing_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_models WHERE agent_id = ?1",
+            [agent_id], |r| r.get(0)
+        ).unwrap_or(0);
+        let is_default = if existing_count == 0 { 1 } else { 0 };
         conn.execute(
-            "INSERT OR IGNORE INTO agent_models (agent_id, model_id, created_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
-            (agent_id, &model_id),
+            "INSERT OR IGNORE INTO agent_models (agent_id, model_id, use_proxy, is_default, created_at) VALUES (?1, ?2, 1, ?3, CURRENT_TIMESTAMP)",
+            (agent_id, &model_id, &is_default),
         ).map_err(|e| format!("Failed to sync to {}: {}", agent_id, e))?;
     }
     Ok(())
