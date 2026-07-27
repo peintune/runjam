@@ -172,7 +172,7 @@ function goToDetail(id: string) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="flex flex-col h-full max-w-3xl mx-auto p-8">
     <div class="flex items-center justify-between mb-6">
       <h2 class="text-lg font-semibold text-gray-900">Agents</h2>
       <button

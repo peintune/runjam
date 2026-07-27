@@ -5,6 +5,9 @@
   * {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   body {
@@ -14,10 +17,17 @@
     background: #f8f9fb;
     line-height: 1.6;
     letter-spacing: -0.01em;
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: none;
   }
 
   ::selection {
     background: rgba(99, 102, 241, 0.15);
+  }
+
+  input, textarea, select, [contenteditable="true"], code, pre, .md-content p, .md-content h1, .md-content h2, .md-content h3, .md-content h4, .md-content h5, .md-content h6, .md-content li, .md-content blockquote, .msg-content {
+    user-select: text;
+    -webkit-user-select: text;
   }
 }
 
