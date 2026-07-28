@@ -128,6 +128,11 @@ const assignedModels = ref<ModelEntry[]>([]);
 // Onboarding state
 const hasAnyAgentInstalled = computed(() => agents.value.some(a => a.installed));
 const hasAnyModel = computed(() => modelList.value.length > 0);
+const activeDirectory = computed(() => {
+  const session = store.activeSession;
+  if (!session?.directoryId) return null;
+  return store.directories.find(d => d.id === session.directoryId)?.path ?? null;
+});
 
 const inputText = ref("");
 const dirPath = ref("");
@@ -1065,6 +1070,7 @@ watch(messages, (msgs) => {
             <span v-else @click="startSessionRename" class="text-[13px] font-semibold text-gray-900 cursor-pointer hover:text-gray-600 truncate max-w-[400px]">{{ store.activeSession.title || store.activeSession.cliDisplayName }}</span>
             
             <span class="flex-1" />
+          <span v-if="activeDirectory" class="text-[11px] text-gray-400 truncate max-w-[300px] select-none" :title="activeDirectory">{{ activeDirectory }}</span>
           </div>
         </div>
       </div>
