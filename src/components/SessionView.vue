@@ -539,8 +539,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = true;
+        msgStore.setMessages(sessionId, [...state.messages]);
       }
-      msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "thinking":
       // If the last message already has content or tools, push a new message
@@ -579,8 +579,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
       }
-      msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "text":
       // Handle ACP session ID notification (special marker)
@@ -606,8 +606,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       lt.content = state.activeContent;
       if (isActiveSession) {
         messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
       }
-      msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "tool_call": {
       // If the last message already has text content, push a new message for this tool
@@ -655,8 +655,10 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
           title: p.title,
         });
       }
-      if (isActiveSession) { messages.value = [...state.messages]; }
-      msgStore.setMessages(sessionId, [...state.messages]);
+      if (isActiveSession) {
+        messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
+      }
       break;
     }
     case "tool_result": {
@@ -699,8 +701,10 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
           }
         }
       }
-      if (isActiveSession) { messages.value = [...state.messages]; }
-      msgStore.setMessages(sessionId, [...state.messages]);
+      if (isActiveSession) {
+        messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
+      }
       break;
     }
     case "permission_request": {
@@ -717,8 +721,10 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
           sessionId: sessionId,
         },
       });
-      if (isActiveSession) { messages.value = [...state.messages]; }
-      msgStore.setMessages(sessionId, [...state.messages]);
+      if (isActiveSession) {
+        messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
+      }
       break;
     }
     case "interaction": {
@@ -732,8 +738,10 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         options: p.options || [],
         sessionId: currentSid,
       };
-      if (isActiveSession) { messages.value = [...state.messages]; }
-      msgStore.setMessages(sessionId, [...state.messages]);
+      if (isActiveSession) {
+        messages.value = [...state.messages];
+        msgStore.setMessages(sessionId, [...state.messages]);
+      }
       break;
     }
     case "finish":
@@ -756,8 +764,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = false;
+        msgStore.setMessages(sessionId, [...state.messages]);
       }
-      msgStore.setMessages(sessionId, [...state.messages]);
       break;
     case "error":
       state.isProcessing = false;
@@ -775,8 +783,8 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = false;
+        msgStore.setMessages(sessionId, [...state.messages]);
       }
-      msgStore.setMessages(sessionId, [...state.messages]);
       break;
   }
 }
