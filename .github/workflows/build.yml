@@ -43,7 +43,7 @@ jobs:
 
   # ── macOS x64 ────────────────────────────────────
   build-macos-x64:
-    runs-on: macos-13  # Intel runner
+    runs-on: macos-latest  # Apple Silicon, cross-compile to x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +53,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
 
       - name: Install dependencies (npm)
         run: npm ci
@@ -61,6 +63,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target x86_64-apple-darwin
 
       - name: Upload macOS Intel artifacts
         uses: actions/upload-artifact@v4
@@ -98,7 +102,7 @@ jobs:
   # ── Create GitHub Release (only on tags) ────────
   create-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-macos-arm]
+    needs: [build-windows,build-macos-x64, build-macos-arm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
