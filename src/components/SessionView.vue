@@ -1239,6 +1239,12 @@ watch(messages, (msgs) => {
 
     <div v-else class="flex-1 flex items-center justify-center px-8">
       <div class="w-full max-w-[640px]">
+
+        <!-- Slogan -->
+        <p v-if="hasAnyAgentInstalled && hasAnyModel && (!selectedAgent || selectedAgent.installed)" class="text-center text-[28px] font-semibold text-gray-800 mb-6 tracking-tight">
+          What are we building today?
+        </p>
+
         <div class="flex justify-center mb-5">
           <div class="inline-flex bg-gray-100 rounded-2xl p-1 gap-0.5">
             <template v-if="enabledAgents.length > 0">
