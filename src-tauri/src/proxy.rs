@@ -14,7 +14,61 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 use tiny_http::{Header, Response, Server, StatusCode};
+
+/// 全局 usage 存储，用于 Proxy 存储检测到的 usage 数据，ACP Client 可以读取
+struct UsageRecord {
+    session_id: String,
+    model: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cached_tokens: i64,
+    timestamp: Instant,
+}
+
+fn usage_store() -> &'static Mutex<Vec<UsageRecord>> {
+    static STORE: std::sync::OnceLock<Mutex<Vec<UsageRecord>>> = std::sync::OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// 存储 usage 数据到全局存储（使用最近的请求作为默认 session）
+pub fn store_usage_for_latest(model: String, input_tokens: i64, output_tokens: i64, cached_tokens: i64) {
+    let mut store = usage_store().lock().unwrap();
+    // 只保留最近 100 条记录
+    if store.len() >= 100 {
+        store.remove(0);
+    }
+    // 使用空字符串作为 session_id，后续通过 last_usage 获取
+    store.push(UsageRecord {
+        session_id: String::new(),
+        model,
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        timestamp: Instant::now(),
+    });
+}
+
+/// 获取最近的 usage 数据（不清除）
+pub fn get_last_usage() -> Option<(String, i64, i64, i64)> {
+    let store = usage_store().lock().unwrap();
+    // 找到最新的记录
+    let record = store.last()?;
+    Some((record.model.clone(), record.input_tokens, record.output_tokens, record.cached_tokens))
+}
+
+/// 获取并清除最近的 usage 数据
+pub fn take_last_usage() -> Option<(String, i64, i64, i64)> {
+    let mut store = usage_store().lock().unwrap();
+    if store.is_empty() {
+        return None;
+    }
+    let record = store.pop()?;
+    // 清理超过 5 分钟的旧记录
+    store.retain(|r| r.timestamp.elapsed() < std::time::Duration::from_secs(300));
+    Some((record.model, record.input_tokens, record.output_tokens, record.cached_tokens))
+}
 
 /// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
 fn safe_truncate(s: &str, max_bytes: usize) -> &str {
@@ -131,11 +185,20 @@ pub struct ProxyState {
     pub agent_models: HashMap<String, Vec<String>>,
     /// Whether reasoning mode is disabled (global state).
     pub reasoning_disabled: bool,
+    /// Local response cache for exact-match requests (non-streaming, no tools)
+    pub response_cache: HashMap<String, (String, std::time::Instant)>,
 }
 
 impl ProxyState {
     pub fn new() -> Self {
-        Self { port: 0, running: false, models: vec![], agent_models: HashMap::new(), reasoning_disabled: false }
+        Self {
+            port: 0,
+            running: false,
+            models: vec![],
+            agent_models: HashMap::new(),
+            reasoning_disabled: false,
+            response_cache: HashMap::new(),
+        }
     }
 }
 
@@ -311,6 +374,60 @@ fn handle_request(
 
     rjlog!("[PROXY] <<< body ({} chars) first 300: {}", body.len(), safe_truncate(&body, 300));
 
+    // Compute request hash for cache debugging
+    let body_hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        body.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    };
+    rjlog!("[CACHE DEBUG] Request hash: {} (path: {}, body_len: {})", body_hash, path, body.len());
+
+    // Log message count and structure for debugging
+    if let Ok(req_json) = serde_json::from_str::<Value>(&body) {
+        let msg_count = req_json.get("messages").and_then(|m| m.as_array()).map(|arr| arr.len()).unwrap_or(0);
+        let tools_count = req_json.get("tools").and_then(|t| t.as_array()).map(|arr| arr.len()).unwrap_or(0);
+        let has_system = req_json.get("messages")
+            .and_then(|m| m.as_array())
+            .map(|arr| arr.iter().any(|msg| msg.get("role").and_then(|r| r.as_str()) == Some("system")))
+            .unwrap_or(false);
+        let stream = req_json.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+        rjlog!("[CACHE DEBUG] Structure: {} messages, {} tools, system_prompt={}, stream={}", 
+            msg_count, tools_count, has_system, stream);
+        
+        // Log message roles sequence for comparison
+        if msg_count > 0 {
+            let roles: Vec<String> = req_json.get("messages")
+                .and_then(|m| m.as_array())
+                .map(|arr| {
+                    arr.iter().map(|msg| msg.get("role").and_then(|r| r.as_str()).unwrap_or("?").to_string()).collect()
+                })
+                .unwrap_or_default();
+            rjlog!("[CACHE DEBUG] Message roles: {:?}", roles);
+        }
+    }
+
+    // Check local cache for exact-match non-streaming requests without tools
+    let req_for_cache: Option<Value> = serde_json::from_str(&body).ok();
+    let can_use_cache = req_for_cache.as_ref().map(|r| {
+        let is_stream = r["stream"].as_bool().unwrap_or(false);
+        let has_tools = r["tools"].as_array().map(|t| !t.is_empty()).unwrap_or(false);
+        !is_stream && !has_tools
+    }).unwrap_or(false);
+
+    if can_use_cache {
+        let cache_key = format!("{}:{}", path, body);
+        let state_guard = state.lock().unwrap();
+        if let Some((cached_response, cached_at)) = state_guard.response_cache.get(&cache_key) {
+            if cached_at.elapsed() < std::time::Duration::from_secs(300) {
+                rjlog!("[PROXY] Cache hit for key: {} chars", cache_key.len());
+                return ProxyResponse::Sync(StatusCode(200), cached_response.clone());
+            }
+        }
+        drop(state_guard);
+    }
+
     // Load models from config file (updated when models are saved)
     let models = ModelConfig::load().models;
     
@@ -339,27 +456,38 @@ fn handle_request(
     
     let reasoning_disabled = state.lock().unwrap().reasoning_disabled;
 
-    // Anthropic Messages API → proxy (supports /anthropic/v1/messages prefix)
-    if path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages") {
-        return proxy_anthropic_to_openai(&body, &models, preferred_ref, reasoning_disabled);
+    // Route to appropriate proxy handler and capture response
+    let response = if path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages") {
+        proxy_anthropic_to_openai(&body, &models, preferred_ref, reasoning_disabled)
+    } else if path == "/v1/chat/completions" || path.ends_with("/v1/chat/completions") {
+        proxy_openai_direct(&body, &models, preferred_ref, reasoning_disabled)
+    } else if path == "/responses" || path == "/v1/responses" || path.ends_with("/v1/responses") {
+        proxy_responses_to_openai(&body, &models, preferred_ref, reasoning_disabled)
+    } else if path.contains("/v1/") || path.contains("/v1beta/") && (path.contains(":generateContent") || path.contains("/models/")) {
+        proxy_gemini_to_openai(&body, &models, &path, preferred_ref, reasoning_disabled)
+    } else {
+        ProxyResponse::Sync(StatusCode(404), "Not found".to_string())
+    };
+
+    // Store response in cache if conditions are met
+    if can_use_cache {
+        if let ProxyResponse::Sync(response_status, ref response_body) = response {
+            if response_status == StatusCode(200) {
+                let cache_key = format!("{}:{}", path, body);
+                let mut state_guard = state.lock().unwrap();
+                state_guard.response_cache.insert(
+                    cache_key,
+                    (response_body.clone(), std::time::Instant::now()),
+                );
+                // Clean up expired entries (older than 5 minutes)
+                let now = std::time::Instant::now();
+                state_guard.response_cache.retain(|_, (_, t)| now.duration_since(*t) < std::time::Duration::from_secs(300));
+                rjlog!("[PROXY] Cache stored, total cached entries: {}", state_guard.response_cache.len());
+            }
+        }
     }
 
-    // OpenAI Chat Completions → proxy
-    if path == "/v1/chat/completions" || path.ends_with("/v1/chat/completions") {
-        return proxy_openai_direct(&body, &models, preferred_ref, reasoning_disabled);
-    }
-
-    // OpenAI Responses API → Chat Completions (Codex uses /responses)
-    if path == "/responses" || path == "/v1/responses" || path.ends_with("/v1/responses") {
-        return proxy_responses_to_openai(&body, &models, preferred_ref, reasoning_disabled);
-    }
-
-    // Gemini GenerateContent API → proxy
-    if (path.contains("/v1/") || path.contains("/v1beta/")) && (path.contains(":generateContent") || path.contains("/models/")) {
-        return proxy_gemini_to_openai(&body, &models, &path, preferred_ref, reasoning_disabled);
-    }
-
-    ProxyResponse::Sync(StatusCode(404), "Not found".to_string())
+    response
 }
 
 fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
@@ -368,7 +496,112 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Extract messages and model
     let model_name = req["model"].as_str().unwrap_or("claude-3-5-sonnet");
     let messages = &req["messages"];
-    let system = req["system"].as_str();
+    
+    // Debug: check raw request structure
+    let has_system_field = req.get("system").is_some();
+    let system_field_type = if has_system_field {
+        if req["system"].is_string() { "string" }
+        else if req["system"].is_array() { "array" }
+        else { "other" }
+    } else { "none" };
+    rjlog!("[CACHE DEBUG] Raw request: system_field={}, system_type={}", has_system_field, system_field_type);
+    
+    // Debug: check messages structure
+    if let Some(msgs) = messages.as_array() {
+        if let Some(first_msg) = msgs.first() {
+            let first_role = first_msg["role"].as_str().unwrap_or("unknown");
+            let content_type = if first_msg["content"].is_string() { "string" }
+                else if first_msg["content"].is_array() { "array" }
+                else { "other/none" };
+            let content_len = first_msg["content"].as_str().map(|s| s.len()).unwrap_or(0);
+            rjlog!("[CACHE DEBUG] First message: role={}, content_type={}, content_len={}", first_role, content_type, content_len);
+            
+            // Log first 100 chars of system message if it exists
+            if first_role == "system" {
+                if let Some(content) = first_msg["content"].as_str() {
+                    rjlog!("[CACHE DEBUG] System content (first 150): {:?}", safe_truncate(content, 150));
+                } else if let Some(arr) = first_msg["content"].as_array() {
+                    rjlog!("[CACHE DEBUG] System content is array with {} blocks", arr.len());
+                    for (i, block) in arr.iter().enumerate().take(3) {
+                        let block_type = block["type"].as_str().unwrap_or("unknown");
+                        if let Some(text) = block["text"].as_str() {
+                            rjlog!("[CACHE DEBUG] System block {}: type={}, text (first 80): {:?}", i, block_type, safe_truncate(text, 80));
+                        } else {
+                            rjlog!("[CACHE DEBUG] System block {}: type={}", i, block_type);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    let mut system = req["system"].as_str().map(|s| s.to_string());
+    
+    // Handle array-type system prompt (multiple system messages)
+    if system.is_none() && req["system"].is_array() {
+        rjlog!("[CACHE DEBUG] system field is array, extracting...");
+        if let Some(system_arr) = req["system"].as_array() {
+            let mut system_texts: Vec<String> = vec![];
+            for item in system_arr {
+                if let Some(text) = item.as_str() {
+                    system_texts.push(text.to_string());
+                } else if let Some(obj) = item.as_object() {
+                    if let Some(content) = obj.get("content").and_then(|c| c.as_str()) {
+                        system_texts.push(content.to_string());
+                    } else if let Some(content_arr) = obj.get("content").and_then(|c| c.as_array()) {
+                        for block in content_arr {
+                            if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    system_texts.push(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !system_texts.is_empty() {
+                system = Some(system_texts.join("\n"));
+                rjlog!("[CACHE DEBUG] Extracted system prompt from array ({} items)", system_texts.len());
+            }
+        }
+    }
+    
+    // Also check if there's a system message in the messages array (newer API format)
+    if system.is_none() {
+        rjlog!("[CACHE DEBUG] No system field, searching messages array for system message...");
+        if let Some(msgs) = messages.as_array() {
+            // Search all messages for system role (not just the first one)
+            for msg in msgs {
+                if msg["role"].as_str() == Some("system") {
+                    rjlog!("[CACHE DEBUG] Found system message in array, extracting...");
+                    if let Some(content) = msg["content"].as_str() {
+                        system = Some(content.to_string());
+                        rjlog!("[CACHE DEBUG] Extracted system prompt from messages array (string)");
+                        break;
+                    } else if let Some(content_arr) = msg["content"].as_array() {
+                        let text_parts: Vec<String> = content_arr.iter()
+                            .filter_map(|block| {
+                                if block["type"].as_str() == Some("text") {
+                                    block["text"].as_str().map(|s| s.to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !text_parts.is_empty() {
+                            system = Some(text_parts.join("\n"));
+                            rjlog!("[CACHE DEBUG] Extracted system prompt from messages array ({} text blocks)", text_parts.len());
+                            break;
+                        }
+                    }
+                }
+            }
+            if system.is_none() {
+                rjlog!("[CACHE DEBUG] No system message found in messages array");
+            }
+        }
+    }
+    
     let is_llama_cpp_check = req["model"].as_str().map(|m| m.contains("llama-") || m.ends_with(".gguf")).unwrap_or(false);
     let max_tokens = req["max_tokens"].as_u64().unwrap_or(if is_llama_cpp_check { 2048 } else { 4096 });
     let stream = req["stream"].as_bool().unwrap_or(false);
@@ -385,18 +618,34 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         return ProxyResponse::Sync(s, b);
     };
 
+    // Log model resolution for debugging
+    rjlog!("[CACHE DEBUG] Model resolution: requested={}, real_model={}, provider={}, base_url={}", 
+        model_name, real_model, provider, base_url);
+    
+    // Log system prompt prefix for comparison
+    if let Some(ref sys) = system {
+        rjlog!("[CACHE DEBUG] System prompt (first 100 chars): {:?}", safe_truncate(sys, 100));
+    }
+
     // Build OpenAI-format request
     let mut openai_messages: Vec<Value> = vec![];
     let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
-    if let Some(sys) = system {
-        openai_messages.push(serde_json::json!({"role": "system", "content": sys.to_string()}));
+    if let Some(ref sys) = system {
+        openai_messages.push(serde_json::json!({"role": "system", "content": sys}));
     } else if !is_llama_cpp {
         openai_messages.push(serde_json::json!({"role": "system", "content": "You are a helpful assistant."}));
     }
-    rjlog!("[PROXY] system: {:?}, is_llama={}", system, is_llama_cpp);
+    rjlog!("[PROXY] system present: {}, is_llama={}", system.is_some(), is_llama_cpp);
     if let Some(msgs) = messages.as_array() {
         for m in msgs {
             let role = m["role"].as_str().unwrap_or("user");
+            
+            // Skip system messages if we already extracted the system prompt
+            if role == "system" && system.is_some() {
+                rjlog!("[CACHE DEBUG] Skipping system message in array (already extracted as system prompt)");
+                continue;
+            }
+            
             if m["content"].is_string() {
                 openai_messages.push(serde_json::json!({"role": role, "content": m["content"]}));
                 continue;
@@ -487,7 +736,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         for tool in tools {
             let name = tool["name"].as_str().unwrap_or("");
             let description = tool["description"].as_str().unwrap_or("");
-            
+
             let parameters = if is_llama_cpp {
                 // Simplified schema for llama.cpp - complex schemas cause GBNF parse failures
                 serde_json::json!({
@@ -498,7 +747,7 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
             } else {
                 tool["input_schema"].clone()
             };
-            
+
             openai_tools.push(serde_json::json!({
                 "type": "function",
                 "function": {
@@ -510,12 +759,29 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
     }
 
+    // Sort tools by name for deterministic serialization to improve cache hit rate
+    openai_tools.sort_by(|a, b| {
+        a["function"]["name"].as_str()
+            .unwrap_or("")
+            .cmp(&b["function"]["name"].as_str().unwrap_or(""))
+    });
+
     let mut openai_body = serde_json::json!({
         "model": real_model,
         "messages": openai_messages,
         "max_tokens": max_tokens,
         "stream": stream,
     });
+    
+    // Log outbound request details for cache debugging
+    rjlog!("[CACHE DEBUG] Outbound request: model={}, messages={}, tools={}, stream={}", 
+        real_model, openai_messages.len(), openai_tools.len(), stream);
+    if let Some(sys_msg) = openai_messages.first() {
+        if sys_msg["role"].as_str() == Some("system") {
+            let sys_content = sys_msg["content"].as_str().unwrap_or("");
+            rjlog!("[CACHE DEBUG] Outbound system prompt (first 100): {:?}", safe_truncate(sys_content, 100));
+        }
+    }
     if !openai_tools.is_empty() && support_tools {
         // llama.cpp has limits on tool count for GBNF grammar parsing
         let limited_tools = if is_llama_cpp && openai_tools.len() > 20 {
@@ -571,6 +837,14 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
                 let resp_body = response.into_string().unwrap_or_default();
+                // Log upstream response model for cache debugging
+                if let Ok(resp_json) = serde_json::from_str::<Value>(&resp_body) {
+                    let upstream_model = resp_json.get("model").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    rjlog!("[CACHE DEBUG] Upstream response model: {} (requested: {})", upstream_model, real_model);
+                    if let Some(usage) = resp_json.get("usage") {
+                        rjlog!("[CACHE DEBUG] Upstream usage: {}", serde_json::to_string(usage).unwrap_or_default());
+                    }
+                }
                 let converted = convert_openai_to_anthropic(&resp_body, model_name);
                 ProxyResponse::Sync(StatusCode(200), converted)
             }
@@ -811,7 +1085,7 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         "stream": stream,
     });
     if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
-        let chat_tools: Vec<Value> = tools.iter()
+        let mut chat_tools: Vec<Value> = tools.iter()
             .filter(|t| t["type"].as_str() == Some("function"))
             .map(|t| {
                 serde_json::json!({
@@ -824,6 +1098,14 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 })
             })
             .collect();
+
+        // Sort tools by name for deterministic serialization to improve cache hit rate
+        chat_tools.sort_by(|a, b| {
+            a["function"]["name"].as_str()
+                .unwrap_or("")
+                .cmp(&b["function"]["name"].as_str().unwrap_or(""))
+        });
+
         if support_tools {
             chat_body["tools"] = serde_json::Value::Array(chat_tools);
             if let Some(tc) = req.get("tool_choice") {
@@ -905,9 +1187,25 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
     let assistant_content = choice["message"]["content"].as_str().unwrap_or("");
     let finish_reason = choice["finish_reason"].as_str().unwrap_or("stop");
-    let input_tokens = resp["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
-    let output_tokens = resp["usage"]["completion_tokens"].as_u64().unwrap_or(0);
-    let total_tokens = resp["usage"]["total_tokens"].as_u64().unwrap_or(input_tokens + output_tokens);
+    let input_tokens = resp["usage"]["prompt_tokens"].as_u64()
+        .or_else(|| resp["usage"]["input_tokens"].as_u64())
+        .or_else(|| resp["usage"]["inputTokens"].as_u64())
+        .unwrap_or(0);
+    let output_tokens = resp["usage"]["completion_tokens"].as_u64()
+        .or_else(|| resp["usage"]["output_tokens"].as_u64())
+        .or_else(|| resp["usage"]["outputTokens"].as_u64())
+        .unwrap_or(0);
+    let total_tokens = resp["usage"]["total_tokens"].as_u64()
+        .or_else(|| resp["usage"]["totalTokens"].as_u64())
+        .unwrap_or(input_tokens + output_tokens);
+    let cached_tokens = resp["usage"]["cached_tokens"].as_u64()
+        .or_else(|| resp["usage"]["cache_hit_tokens"].as_u64())
+        .or_else(|| resp["usage"]["cachedReadTokens"].as_u64())
+        .or_else(|| resp["usage"]["cached_content_tokens"].as_u64())
+        .unwrap_or(0);
+    rjlog!("[PROXY USAGE] Non-stream: input={}, output={}, cached={}, raw_usage={}", 
+        input_tokens, output_tokens, cached_tokens,
+        serde_json::to_string(&resp["usage"]).unwrap_or_default());
 
     let mut output_items: Vec<Value> = vec![];
 
@@ -962,6 +1260,7 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+            "cached_tokens": cached_tokens,
         }
     }).to_string()
 }
@@ -994,8 +1293,10 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
     let mut total_tokens: u64 = 0;
+    let mut cached_tokens: u64 = 0;
     let mut tool_items: HashMap<usize, (String, String, String, String)> = HashMap::new();
     let mut tool_output_indices: HashMap<usize, usize> = HashMap::new();
+    let mut chunk_counter: u64 = 0;
 
     move |line: &str| -> Vec<u8> {
         let mut result = Vec::new();
@@ -1004,6 +1305,12 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
             Some(d) => d,
             None => return result,
         };
+
+        // Log raw SSE data for debugging
+        chunk_counter += 1;
+        if chunk_counter <= 3 || data == "[DONE]" || data.contains("usage") {
+            rjlog!("[CACHE DEBUG] SSE chunk #{}: data={}", chunk_counter, safe_truncate(data, 300));
+        }
 
         // Helper: close reasoning item inline
         let mut close_reasoning = |result: &mut Vec<u8>,
@@ -1067,7 +1374,12 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
                 "type": "response.completed", "response": {
                     "id": response_id, "object": "response", "model": model, "status": "completed",
                     "output": output_items,
-                    "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total_tokens}
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": total_tokens,
+                        "cached_tokens": cached_tokens,
+                    }
                 }
             }));
             return result;
@@ -1164,9 +1476,35 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
             }
 
             if let Some(usage) = chunk.get("usage") {
-                input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
-                output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
-                total_tokens = usage["total_tokens"].as_u64().unwrap_or(total_tokens);
+                let raw_usage = serde_json::to_string(usage).unwrap_or_default();
+                rjlog!("[PROXY USAGE] Raw usage from upstream: {}", raw_usage);
+                input_tokens = usage["prompt_tokens"].as_u64()
+                    .or_else(|| usage["input_tokens"].as_u64())
+                    .or_else(|| usage["inputTokens"].as_u64())
+                    .unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64()
+                    .or_else(|| usage["output_tokens"].as_u64())
+                    .or_else(|| usage["outputTokens"].as_u64())
+                    .unwrap_or(output_tokens);
+                total_tokens = usage["total_tokens"].as_u64()
+                    .or_else(|| usage["totalTokens"].as_u64())
+                    .unwrap_or(total_tokens);
+                cached_tokens = usage["cached_tokens"].as_u64()
+                    .or_else(|| usage["cache_hit_tokens"].as_u64())
+                    .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())  // ← DeepSeek 字段
+                    .or_else(|| usage["cachedReadTokens"].as_u64())
+                    .or_else(|| usage["cached_content_tokens"].as_u64())
+                    .or_else(|| {
+                        usage["prompt_tokens_details"].as_object()
+                            .and_then(|d| d["cached_tokens"].as_u64())
+                    })
+                    .unwrap_or_else(|| {
+                        rjlog!("[CACHE] No cached_tokens found in usage. Keys: {:?}", usage.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                        0
+                    });
+                if cached_tokens > 0 {
+                    rjlog!("[CACHE HIT] Proxy detected {} cached tokens", cached_tokens);
+                }
             }
         }
 
@@ -1199,6 +1537,7 @@ fn convert_chat_sse_to_responses_sse(chat_sse: &str, model: &str) -> String {
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
     let mut total_tokens: u64 = 0;
+    let mut cached_tokens: u64 = 0;
     let mut chunk_count = 0;
     let mut reasoning_count = 0;
     let mut content_count = 0;
@@ -1318,9 +1657,30 @@ fn convert_chat_sse_to_responses_sse(chat_sse: &str, model: &str) -> String {
                     ));
                 }
                 if let Some(usage) = chunk.get("usage") {
-                    input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
-                    output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
-                    total_tokens = usage["total_tokens"].as_u64().unwrap_or(total_tokens);
+                    input_tokens = usage["prompt_tokens"].as_u64()
+                        .or_else(|| usage["input_tokens"].as_u64())
+                        .or_else(|| usage["inputTokens"].as_u64())
+                        .unwrap_or(input_tokens);
+                    output_tokens = usage["completion_tokens"].as_u64()
+                        .or_else(|| usage["output_tokens"].as_u64())
+                        .or_else(|| usage["outputTokens"].as_u64())
+                        .unwrap_or(output_tokens);
+                    total_tokens = usage["total_tokens"].as_u64()
+                        .or_else(|| usage["totalTokens"].as_u64())
+                        .unwrap_or(total_tokens);
+                    cached_tokens = usage["cached_tokens"].as_u64()
+                        .or_else(|| usage["cache_hit_tokens"].as_u64())
+                        .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())  // ← DeepSeek 字段
+                        .or_else(|| usage["cachedReadTokens"].as_u64())
+                        .or_else(|| usage["cached_content_tokens"].as_u64())
+                        .or_else(|| {
+                            usage["prompt_tokens_details"].as_object()
+                                .and_then(|d| d["cached_tokens"].as_u64())
+                        })
+                        .unwrap_or(cached_tokens);
+                    if cached_tokens > 0 {
+                        rjlog!("[CACHE HIT] Chat SSE detected {} cached tokens", cached_tokens);
+                    }
                 }
             }
         }
@@ -1364,7 +1724,7 @@ fn convert_chat_sse_to_responses_sse(chat_sse: &str, model: &str) -> String {
 
     result.push_str(&format!(
         "event: response.completed\ndata: {}\n\n",
-        serde_json::json!({"type":"response.completed","response":{"id":response_id,"object":"response","model":model,"status":"completed","output":output_items,"usage":{"input_tokens":input_tokens,"output_tokens":output_tokens,"total_tokens":total_tokens}}})
+        serde_json::json!({"type":"response.completed","response":{"id":response_id,"object":"response","model":model,"status":"completed","output":output_items,"usage":{"input_tokens":input_tokens,"output_tokens":output_tokens,"total_tokens":total_tokens,"cached_tokens":cached_tokens}}})
     ));
 
     rjlog!("[PROXY SSE] Total events emitted, reasoning_len={}, text_len={}, output_event_lines={}", full_reasoning.len(), full_text.len(), result.lines().count());
@@ -1449,10 +1809,12 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
     let mut next_block_idx: u32 = 0;
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
+    let mut cached_tokens: u64 = 0;
     let mut finish_reason = String::new();
     let mut thinking_block: Option<u32> = None;
     let mut text_block: Option<u32> = None;
     let mut tool_blocks: HashMap<usize, (u32, bool, String)> = HashMap::new();
+    let mut chunk_counter: u64 = 0;
 
     let mut close_thinking = |result: &mut Vec<u8>, tb: &mut Option<u32>| {
         if let Some(bi) = tb.take() {
@@ -1492,12 +1854,29 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
             close_tools(&mut result, &mut tool_blocks);
             close_text(&mut result, &mut text_block);
 
+            rjlog!("[CACHE DEBUG] SSE DONE: input_tokens={}, output_tokens={}, cached_tokens={}", input_tokens, output_tokens, cached_tokens);
+            
+            // 存储 usage 数据到全局存储，供 ACP Client 读取
+            let _ = store_usage_for_latest(
+                model_name.clone(),
+                input_tokens as i64,
+                output_tokens as i64,
+                cached_tokens as i64,
+            );
+            rjlog!("[CACHE DEBUG] Stored usage to global store: model={}, input={}, output={}, cached={}", 
+                model_name, input_tokens, output_tokens, cached_tokens);
+            
             if started {
                 let stop_reason = if finish_reason == "tool_calls" { "tool_use" } else { "end_turn" };
                 let _ = write!(result, "event: message_delta\ndata: {}\n\n", serde_json::json!({
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": null},
-                    "usage": {"output_tokens": output_tokens}
+                    "usage": {
+                        "inputTokens": input_tokens,
+                        "outputTokens": output_tokens,
+                        "cachedReadTokens": cached_tokens,
+                        "cachedWriteTokens": 0
+                    }
                 }));
                 let _ = write!(result, "event: message_stop\ndata: {}\n\n", serde_json::json!({
                     "type": "message_stop"
@@ -1506,7 +1885,24 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
             return result;
         }
 
+        // Log chunk data for debugging
+        chunk_counter += 1;
+        if chunk_counter <= 3 || data.contains("usage") {
+            if data.contains("usage") {
+                // Print full data for usage chunks
+                rjlog!("[CACHE DEBUG] Anthropic SSE chunk #{} (FULL): {}", chunk_counter, data);
+            } else {
+                rjlog!("[CACHE DEBUG] Anthropic SSE chunk #{}: data={}", chunk_counter, safe_truncate(data, 300));
+            }
+        }
+
         if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+            // Log all top-level keys for debugging
+            if data.contains("usage") {
+                let keys = chunk.as_object().map(|o| o.keys().collect::<Vec<_>>());
+                rjlog!("[CACHE DEBUG] Chunk keys: {:?}", keys);
+            }
+
             if !started {
                 started = true;
                 let _ = write!(result, "event: message_start\ndata: {}\n\n", serde_json::json!({
@@ -1592,8 +1988,34 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
                 finish_reason = fr.to_string();
             }
             if let Some(usage) = chunk.get("usage") {
-                input_tokens = usage["prompt_tokens"].as_u64().unwrap_or(input_tokens);
-                output_tokens = usage["completion_tokens"].as_u64().unwrap_or(output_tokens);
+                let raw_usage = serde_json::to_string(usage).unwrap_or_default();
+                rjlog!("[PROXY USAGE] Raw usage from upstream: {}", raw_usage);
+                input_tokens = usage["prompt_tokens"].as_u64()
+                    .or_else(|| usage["input_tokens"].as_u64())
+                    .or_else(|| usage["inputTokens"].as_u64())
+                    .unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64()
+                    .or_else(|| usage["output_tokens"].as_u64())
+                    .or_else(|| usage["outputTokens"].as_u64())
+                    .unwrap_or(output_tokens);
+                cached_tokens = usage["cached_tokens"].as_u64()
+                    .or_else(|| usage["cache_hit_tokens"].as_u64())
+                    .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())  // ← DeepSeek 字段
+                    .or_else(|| usage["cachedReadTokens"].as_u64())
+                    .or_else(|| usage["cached_content_tokens"].as_u64())
+                    .or_else(|| usage["cachedTokens"].as_u64())
+                    // Try nested prompt_tokens_details.cached_tokens
+                    .or_else(|| {
+                        usage["prompt_tokens_details"].as_object()
+                            .and_then(|d| d["cached_tokens"].as_u64())
+                    })
+                    .unwrap_or_else(|| {
+                        rjlog!("[CACHE] No cached_tokens found in usage. Keys: {:?}", usage.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+                        0
+                    });
+                if cached_tokens > 0 {
+                    rjlog!("[CACHE HIT] Anthropic SSE detected {} cached tokens", cached_tokens);
+                }
             }
         }
 

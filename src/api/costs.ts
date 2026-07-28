@@ -9,6 +9,10 @@ export interface CostSummary {
   week_cost: number;
   month_cost: number;
   total_cost: number;
+  today_cached_tokens: number;
+  week_cached_tokens: number;
+  month_cached_tokens: number;
+  total_cached_tokens: number;
 }
 
 export interface AgentCost {
@@ -19,6 +23,7 @@ export interface AgentCost {
   output_tokens: number;
   cost: number;
   sessions: number;
+  cached_tokens: number;
 }
 
 export interface DailyCost {
@@ -27,6 +32,7 @@ export interface DailyCost {
   input_tokens: number;
   output_tokens: number;
   cost: number;
+  cached_tokens: number;
 }
 
 export interface SessionCost {
@@ -39,6 +45,7 @@ export interface SessionCost {
   cost: number;
   created_at: string;
   message_count: number;
+  cached_tokens: number;
 }
 
 export interface DirectoryCost {
@@ -48,6 +55,7 @@ export interface DirectoryCost {
   output_tokens: number;
   cost: number;
   sessions: number;
+  cached_tokens: number;
 }
 
 export async function getCostSummary(): Promise<CostSummary> {

@@ -28,6 +28,9 @@ interface AcpPayload {
   start_time?: number; duration_ms?: number;
   request_id?: string;
   title?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
 }
 
 const store = useWorkspaceStore();
@@ -423,6 +426,7 @@ interface SessionState {
   thinkingStartTime: number;
   isProcessing: boolean;
   loaded: boolean;
+  turnStartTime: number;
 }
 
 const sessionStates = new Map<string, SessionState>();
@@ -438,6 +442,7 @@ function getSessionState(sessionId: string): SessionState {
       thinkingStartTime: 0,
       isProcessing: false,
       loaded: false,
+      turnStartTime: 0,
     };
     sessionStates.set(sessionId, state);
   }
@@ -535,6 +540,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       state.messages.push({ role: "agent", content: "", startTime: Date.now(), isProcessing: true });
       state.activeThinking = ""; state.activeContent = ""; state.thoughtDuration = "";
       state.thinkingStartTime = 0;
+      state.turnStartTime = Date.now();
       state.isProcessing = true;
       if (isActiveSession) {
         messages.value = [...state.messages];
@@ -751,6 +757,29 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       for (const m of state.messages) {
         if (m.role === 'agent') m.isProcessing = false;
       }
+      // Attach total duration and token count to the last agent message
+      {
+        const last = lastAgentMsg(state.messages);
+        if (last) {
+          if (state.turnStartTime > 0) {
+            last.totalDurationMs = Date.now() - state.turnStartTime;
+          }
+          if (p.input_tokens) {
+            last.inputTokens = p.input_tokens;
+          }
+          if (p.output_tokens) {
+            last.outputTokens = p.output_tokens;
+          }
+          if (p.cached_tokens) {
+            last.cachedTokens = p.cached_tokens;
+          }
+          const total = (p.input_tokens || 0) + (p.output_tokens || 0);
+          if (total > 0) {
+            last.totalTokens = total;
+          }
+        }
+      }
+      state.turnStartTime = 0;
       if (sessionId && state.activeContent) {
         saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
       }

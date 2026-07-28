@@ -41,6 +41,8 @@ pub enum AcpEvent {
         input_tokens: Option<i64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_tokens: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cached_tokens: Option<i64>,
     },
     #[serde(rename = "error")] Error { message: String },
 }

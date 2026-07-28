@@ -25,7 +25,7 @@
     background: rgba(99, 102, 241, 0.15);
   }
 
-  input, textarea, select, [contenteditable="true"], code, pre, .md-content p, .md-content h1, .md-content h2, .md-content h3, .md-content h4, .md-content h5, .md-content h6, .md-content li, .md-content blockquote, .msg-content {
+  input, textarea, select, [contenteditable="true"], code, pre, .md-content, .md-content p, .md-content h1, .md-content h2, .md-content h3, .md-content h4, .md-content h5, .md-content h6, .md-content li, .md-content blockquote, .msg-content, .msg-user-bubble {
     user-select: text;
     -webkit-user-select: text;
   }
@@ -371,6 +371,7 @@
   background: #ffffff;
   border: 1px solid #eef0f4;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  min-width: 320px;
 }
 
 /* ═══════════════════════════════════════════
@@ -379,12 +380,8 @@
 .msg-action-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
-  margin-top: 6px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-.msg-row:hover .msg-action-bar {
+  gap: 10px;
+  margin-top: 8px;
   opacity: 1;
 }
 

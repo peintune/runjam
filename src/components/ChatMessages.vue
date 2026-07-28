@@ -38,6 +38,11 @@ export interface Message {
   isProcessing?: boolean;
   startTime?: number;
   toolCalls?: ToolCall[];
+  totalTokens?: number;
+  totalDurationMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
 }
 
 // ═══ Props ═══
@@ -290,6 +295,11 @@ function formatDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return s + "s";
   return Math.floor(s / 60) + "m " + (s % 60) + "s";
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return n.toString();
 }
 
 // ═══ Render content with safe streaming slice ═══
@@ -772,6 +782,34 @@ function truncateLabel(label: string, maxLen = 32): string {
             <span v-else class="flex items-center gap-1 text-green-500">
               <Check :size="12" />
             </span>
+            <!-- Total duration & tokens (on last completed message) -->
+            <template v-if="!group.items.some((it) => it.msg.isProcessing)">
+              <span
+                v-if="group.items[group.items.length - 1].msg.totalDurationMs"
+                class="text-[12px] text-gray-400"
+              >
+                {{ formatDuration(group.items[group.items.length - 1].msg.totalDurationMs!) }}
+              </span>
+              <span
+                v-if="group.items[group.items.length - 1].msg.inputTokens"
+                class="text-[12px] text-gray-500"
+              >
+                in {{ formatTokens(group.items[group.items.length - 1].msg.inputTokens!) }}
+              </span>
+              <span
+                v-if="group.items[group.items.length - 1].msg.cachedTokens && group.items[group.items.length - 1].msg.cachedTokens! > 0"
+                class="text-[12px] text-green-600 font-medium"
+                title="Cache hit"
+              >
+                ⚡ cache {{ formatTokens(group.items[group.items.length - 1].msg.cachedTokens!) }}
+              </span>
+              <span
+                v-if="group.items[group.items.length - 1].msg.outputTokens"
+                class="text-[12px] text-gray-500"
+              >
+                out {{ formatTokens(group.items[group.items.length - 1].msg.outputTokens!) }}
+              </span>
+            </template>
             <!-- Copy - copies last content in group -->
             <button
               @click="

@@ -46,7 +46,7 @@ struct SessionUpdateParams {
     update: UpdateWrapper,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct UpdateWrapper {
     #[serde(rename = "sessionUpdate")]
     session_update: String,
@@ -84,6 +84,12 @@ struct UpdateWrapper {
     #[serde(default)]
     #[serde(rename = "outputTokens")]
     output_tokens: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "cachedReadTokens")]
+    cached_read_tokens: Option<u64>,
+    #[serde(default)]
+    #[serde(rename = "cachedWriteTokens")]
+    cached_write_tokens: Option<u64>,
 }
 
 /// Helper: extract tool_name from UpdateWrapper (tries top-level, then _meta.claudeCode.toolName)
@@ -518,6 +524,8 @@ impl AcpClient {
         let last_input_clone = last_input.clone();
         let last_output = Arc::new(AtomicU64::new(0));
         let last_output_clone = last_output.clone();
+        let last_cached = Arc::new(AtomicU64::new(0));
+        let last_cached_clone = last_cached.clone();
         
         // Track tool call start times for duration calculation
         let tool_start_times: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -758,6 +766,15 @@ impl AcpClient {
                                         let used = update.params.update.used.unwrap_or(0);
                                         let input_tokens = update.params.update.input_tokens.unwrap_or(0);
                                         let output_tokens = update.params.update.output_tokens.unwrap_or(0);
+                                        let cached_read = update.params.update.cached_read_tokens.unwrap_or(0);
+                                        let cached_write = update.params.update.cached_write_tokens.unwrap_or(0);
+                                        let cached_total = (cached_read + cached_write) as i64;
+                                        
+                                        // Debug: log the full update structure
+                                        rjlog!("[CACHE DEBUG] usage_update: used={}, input={}, output={}, cached_read={}, cached_write={}, full_update={}", 
+                                            used, input_tokens, output_tokens, cached_read, cached_write,
+                                            serde_json::to_string(&update.params.update).unwrap_or_default());
+                                        
                                         let prev = last_used_clone.load(Ordering::SeqCst);
                                         let prev_input = last_input_clone.load(Ordering::SeqCst);
                                         let prev_output = last_output_clone.load(Ordering::SeqCst);
@@ -773,11 +790,19 @@ impl AcpClient {
                                         let usage_model = update.params.update.model.clone()
                                             .filter(|m| !m.is_empty())
                                             .unwrap_or_else(|| model_clone.clone());
-                                        rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, input_delta={}, output_delta={}, model={}", used, delta, record_input, record_output, usage_model);
+                                        rjlog!("[ACP DEBUG] Usage update: used={}, delta={}, input_delta={}, output_delta={}, cached_read={}, cached_write={}, model={}", 
+                                            used, delta, record_input, record_output, cached_read, cached_write, usage_model);
                                         if delta > 0 || record_input > 0 || record_output > 0 {
                                             last_used_clone.store(used, Ordering::SeqCst);
                                             if input_delta > 0 { last_input_clone.store(input_tokens, Ordering::SeqCst); }
                                             if output_delta > 0 { last_output_clone.store(output_tokens, Ordering::SeqCst); }
+                                            if cached_total > 0 { last_cached_clone.store(cached_total as u64, Ordering::SeqCst); }
+                                            // Log cache hit rate for monitoring
+                                            if cached_total > 0 {
+                                                rjlog!("[CACHE HIT] cached_tokens={}, total_tokens={}, hit_rate={:.1}%", 
+                                                    cached_total, used, 
+                                                    if used > 0 { (cached_total as f64 / used as f64) * 100.0 } else { 0.0 });
+                                            }
                                             // Record to database via Tauri state
                                             if let Some(state) = app_clone2.try_state::<Mutex<Database>>() {
                                                 if let Ok(db) = state.lock() {
@@ -789,6 +814,7 @@ impl AcpClient {
                                                             record_input,
                                                             record_output,
                                                             0.0,
+                                                            cached_total,
                                                         );
                                                     }
                                                 }
@@ -894,16 +920,122 @@ impl AcpClient {
                             ));
                         }
                         if let Some(result) = val.get("result") {
-                            if result.get("stopReason").is_some() {
-                                rjlog!("[ACP DEBUG] Received stopReason, sending finish");
+                            // Log the full result for debugging
+                            rjlog!("[CACHE DEBUG] Full result: {}", serde_json::to_string(result).unwrap_or_default());
+                            
+                            // Try to extract usage from the result, regardless of stopReason
+                            let usage = result.get("usage");
+                            let result_input = usage.and_then(|u| u.get("inputTokens")).and_then(|v| v.as_i64());
+                            let result_output = usage.and_then(|u| u.get("outputTokens")).and_then(|v| v.as_i64());
+                            let result_cached_read = usage.and_then(|u| u.get("cachedReadTokens")).and_then(|v| v.as_i64()).unwrap_or(0);
+                            let result_cached_write = usage.and_then(|u| u.get("cachedWriteTokens")).and_then(|v| v.as_i64()).unwrap_or(0);
+                            let result_cached_total = result_cached_read + result_cached_write;
+                            
+                            // Also try to get cached tokens from cached_tokens field (snake_case format)
+                            let cached_from_snake = usage.and_then(|u| u.get("cached_tokens")).and_then(|v| v.as_i64()).unwrap_or(0);
+                            let result_cached_total = if result_cached_total > 0 { result_cached_total } else { cached_from_snake };
+                            
+                            // Also try to get cached tokens from prompt_cache_hit_tokens field
+                            let cached_from_prompt = usage.and_then(|u| u.get("prompt_cache_hit_tokens")).and_then(|v| v.as_i64()).unwrap_or(0);
+                            let result_cached_total = if result_cached_total > 0 { result_cached_total } else { cached_from_prompt };
+                            
+                            // Also check prompt_tokens_details.cached_tokens
+                            let cached_from_details = usage.and_then(|u| u.get("prompt_tokens_details"))
+                                .and_then(|d| d.get("cached_tokens"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0);
+                            let result_cached_total = if result_cached_total > 0 { result_cached_total } else { cached_from_details };
+                            
+                            let has_usage = result_input.is_some() || result_output.is_some() || result_cached_total > 0;
+                            
+                            // 如果 Agent 返回的 usage 全是 0，尝试从 Proxy 全局存储获取真实数据
+                            let (result_input, result_output, result_cached_total, usage_model) = if !has_usage || (result_input == Some(0) && result_output == Some(0) && result_cached_total == 0) {
+                                rjlog!("[CACHE DEBUG] Agent usage is empty, trying Proxy global store");
+                                match crate::proxy::take_last_usage() {
+                                    Some((model, input, output, cached)) => {
+                                        rjlog!("[CACHE DEBUG] Got usage from Proxy: model={}, input={}, output={}, cached={}", model, input, output, cached);
+                                        (Some(input), Some(output), cached, model)
+                                    }
+                                    None => {
+                                        rjlog!("[CACHE DEBUG] No usage in Proxy global store either");
+                                        (result_input, result_output, result_cached_total, model_clone.clone())
+                                    }
+                                }
+                            } else {
+                                (result_input, result_output, result_cached_total, model_clone.clone())
+                            };
+                            
+                            let has_usage = result_input.is_some() || result_output.is_some() || result_cached_total > 0;
+                            
+                            rjlog!("[CACHE DEBUG] Usage extraction: input={:?}, output={:?}, totalCached={}, has_usage={}", 
+                                result_input, result_output, result_cached_total, has_usage);
+                            
+                            if result.get("stopReason").is_some() || has_usage {
+                                rjlog!("[ACP DEBUG] Received stopReason or usage, processing finish");
                                 let event_name = format!("acp:{}", session_id_clone);
                                 let stop_reason = result.get("stopReason")
                                     .and_then(|r| r.as_str())
-                                    .unwrap_or("unknown");
+                                    .unwrap_or("end_turn");
+                                
+                                let finish_input = result_input
+                                    .or_else(|| {
+                                        let v = last_input_clone.load(Ordering::SeqCst);
+                                        if v > 0 { Some(v as i64) } else { None }
+                                    });
+                                let finish_output = result_output
+                                    .or_else(|| {
+                                        let v = last_output_clone.load(Ordering::SeqCst);
+                                        if v > 0 { Some(v as i64) } else { None }
+                                    });
+                                rjlog!("[ACP DEBUG] Finish tokens: input={:?} output={:?} cached={}", finish_input, finish_output, result_cached_total);
+                                
+                                // Record cached tokens to database if we have them
+                                if result_cached_total > 0 {
+                                    let _ = app_clone2.try_state::<Mutex<Database>>().map(|state| {
+                                        if let Ok(db) = state.lock() {
+                                            if let Ok(conn) = db.conn.lock() {
+                                                tracker::record_usage(
+                                                    &conn,
+                                                    &session_id_clone,
+                                                    &usage_model,
+                                                    finish_input.unwrap_or(0),
+                                                    finish_output.unwrap_or(0),
+                                                    0.0,
+                                                    result_cached_total,
+                                                );
+                                                rjlog!("[CACHE] Recorded {} cached tokens to database (model={})", result_cached_total, usage_model);
+                                            }
+                                        }
+                                    });
+                                }
+                                
                                 let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                     &session_id_clone, "0", "0",
-                                    AcpEvent::Finish { stop_reason: stop_reason.to_string(), input_tokens: None, output_tokens: None }
+                                    AcpEvent::Finish {
+                                        stop_reason: stop_reason.to_string(),
+                                        input_tokens: finish_input,
+                                        output_tokens: finish_output,
+                                        cached_tokens: if result_cached_total > 0 { Some(result_cached_total) } else { None },
+                                    }
                                 ));
+                            } else {
+                                // No usage data in result, but we have accumulated counters
+                                let acc_input = last_input_clone.load(Ordering::SeqCst);
+                                let acc_output = last_output_clone.load(Ordering::SeqCst);
+                                let acc_cached = last_cached_clone.load(Ordering::SeqCst);
+                                if acc_input > 0 || acc_output > 0 || acc_cached > 0 {
+                                    rjlog!("[ACP DEBUG] Using accumulated counters: input={}, output={}, cached={}", acc_input, acc_output, acc_cached);
+                                    let event_name = format!("acp:{}", session_id_clone);
+                                    let _ = app_clone2.emit(&event_name, &AcpMessage::new(
+                                        &session_id_clone, "0", "0",
+                                        AcpEvent::Finish {
+                                            stop_reason: "end_turn".to_string(),
+                                            input_tokens: if acc_input > 0 { Some(acc_input as i64) } else { None },
+                                            output_tokens: if acc_output > 0 { Some(acc_output as i64) } else { None },
+                                            cached_tokens: if acc_cached > 0 { Some(acc_cached as i64) } else { None },
+                                        }
+                                    ));
+                                }
                             }
                         }
                         if let Some(id) = val.get("id").and_then(|v| v.as_u64()) {
@@ -918,9 +1050,17 @@ impl AcpClient {
             }
             rjlog!("[ACP DEBUG] Stdout reader exited - process may have terminated");
             let event_name = format!("acp:{}", session_id_clone);
+            let exit_input = last_input_clone.load(Ordering::SeqCst);
+            let exit_output = last_output_clone.load(Ordering::SeqCst);
+            let exit_cached = last_cached_clone.load(Ordering::SeqCst);
             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                 &session_id_clone, "0", "0",
-                AcpEvent::Finish { stop_reason: "process_exit".to_string(), input_tokens: None, output_tokens: None }
+                AcpEvent::Finish {
+                    stop_reason: "process_exit".to_string(),
+                    input_tokens: if exit_input > 0 { Some(exit_input as i64) } else { None },
+                    output_tokens: if exit_output > 0 { Some(exit_output as i64) } else { None },
+                    cached_tokens: if exit_cached > 0 { Some(exit_cached as i64) } else { None },
+                }
             ));
         });
 

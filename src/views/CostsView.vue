@@ -2,7 +2,7 @@
 import { onMounted, computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useCostStore } from "../stores/useCostStore";
-import { BarChart3, Zap, Folder, Calendar, MessageSquare, ArrowLeft } from "lucide-vue-next";
+import { BarChart3, Zap, Folder, Calendar, MessageSquare, ArrowLeft, Database } from "lucide-vue-next";
 
 const router = useRouter();
 const store = useCostStore();
@@ -33,6 +33,30 @@ function shortDir(dir: string): string {
   const parts = dir.split("/");
   return parts[parts.length - 1] || dir;
 }
+
+// --- Cache hit rate calculations ---
+function cacheHitRate(cached: number, total: number): string {
+  if (total === 0) return "0%";
+  return ((cached / total) * 100).toFixed(1) + "%";
+}
+
+const todayCacheRate = computed(() => {
+  const s = store.summary;
+  if (!s || s.today_tokens === 0) return "0%";
+  return ((s.today_cached_tokens / s.today_tokens) * 100).toFixed(1) + "%";
+});
+
+const weekCacheRate = computed(() => {
+  const s = store.summary;
+  if (!s || s.week_tokens === 0) return "0%";
+  return ((s.week_cached_tokens / s.week_tokens) * 100).toFixed(1) + "%";
+});
+
+const totalCacheRate = computed(() => {
+  const s = store.summary;
+  if (!s || s.total_tokens === 0) return "0%";
+  return ((s.total_cached_tokens / s.total_tokens) * 100).toFixed(1) + "%";
+});
 
 // --- Color palette for agents ---
 const agentColors: Record<string, string> = {
@@ -113,7 +137,7 @@ async function changeDays(d: number) {
         </div>
 
         <!-- Summary cards -->
-        <div class="grid grid-cols-4 gap-4 mb-8">
+        <div class="grid grid-cols-4 gap-4 mb-4">
           <div class="bg-white rounded-xl border border-gray-100 p-5">
             <p class="text-[12px] text-gray-500 mb-1">Today</p>
             <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.today_tokens ?? 0) }} tokens</p>
@@ -129,6 +153,47 @@ async function changeDays(d: number) {
           <div class="bg-white rounded-xl border border-gray-100 p-5">
             <p class="text-[12px] text-gray-500 mb-1">All Time</p>
             <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.total_tokens ?? 0) }} tokens</p>
+          </div>
+        </div>
+
+        <!-- Cache hit rate card -->
+        <div class="bg-white rounded-xl border border-gray-100 p-5 mb-8">
+          <div class="flex items-center gap-2 mb-4">
+            <Database :size="16" class="text-indigo-500" />
+            <h3 class="text-[14px] font-medium text-gray-700">Cache Performance</h3>
+            <span class="text-[11px] text-gray-400 ml-1">KV Cache hits reduce costs by ~90%</span>
+          </div>
+          <div class="grid grid-cols-3 gap-4">
+            <div class="flex flex-col p-3 rounded-lg bg-indigo-50/50">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-gray-500">Today</span>
+                <span class="text-[16px] font-semibold text-indigo-600">{{ todayCacheRate }}</span>
+              </div>
+              <div class="w-full bg-white rounded-full h-1.5 mt-1">
+                <div class="bg-indigo-500 h-1.5 rounded-full transition-all" :style="{ width: todayCacheRate }"></div>
+              </div>
+              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.today_cached_tokens ?? 0) }} cached</span>
+            </div>
+            <div class="flex flex-col p-3 rounded-lg bg-emerald-50/50">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-gray-500">This Week</span>
+                <span class="text-[16px] font-semibold text-emerald-600">{{ weekCacheRate }}</span>
+              </div>
+              <div class="w-full bg-white rounded-full h-1.5 mt-1">
+                <div class="bg-emerald-500 h-1.5 rounded-full transition-all" :style="{ width: weekCacheRate }"></div>
+              </div>
+              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.week_cached_tokens ?? 0) }} cached</span>
+            </div>
+            <div class="flex flex-col p-3 rounded-lg bg-amber-50/50">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-gray-500">All Time</span>
+                <span class="text-[16px] font-semibold text-amber-600">{{ totalCacheRate }}</span>
+              </div>
+              <div class="w-full bg-white rounded-full h-1.5 mt-1">
+                <div class="bg-amber-500 h-1.5 rounded-full transition-all" :style="{ width: totalCacheRate }"></div>
+              </div>
+              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.total_cached_tokens ?? 0) }} cached</span>
+            </div>
           </div>
         </div>
 
@@ -255,12 +320,18 @@ async function changeDays(d: number) {
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Date</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="d in [...store.byDay].reverse()" :key="d.date" class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
                 <td class="px-5 py-3 text-[13px] text-gray-800 font-medium">{{ fmtDate(d.date) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(d.total_tokens) }}</td>
+                <td class="px-5 py-3 text-[13px] text-right tabular-nums">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium" :class="d.total_tokens > 0 ? 'bg-indigo-50 text-indigo-600' : 'bg-gray-50 text-gray-400'">
+                    {{ cacheHitRate(d.cached_tokens, d.total_tokens) }}
+                  </span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -271,6 +342,7 @@ async function changeDays(d: number) {
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
               </tr>
             </thead>
@@ -283,6 +355,11 @@ async function changeDays(d: number) {
                   </div>
                 </td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(a.total_tokens) }}</td>
+                <td class="px-5 py-3 text-[13px] text-right tabular-nums">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium" :class="a.total_tokens > 0 ? 'bg-indigo-50 text-indigo-600' : 'bg-gray-50 text-gray-400'">
+                    {{ cacheHitRate(a.cached_tokens, a.total_tokens) }}
+                  </span>
+                </td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ a.sessions }}</td>
               </tr>
             </tbody>
@@ -296,6 +373,7 @@ async function changeDays(d: number) {
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Msgs</th>
               </tr>
             </thead>
@@ -313,6 +391,11 @@ async function changeDays(d: number) {
                 </td>
                 <td class="px-5 py-3 text-[12px] text-gray-600 font-mono max-w-[200px] truncate">{{ shortDir(s.directory) }}</td>
                 <td class="px-5 py-3 text-[13px] text-gray-800 font-medium text-right tabular-nums">{{ fmtTokens(s.total_tokens) }}</td>
+                <td class="px-5 py-3 text-right tabular-nums">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium" :class="s.total_tokens > 0 ? 'bg-indigo-50 text-indigo-600' : 'bg-gray-50 text-gray-400'">
+                    {{ cacheHitRate(s.cached_tokens, s.total_tokens) }}
+                  </span>
+                </td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ s.message_count }}</td>
               </tr>
             </tbody>
@@ -324,6 +407,7 @@ async function changeDays(d: number) {
               <tr class="border-b border-gray-100">
                 <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project Directory</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
                 <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
               </tr>
             </thead>
@@ -334,6 +418,11 @@ async function changeDays(d: number) {
                   <p v-if="d.directory !== 'Unknown'" class="text-[11px] text-gray-400 mt-0.5 truncate max-w-[250px]">{{ d.directory }}</p>
                 </td>
                 <td class="px-5 py-3 text-[13px] text-gray-900 font-medium text-right tabular-nums">{{ fmtTokens(d.total_tokens) }}</td>
+                <td class="px-5 py-3 text-right tabular-nums">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium" :class="d.total_tokens > 0 ? 'bg-indigo-50 text-indigo-600' : 'bg-gray-50 text-gray-400'">
+                    {{ cacheHitRate(d.cached_tokens, d.total_tokens) }}
+                  </span>
+                </td>
                 <td class="px-5 py-3 text-[13px] text-gray-600 text-right tabular-nums">{{ d.sessions }}</td>
               </tr>
             </tbody>

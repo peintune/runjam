@@ -103,4 +103,9 @@ pub fn run_migrations(conn: &Connection) {
         "ALTER TABLE agent_models ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0",
         [],
     ).ok();
+
+    conn.execute(
+        "ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    ).ok();
 }

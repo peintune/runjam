@@ -8,6 +8,12 @@ export interface Message {
   thoughtDuration?: string;
   interaction?: { prompt: string; options: InteractionOption[]; sessionId: string; };
   toolCalls?: ToolCall[];
+  /** Token count for the finished turn (set on the last agent message) */
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Total turn duration in milliseconds (set on the last agent message) */
+  totalDurationMs?: number;
 }
 
 export const useMessageStore = defineStore("message", () => {
