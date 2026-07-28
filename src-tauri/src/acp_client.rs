@@ -568,27 +568,26 @@ impl AcpClient {
                                     }
                                     "read_only" => {
                                         rjlog!("[ACP DEBUG] Auto-denying permission request in read_only mode");
-                                        let deny_option = perm_req.params.options.iter()
+                                        // Find a deny option, or fall back to hardcoded "deny" (never use an allow option as fallback)
+                                        let deny_key = perm_req.params.options.iter()
                                             .find(|o| o.key == "deny" || o.key == "deny_once" || o.key == "reject")
-                                            .or_else(|| perm_req.params.options.last())
-                                            .cloned();
-                                        if let Some(opt) = deny_option {
-                                            let response_params = serde_json::json!({
-                                                "requestId": perm_req.params.request_id,
-                                                "response": opt.key,
-                                            });
-                                            let response_request = JsonRpcRequest {
-                                                jsonrpc: "2.0".to_string(),
-                                                id: 99999,
-                                                method: "permission/response".to_string(),
-                                                params: response_params,
-                                            };
-                                            if let Ok(response_json) = serde_json::to_string(&response_request) {
-                                                rjlog!("[ACP DEBUG] Sending auto-deny response: {}", response_json);
-                                                if let Ok(mut stdin) = stdin_writer_clone.lock() {
-                                                    let _ = writeln!(&mut stdin, "{}", response_json);
-                                                    let _ = stdin.flush();
-                                                }
+                                            .map(|o| o.key.clone())
+                                            .unwrap_or_else(|| "deny".to_string());
+                                        let response_params = serde_json::json!({
+                                            "requestId": perm_req.params.request_id,
+                                            "response": deny_key,
+                                        });
+                                        let response_request = JsonRpcRequest {
+                                            jsonrpc: "2.0".to_string(),
+                                            id: 99999,
+                                            method: "permission/response".to_string(),
+                                            params: response_params,
+                                        };
+                                        if let Ok(response_json) = serde_json::to_string(&response_request) {
+                                            rjlog!("[ACP DEBUG] Sending auto-deny response: {}", response_json);
+                                            if let Ok(mut stdin) = stdin_writer_clone.lock() {
+                                                let _ = writeln!(&mut stdin, "{}", response_json);
+                                                let _ = stdin.flush();
                                             }
                                         }
                                     }
@@ -624,51 +623,47 @@ impl AcpClient {
                                 match permission_mode_clone.as_str() {
                                     "full_access" | "approve_for_me" => {
                                         rjlog!("[ACP DEBUG] Auto-approving session/request_permission due to mode: {}", permission_mode_clone);
-                                        let approve_option = options.iter()
+                                        let approve_key = options.iter()
                                             .find(|o| o.key == "allow_once" || o.key == "allow")
-                                            .or_else(|| options.first())
-                                            .cloned();
-                                        if let Some(opt) = approve_option {
-                                            let outcome_val = serde_json::json!({
+                                            .map(|o| o.key.clone())
+                                            .or_else(|| options.first().map(|o| o.key.clone()))
+                                            .unwrap_or_else(|| "allow_once".to_string());
+                                        let resp_json = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": sess_perm.id,
+                                            "result": {
                                                 "outcome": "selected",
-                                                "optionId": opt.key,
-                                            });
-                                            let resp_json = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": sess_perm.id,
-                                                "result": { "outcome": outcome_val }
-                                            });
-                                            if let Ok(response_str) = serde_json::to_string(&resp_json) {
-                                                rjlog!("[ACP DEBUG] Sending auto-permission response: {}", response_str);
-                                                if let Ok(mut stdin) = stdin_writer_clone.lock() {
-                                                    let _ = writeln!(&mut stdin, "{}", response_str);
-                                                    let _ = stdin.flush();
-                                                }
+                                                "optionId": approve_key,
+                                            }
+                                        });
+                                        if let Ok(response_str) = serde_json::to_string(&resp_json) {
+                                            rjlog!("[ACP DEBUG] Sending auto-permission response: {}", response_str);
+                                            if let Ok(mut stdin) = stdin_writer_clone.lock() {
+                                                let _ = writeln!(&mut stdin, "{}", response_str);
+                                                let _ = stdin.flush();
                                             }
                                         }
                                     }
                                     "read_only" => {
                                         rjlog!("[ACP DEBUG] Auto-denying session/request_permission in read_only mode");
-                                        let deny_option = options.iter()
+                                        // Find a deny option, or fall back to hardcoded "deny" (never use an allow option as fallback)
+                                        let deny_key = options.iter()
                                             .find(|o| o.key == "deny" || o.key == "deny_once" || o.key == "reject")
-                                            .or_else(|| options.last())
-                                            .cloned();
-                                        if let Some(opt) = deny_option {
-                                            let outcome_val = serde_json::json!({
+                                            .map(|o| o.key.clone())
+                                            .unwrap_or_else(|| "deny".to_string());
+                                        let resp_json = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": sess_perm.id,
+                                            "result": {
                                                 "outcome": "selected",
-                                                "optionId": opt.key,
-                                            });
-                                            let resp_json = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": sess_perm.id,
-                                                "result": { "outcome": outcome_val }
-                                            });
-                                            if let Ok(response_str) = serde_json::to_string(&resp_json) {
-                                                rjlog!("[ACP DEBUG] Sending auto-deny response: {}", response_str);
-                                                if let Ok(mut stdin) = stdin_writer_clone.lock() {
-                                                    let _ = writeln!(&mut stdin, "{}", response_str);
-                                                    let _ = stdin.flush();
-                                                }
+                                                "optionId": deny_key,
+                                            }
+                                        });
+                                        if let Ok(response_str) = serde_json::to_string(&resp_json) {
+                                            rjlog!("[ACP DEBUG] Sending auto-deny response: {}", response_str);
+                                            if let Ok(mut stdin) = stdin_writer_clone.lock() {
+                                                let _ = writeln!(&mut stdin, "{}", response_str);
+                                                let _ = stdin.flush();
                                             }
                                         }
                                     }
@@ -712,10 +707,8 @@ impl AcpClient {
                                     }
                                     "agent_message_end" => {
                                         rjlog!("[ACP DEBUG] Agent message end");
-                                        let _ = app_clone2.emit(&event_name, &AcpMessage::new(
-                                            &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string(), input_tokens: None, output_tokens: None }
-                                        ));
+                                        // Don't send Finish here — this is per-message, not end of turn.
+                                        // The true end of turn is signaled by stopReason in the prompt response.
                                     }
                                     "agent_thought_chunk" => {
                                         let raw = get_content_text(&update.params.update);
@@ -758,10 +751,8 @@ impl AcpClient {
                                     }
                                     "message_end" => {
                                         rjlog!("[ACP DEBUG] Message end");
-                                        let _ = app_clone2.emit(&event_name, &AcpMessage::new(
-                                            &session_id_clone, "0", "0",
-                                            AcpEvent::Finish { stop_reason: "end".to_string(), input_tokens: None, output_tokens: None }
-                                        ));
+                                        // Don't send Finish here — this is per-message, not end of turn.
+                                        // The true end of turn is signaled by stopReason in the prompt response.
                                     }
                                     "usage_update" => {
                                         let used = update.params.update.used.unwrap_or(0);

@@ -613,8 +613,17 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
   event.stopPropagation();
   const target = event.currentTarget as HTMLElement;
   const rect = target.getBoundingClientRect();
-  agentDropdownPosition.value = { x: rect.left, y: rect.bottom + 8 };
-  
+  const dropdownHeight = 320; // estimated max height of the dropdown
+  const viewportHeight = window.innerHeight;
+
+  // If there's not enough space below, open upward
+  const spaceBelow = viewportHeight - rect.bottom;
+  const top = spaceBelow >= dropdownHeight
+    ? rect.bottom + 8
+    : rect.top - dropdownHeight - 8;
+
+  agentDropdownPosition.value = { x: rect.left, y: top };
+
   showAgentDropdown.value = modelId;
   console.log("Agent dropdown opened for:", modelId, "position:", agentDropdownPosition.value);
 }
@@ -900,7 +909,7 @@ const userAddedModels = computed(() => {
     <Teleport to="body">
       <div v-if="showAgentDropdown" class="fixed z-[60]">
         <div 
-          class="agent-dropdown-panel bg-white rounded-xl shadow-xl border-2 border-red-500 p-2 min-w-[280px]"
+          class="agent-dropdown-panel bg-white rounded-xl shadow-xl border border-gray-200 p-2 min-w-[280px] max-h-[320px] overflow-y-auto"
           :style="{ left: `${agentDropdownPosition.x}px`, top: `${agentDropdownPosition.y}px`, position: 'fixed', zIndex: 1000 }"
         >
           <div class="flex items-center justify-between px-3 py-2 border-b border-gray-100 mb-2">

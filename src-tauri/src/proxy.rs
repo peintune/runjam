@@ -92,6 +92,9 @@ impl Read for SseStreamConverter {
             if read_start.elapsed() > std::time::Duration::from_millis(100) {
                 rjlog!("[PROXY STREAM] Slow read: {}ms, line: {} bytes", read_start.elapsed().as_millis(), trimmed.len());
             }
+            if trimmed.is_empty()  || trimmed.len() == 0{
+                continue;
+            }
             rjlog!("[PROXY STREAM] Read line: {} ({} bytes)", safe_truncate(trimmed, 80), trimmed.len());
             let converted = if trimmed.starts_with("data: ") {
                 (self.convert)(line.trim_end())

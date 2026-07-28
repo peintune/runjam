@@ -15,7 +15,7 @@ import {
   checkNodejs, getNodejsInstallGuide, testAgent,
   type AgentInfo,
 } from "../../api/agents";
-import { readAgentConfigModels } from "../../api/models";
+import { getAgentModels } from "../../api/models";
 
 const router = useRouter();
 const agentStore = useAgentStore();
@@ -110,7 +110,7 @@ async function loadAgents(forceRefresh = false) {
 
 async function loadAgentConfigModels(agentId: string) {
   try {
-    const configModels = await readAgentConfigModels(agentId);
+    const configModels = await getAgentModels(agentId);
     agentConfigModels.value[agentId] = configModels;
   } catch (e) {
     agentConfigModels.value[agentId] = [];
@@ -224,13 +224,15 @@ function goToDetail(id: string) {
                 <span class="text-[15px] font-semibold text-gray-900 tracking-tight">{{ agent.display_name }}</span>
                 <span :class="['w-1.5 h-1.5 rounded-full flex-shrink-0', agent.status === 'available' ? 'bg-emerald-500' : agent.status === 'connection_failed' ? 'bg-red-500' : 'bg-gray-400']" />
               </div>
-              <div class="flex items-center gap-3">
+              <div class="flex items-center gap-3 mb-0.5">
                 <p class="text-[13px] text-gray-400">
                   {{ agent.installed ? (agent.version ? 'v' + agent.version : 'Installed') : 'Not installed' }}
                 </p>
                 <p v-if="agent.last_tested_at" class="text-[12px] text-gray-300">
                   Tested {{ timeAgo(agent.last_tested_at) }}
                 </p>
+              </div>
+              <div class="flex items-center gap-3">
                 <span
                   v-if="(agentConfigModels[agent.id] || []).length > 0"
                   class="inline-flex items-center gap-1 text-[12px] text-indigo-500 font-medium"

@@ -77,10 +77,23 @@ function shouldAutoExpandThinking(msg: Message): boolean {
 watch(
   () => props.messages,
   (msgs) => {
+    let hasActiveThinking = false;
     for (let i = 0; i < msgs.length; i++) {
       // Auto-expand thinking that hasn't reached content phase yet
       if (shouldAutoExpandThinking(msgs[i])) {
         thinkingExpanded.value.add(i);
+        hasActiveThinking = true;
+      }
+    }
+
+    // When a new thought is active, collapse all previously completed thoughts
+    if (hasActiveThinking) {
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
+        // Collapse completed thoughts (those that have both thinking and content)
+        if (m.content && m.thinking && thinkingExpanded.value.has(i)) {
+          thinkingExpanded.value.delete(i);
+        }
       }
     }
   },

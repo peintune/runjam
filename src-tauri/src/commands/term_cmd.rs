@@ -50,6 +50,9 @@ pub fn spawn_terminal(
     cmd.env("COLORTERM", "truecolor");
     cmd.env("LANG", "en_US.UTF-8");
 
+    // Disable zsh EOL mark (%) when line doesn't end with newline
+    cmd.env("PROMPT_EOL_MARK", "");
+
     // Interactive shell for proper prompt and aliases
     if !cfg!(target_os = "windows") {
         if shell.ends_with("zsh") || shell.ends_with("bash") {

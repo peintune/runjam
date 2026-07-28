@@ -167,6 +167,16 @@ function selectRecentDir(p: string) {
   showDirMenu.value = false;
 }
 
+function removeRecentDir(p: string) {
+  const dirs = loadRecentDirs();
+  const filtered = dirs.filter(d => d !== p);
+  localStorage.setItem(RECENT_DIRS_KEY, JSON.stringify(filtered));
+  recentDirs.value = filtered;
+  if (dirPath.value === p) {
+    dirPath.value = '';
+  }
+}
+
 const selectedMode = ref("assistant");
 const selectedPermissionMode = ref("ask_approval");
 const showPermissionDropdown = ref(false);
@@ -383,6 +393,7 @@ function scrollToBottom() {
 
 watch(() => store.activeSessionId, async (newId) => {
   activeThinking.value = ""; activeContent.value = ""; thoughtDuration.value = "";
+  inputText.value = "";
   if (newId) {
     const state = getSessionState(newId);
     messages.value = [...state.messages];
@@ -482,6 +493,13 @@ function lastToolMsg(msgs: Message[]): Message | null {
  * all accumulating in the first message.
  */
 function pushPhaseMessage(state: SessionState, phase: 'thinking' | 'tool') {
+  // Mark all previous agent messages as done so only the latest shows "working"
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (state.messages[i].role === 'agent') {
+      state.messages[i].isProcessing = false;
+      break;
+    }
+  }
   const msg: Message = {
     role: "agent",
     content: "",
@@ -864,7 +882,7 @@ watch(selectedAgentId, async (id) => {
   } else if (assignedModels.value.length > 0) {
     selectedModel.value = assignedModels.value[0].id;
   }
-});
+}, { immediate: true });
 
 watch(messages, async () => {
   await nextTick();
@@ -1372,22 +1390,35 @@ watch(messages, (msgs) => {
             <!-- Dropdown menu -->
             <div
               v-if="showDirMenu"
-              class="absolute left-0 bottom-full mb-1 w-56 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 py-1"
+              class="absolute left-0 bottom-full mb-1 w-72 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 py-1"
               @click.stop
             >
             <!-- Recent projects -->
             <div v-if="recentDirs.length > 0">
               <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Recent Projects</div>
-              <button
+              <div
                 v-for="d in recentDirs"
                 :key="d"
-                @click="selectRecentDir(d)"
-                class="w-full flex items-center gap-2 px-3 py-2 text-left text-[12px] text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer"
+                class="group w-full flex items-center gap-2 px-3 py-2 text-left text-[12px] text-gray-700 hover:bg-gray-50 transition-colors"
               >
-                <Folder :size="12" class="text-gray-400 flex-shrink-0" />
-                <span class="truncate">{{ d.split('/').pop() }}</span>
-                <span class="text-[10px] text-gray-400 ml-auto flex-shrink-0 truncate max-w-[100px]">{{ d.split('/').slice(0, -1).join('/') }}</span>
-              </button>
+                <button
+                  @click="selectRecentDir(d)"
+                  class="flex-1 flex items-center gap-2 min-w-0 text-left cursor-pointer"
+                >
+                  <Folder :size="12" class="text-gray-400 flex-shrink-0" />
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate font-medium">{{ d.split('/').pop() }}</div>
+                    <div class="text-[10px] text-gray-400 truncate">{{ d }}</div>
+                  </div>
+                </button>
+                <button
+                  @click.stop="removeRecentDir(d)"
+                  class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0 cursor-pointer"
+                  title="Remove"
+                >
+                  <X :size="12" />
+                </button>
+              </div>
               <div class="mx-3 my-1 border-t border-gray-100" />
             </div>
             <!-- No project -->
