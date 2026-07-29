@@ -434,6 +434,27 @@ impl AcpClient {
             .stderr(Stdio::piped())
             .current_dir(cwd);
 
+        // Tell claude-agent-acp where to find the native claude binary
+        if agent_type == "claude" {
+            let node_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let claude_bin = if cfg!(target_os = "windows") {
+                ["claude.exe", "claude.cmd"].iter()
+                    .find_map(|c| {
+                        let p = node_dir.join(c);
+                        if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+                    })
+            } else {
+                let p = node_dir.join("claude");
+                if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+            };
+            if let Some(ref bin) = claude_bin {
+                rjlog!("[ACP] Setting CLAUDE_CODE_EXECUTABLE={}", bin);
+                cmd.env("CLAUDE_CODE_EXECUTABLE", bin);
+            }
+        }
+
         if agent_type == "codex" {
             // Read API key and base_url from model_providers.custom (native codex config)
             if let Ok(home) = std::env::var("HOME") {
@@ -1319,6 +1340,26 @@ impl AcpClient {
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(package_dir.clone());
+
+        if agent_id == "claude-code" || agent_id == "claude" {
+            let node_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let claude_bin = if cfg!(target_os = "windows") {
+                ["claude.exe", "claude.cmd"].iter()
+                    .find_map(|c| {
+                        let p = node_dir.join(c);
+                        if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+                    })
+            } else {
+                let p = node_dir.join("claude");
+                if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+            };
+            if let Some(ref bin) = claude_bin {
+                rjlog!("[ACP] Test: Setting CLAUDE_CODE_EXECUTABLE={}", bin);
+                cmd.env("CLAUDE_CODE_EXECUTABLE", bin);
+            }
+        }
 
         if agent_id == "codex-cli" || agent_id == "codex" {
             if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {

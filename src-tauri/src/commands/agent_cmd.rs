@@ -316,13 +316,31 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         // Directly check the npm's own bin directory — npm install -g
         // always places the binary next to npm itself, regardless of
         // whether it's bundled, nvm, or system Node.js.
-        let expected_binary = std::path::Path::new(&node_bin_dir).join(bin_name);
-        let (install_path, version) = if expected_binary.exists() {
+        let bin_candidates: &[&str] = if cfg!(target_os = "windows") {
+            match bin_name {
+                "claude" => &["claude.exe", "claude.cmd"],
+                "codex" => &["codex.exe", "codex.cmd"],
+                "gemini" => &["gemini.exe", "gemini-cli.exe", "gemini.cmd", "gemini-cli.cmd"],
+                _ => &[],
+            }
+        } else {
+            &[""]
+        };
+        let expected_binary = if cfg!(target_os = "windows") {
+            bin_candidates.iter().find_map(|c| {
+                let p = std::path::Path::new(&node_bin_dir).join(c);
+                if p.exists() { Some(p) } else { None }
+            })
+        } else {
+            let p = std::path::Path::new(&node_bin_dir).join(bin_name);
+            if p.exists() { Some(p) } else { None }
+        };
+        let (install_path, version) = if let Some(ref binary) = expected_binary {
             let ver = detector::get_version(
-                &expected_binary.to_string_lossy(),
+                &binary.to_string_lossy(),
                 &path_env,
             );
-            (Some(expected_binary.to_string_lossy().to_string()), ver)
+            (Some(binary.to_string_lossy().to_string()), ver)
         } else {
             // Fallback to full PATH scan (handles unusual npm prefixes)
             let agents = detector::detect_agents();
