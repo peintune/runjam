@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::sync::{Mutex, Arc};
 use tauri::{AppHandle, Emitter};
 use serde::{Serialize, Deserialize};
+use crate::util::hidden_command;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OllamaModel {
@@ -36,7 +37,7 @@ fn find_ollama_path() -> Option<String> {
         }
     }
 
-    if let Ok(output) = Command::new("where").arg("ollama").output() {
+    if let Ok(output) = hidden_command("where").arg("ollama").output() {
         if output.status.success() {
             let paths = String::from_utf8_lossy(&output.stdout);
             return Some(paths.lines().next().unwrap_or("").trim().to_string());
@@ -84,18 +85,18 @@ fn ensure_ollama_running() -> Result<(), String> {
         None => return Err("Ollama not found".to_string()),
     };
 
-    let output = Command::new(&path).arg("list").output();
+    let output = hidden_command(&path).arg("list").output();
     match output {
         Ok(out) if out.status.success() => return Ok(()),
         _ => {}
     }
 
-    let _ = Command::new(&path).arg("serve").spawn()
+    let _ = hidden_command(&path).arg("serve").spawn()
         .map_err(|e| format!("Failed to start Ollama service: {}", e))?;
 
     for _ in 0..10 {
         std::thread::sleep(Duration::from_millis(500));
-        let output = Command::new(&path).arg("list").output();
+        let output = hidden_command(&path).arg("list").output();
         if let Ok(out) = output {
             if out.status.success() {
                 return Ok(());
@@ -118,7 +119,7 @@ pub fn get_ollama_status() -> String {
         None => return "not_installed".to_string(),
     };
 
-    let output = Command::new(&path).arg("--version").output();
+    let output = hidden_command(&path).arg("--version").output();
     match output {
         Ok(out) if out.status.success() => {
             let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -137,7 +138,7 @@ pub fn list_ollama_models() -> Result<Vec<OllamaModel>, String> {
 
     ensure_ollama_running()?;
 
-    let output = Command::new(&path).arg("list").output()
+    let output = hidden_command(&path).arg("list").output()
         .map_err(|e| format!("Failed to run ollama list: {}", e))?;
 
     if !output.status.success() {
@@ -290,7 +291,7 @@ pub fn pull_ollama_model(model_name: String, app_handle: AppHandle) -> Result<()
         let error_output = Arc::new(Mutex::new(String::new()));
         let error_output_clone = error_output.clone();
 
-        let mut child = match Command::new(&path)
+        let mut child = match hidden_command(&path)
             .arg("pull")
             .arg(&model_name)
             .stdout(std::process::Stdio::piped())

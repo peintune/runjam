@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+use crate::util::hidden_command;
 
 /// Get the directory containing the bundled Node.js binary (for PATH).
 /// On macOS/Linux this is `{resource_dir}/nodejs/bin`,
@@ -81,7 +82,7 @@ pub fn resolve_node_bin(app: &AppHandle) -> Option<PathBuf> {
     }
 
     // 3. Try system Node.js from PATH
-    if std::process::Command::new("node")
+    if hidden_command("node")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -118,7 +119,7 @@ pub fn resolve_npm_bin(app: &AppHandle) -> Option<PathBuf> {
     }
 
     // 3. Try system npm from PATH
-    if std::process::Command::new("npm")
+    if hidden_command("npm")
         .arg("--version")
         .output()
         .map(|o| o.status.success())

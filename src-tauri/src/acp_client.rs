@@ -3,6 +3,7 @@ use crate::cost::tracker;
 use crate::db::connection::Database;
 use crate::node_util;
 use crate::rjlog;
+use crate::util::hidden_command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -12,18 +13,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
-
-/// Create a Command with the console window hidden on Windows.
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut cmd = Command::new(program);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
-}
 
 /// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
 fn safe_truncate(s: &str, max_bytes: usize) -> &str {
@@ -318,7 +307,7 @@ fn resolve_agent_paths(
 
             if !binary_path.exists() {
                 rjlog!("[ACP] Installing {}...", pkg_name);
-                let output = Command::new(&npm_bin)
+                let output = hidden_command(&npm_bin)
                     .args(["install", "--no-save", &pkg_name])
                     .current_dir(&install_dir)
                     .output()
@@ -344,21 +333,44 @@ fn resolve_agent_paths(
             let node_dir = node_bin.parent()
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
-            let bin_candidates: [&str; 2] = if cfg!(target_os = "windows") {
-                ["gemini.exe", "gemini-cli.exe"]
+            let bin_candidates: &[&str] = if cfg!(target_os = "windows") {
+                &["gemini.exe", "gemini-cli.exe", "gemini.cmd", "gemini-cli.cmd"]
             } else {
-                ["gemini", "gemini-cli"]
+                &["gemini", "gemini-cli"]
             };
             let mut gemini_path = String::new();
-            for name in &bin_candidates {
+            for name in bin_candidates.iter() {
                 let candidate = node_dir.join(name);
+                rjlog!("[ACP DEBUG] Gemini: checking candidate: {:?}", candidate);
                 if candidate.exists() {
                     gemini_path = candidate.to_string_lossy().to_string();
+                    rjlog!("[ACP DEBUG] Gemini: found at {:?}", candidate);
                     break;
                 }
             }
             if gemini_path.is_empty() {
-                // Fallback: try PATH
+                // Fallback: search npm global prefix as well
+                let npm_prefix_output = hidden_command(&npm_bin)
+                    .args(["config", "get", "prefix"])
+                    .output();
+                if let Ok(out) = npm_prefix_output {
+                    let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !prefix.is_empty() {
+                        let prefix_bin = std::path::PathBuf::from(&prefix);
+                        for name in bin_candidates.iter() {
+                            let candidate = prefix_bin.join(name);
+                            rjlog!("[ACP DEBUG] Gemini: checking npm prefix candidate: {:?}", candidate);
+                            if candidate.exists() {
+                                gemini_path = candidate.to_string_lossy().to_string();
+                                rjlog!("[ACP DEBUG] Gemini: found at npm prefix: {:?}", candidate);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if gemini_path.is_empty() {
+                rjlog!("[ACP DEBUG] Gemini: not found in node_dir {:?} or npm prefix, falling back to PATH", node_dir);
                 gemini_path = "gemini".to_string();
             }
             Ok((

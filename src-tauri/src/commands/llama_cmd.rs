@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter};
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use crate::util::hidden_command;
 
 static LLAMA_SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 static LLAMA_SERVER_PORT: AtomicU16 = AtomicU16::new(19090);
@@ -151,7 +152,7 @@ pub fn open_llama_models_dir() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        Command::new("explorer")
+        hidden_command("explorer")
             .arg(&models_dir)
             .spawn()
             .map_err(|e| format!("Failed to open directory: {}", e))?;
@@ -263,7 +264,7 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     let port = find_free_port(19090);
     LLAMA_SERVER_PORT.store(port, Ordering::Relaxed);
     
-    let mut cmd = Command::new(&server_path);
+    let mut cmd = hidden_command(&server_path);
     cmd.arg("-m").arg(&full_model_path)
         .arg("--port").arg(port.to_string())
         .arg("--host").arg("127.0.0.1")
@@ -431,7 +432,7 @@ pub fn stop_llama_server() -> Result<(), String> {
     if pid != 0 {
         #[cfg(target_os = "windows")]
         {
-            let _ = Command::new("taskkill")
+            let _ = hidden_command("taskkill")
                 .arg("/F")
                 .arg("/PID")
                 .arg(pid.to_string())
@@ -448,7 +449,7 @@ pub fn stop_llama_server() -> Result<(), String> {
     
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("taskkill")
+        let _ = hidden_command("taskkill")
             .arg("/F")
             .arg("/IM")
             .arg("llama-server.exe")

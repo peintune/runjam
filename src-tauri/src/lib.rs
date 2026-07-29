@@ -13,6 +13,7 @@ mod acp_client;
 mod proxy;
 mod node_util;
 pub mod log_util;
+mod util;
 
 use commands::term_cmd::TerminalState;
 use db::connection::Database;

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use crate::util::hidden_command;
 
 fn get_app_data_dir() -> PathBuf {
     directories::ProjectDirs::from("com", "runjam", "RunJam")
@@ -25,7 +26,7 @@ fn open_path(path: &PathBuf) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
+        hidden_command("explorer")
             .arg(path)
             .spawn()
             .map_err(|e| e.to_string())?;

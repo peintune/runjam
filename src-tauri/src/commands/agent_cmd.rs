@@ -3,23 +3,11 @@ use crate::acp_client::AcpClient;
 use crate::db::connection::Database;
 use crate::models::agent::Agent;
 use crate::state::{AgentState, AppState};
+use crate::util::hidden_command;
 use serde::Serialize;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, State};
-
-/// Create a Command with the console window hidden on Windows.
-fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut cmd = Command::new(program);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    cmd
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentWithState {
@@ -173,7 +161,7 @@ pub fn set_agent_enabled(agent_id: String, enabled: bool, app_state: State<'_, M
 pub fn check_nodejs(app: tauri::AppHandle) -> Result<String, String> {
     // Prefer bundled Node.js
     if let Some(node_bin) = crate::node_util::get_bundled_node_bin(&app) {
-        let output = std::process::Command::new(&node_bin)
+        let output = hidden_command(&node_bin)
             .arg("--version")
             .output()
             .map_err(|e| e.to_string())?;
@@ -183,7 +171,7 @@ pub fn check_nodejs(app: tauri::AppHandle) -> Result<String, String> {
     }
 
     // Fall back to system node
-    let output = std::process::Command::new("node")
+    let output = hidden_command("node")
         .arg("--version")
         .output()
         .map_err(|_| "Node.js is not installed. Please install Node.js ≥ 18 from https://nodejs.org".to_string())?;
@@ -237,7 +225,7 @@ pub fn open_nodejs_download() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        hidden_command("cmd")
             .args(["/c", "start", url])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -486,7 +474,7 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
                 serde_json::json!({ "status": "uninstalling", "message": format!("Running: {} {}", npm_bin, uninstall_cmd.join(" ")) }),
             );
 
-            let _ = std::process::Command::new(&npm_bin)
+            let _ = hidden_command(&npm_bin)
                 .args(&uninstall_cmd)
                 .env("PATH", &path_env)
                 .output();

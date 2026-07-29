@@ -2,6 +2,7 @@ use crate::models::agent::Agent;
 use std::process::Command;
 use std::env;
 use std::path::PathBuf;
+use crate::util::hidden_command;
 
 pub(crate) fn get_enhanced_path() -> String {
     let mut paths = Vec::new();
@@ -105,7 +106,7 @@ pub fn detect_agents() -> Vec<Agent> {
 
         // Fallback to system PATH (using enhanced_path that includes Homebrew, nvm, etc.)
         let which = if cfg!(target_os = "windows") {
-            Command::new("where").arg(bin_name).output()
+            hidden_command("where").arg(bin_name).output()
         } else {
             Command::new("which").arg(bin_name).env("PATH", &enhanced_path).output()
         };
@@ -142,7 +143,7 @@ fn dirs_data_dir() -> std::path::PathBuf {
 }
 
 pub fn get_version(bin: &str, path: &str) -> Option<String> {
-    let output = Command::new(bin)
+    let output = hidden_command(bin)
         .arg("--version")
         .env("PATH", path)
         .output()
