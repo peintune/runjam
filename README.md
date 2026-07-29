@@ -200,6 +200,8 @@ flowchart LR
         Anthropic[Anthropic API]
         OpenAI[OpenAI API]
         Google[Google AI API]
+        DeepSeek[DeepSeek API]
+        Qwen[Qwen API]
         Custom[Custom APIs]
     end
 
@@ -218,6 +220,8 @@ flowchart LR
     LLM --> Anthropic
     LLM --> OpenAI
     LLM --> Google
+    LLM --> DeepSeek
+    LLM --> Qwen
     LLM --> Custom
     Router -.->|"local models"| Llama
     Llama --> GGUF
@@ -285,6 +289,8 @@ flowchart TB
     Proxy2 -->|"HTTP"| AnthropicAPI[Anthropic API]
     Proxy2 -->|"HTTP"| OpenAIAPI[OpenAI API]
     Proxy2 -->|"HTTP"| GoogleAPI[Google AI API]
+    Proxy2 -->|"HTTP"| DeepSeekAPI[DeepSeek API]
+    Proxy2 -->|"HTTP"| QwenAPI[Qwen API]
 
     style Desktop fill:#1e1e2e,color:#fff
     style Frontend2 fill:#42b883,color:#fff
