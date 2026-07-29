@@ -237,11 +237,19 @@ pub fn open_nodejs_download() -> Result<(), String> {
 #[tauri::command]
 pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, Mutex<Database>>) -> Result<Agent, String> {
     let node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
-    let npm_bin = if node_bin_dir.is_empty() { "npm".to_string() } else { format!("{}/npm", node_bin_dir) };
+    let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+    let npm_bin = if node_bin_dir.is_empty() {
+        npm_name.to_string()
+    } else if cfg!(target_os = "windows") {
+        format!("{}\\{}", node_bin_dir, npm_name)
+    } else {
+        format!("{}/{}", node_bin_dir, npm_name)
+    };
+    let path_sep = if cfg!(target_os = "windows") { ";" } else { ":" };
     let path_env = if node_bin_dir.is_empty() {
         crate::agent::detector::get_enhanced_path()
     } else {
-        format!("{}:{}", node_bin_dir, std::env::var("PATH").unwrap_or_default())
+        format!("{}{}{}", node_bin_dir, path_sep, std::env::var("PATH").unwrap_or_default())
     };
 
     let install_cmd = match agent_id.as_str() {
@@ -942,11 +950,21 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
             return Err(format!("Extract failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
     } else {
-        let output = std::process::Command::new("unzip")
-            .args(["-o", tmp.to_string_lossy().as_ref(), "-d", data_dir.to_string_lossy().as_ref()])
+        // Windows: use tar (bsdtar, available since Win10 1803) which handles .zip
+        let output = std::process::Command::new("tar")
+            .args(["-xf", tmp.to_string_lossy().as_ref(), "-C", data_dir.to_string_lossy().as_ref()])
             .output().map_err(|e| format!("Extract failed: {}", e))?;
         if !output.status.success() {
-            return Err(format!("Extract failed: {}", String::from_utf8_lossy(&output.stderr)));
+            // Fallback: try PowerShell Expand-Archive
+            let ps_output = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    tmp.to_string_lossy(), data_dir.to_string_lossy()
+                )])
+                .output().map_err(|_| format!("Extract failed: {}", String::from_utf8_lossy(&output.stderr)))?;
+            if !ps_output.status.success() {
+                return Err(format!("Extract failed: {}", String::from_utf8_lossy(&ps_output.stderr)));
+            }
         }
     }
 
