@@ -6,7 +6,7 @@
 
 ### One Desktop, All Your AI Agents
 
-Run multiple AI coding agents — Claude Code, Codex CLI, Gemini CLI — in a single unified desktop app. Auto-detect, one-click install, real-time streaming, local-first.
+Manage and run multiple AI agents — Claude Code, Codex CLI, Gemini CLI, and more — in a single unified desktop app. Auto-detect, one-click install, real-time streaming, local-first, automatic protocol proxy, cache optimization, llama.cpp local models, built-in code editor, terminal, and more.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tauri](https://img.shields.io/badge/Tauri-2-orange.svg)](https://tauri.app)
@@ -15,6 +15,8 @@ Run multiple AI coding agents — Claude Code, Codex CLI, Gemini CLI — in a si
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 [Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
+
+[中文文档](README.zh-CN.md)
 
 <br/>
 
@@ -26,21 +28,21 @@ Run multiple AI coding agents — Claude Code, Codex CLI, Gemini CLI — in a si
 
 ## What is RunJam?
 
-RunJam is a **local-first, cross-platform desktop manager for AI coding agents**. Think of it as **Docker Desktop for AI Agents** — it manages your AI coding CLI tools the same way Docker Desktop manages containers.
+RunJam is a **local-first, cross-platform desktop manager for AI agents**. It manages your AI CLI tools and LLM model configurations — think of it as a unified control panel for all your AI coding assistants.
 
-Instead of juggling multiple terminal windows, manually configuring each agent, and losing track of which agent is working on which project, RunJam brings everything into one clean interface:
+Instead of juggling multiple terminal windows, manually configuring each agent, and losing track of which agent is working on which project, RunJam brings everything into one clean interface with a single model configuration for all projects and agents:
 
 - **Auto-detect** agents already installed on your system
 - **One-click install** missing agents (Claude Code, Codex CLI, Gemini CLI)
 - **Unified chat interface** with real-time streaming, Markdown rendering, and syntax highlighting
 - **Multi-project, multi-agent** sessions running in parallel
 - **Built-in file explorer, terminal, and code editor** for each project workspace
-- **Unified model configuration** — configure once, sync to all agents
-- **Cache optimization** — automatic prompt cache detection saves tokens and money
-- **Run local models** — built-in llama.cpp support for free, offline inference
+- **Unified model configuration** — configure once, sync to all agents with automatic protocol proxy
+- **Cache optimization** — automatic prompt cache detection saves tokens and reduces costs
+- **Run local models** — built-in llama.cpp support for free, offline inference with open-source models
 - **Local-first** — all data stays on your machine, no cloud, no telemetry
 
-> **Core philosophy:** RunJam doesn't require agents to implement any protocol (like ACP). It directly manages agent CLI processes via stdin/stdout pipes. **Zero agent modifications needed.**
+> **Core philosophy:** RunJam doesn't require manually installing agent CLI tools — one-click auto-install. No need to manually configure the right model for each agent — RunJam's proxy auto-converts model protocols. No need for multiple editor windows for multiple projects — one interface manages all projects in parallel. **Zero modifications needed. Just install and go.**
 
 ---
 
@@ -172,21 +174,122 @@ npm run tauri build -- --target x86_64-unknown-linux-gnu
 
 ## Architecture
 
+### Core Data Flow
+
+```mermaid
+flowchart LR
+    subgraph Frontend["🖥️ Vue 3 Frontend"]
+        UI[Chat UI]
+        Settings[Settings Panel]
+        WS[Workspace Panel]
+    end
+
+    subgraph Agents["🤖 AI Agents"]
+        Claude[Claude Code]
+        Codex[Codex CLI]
+        Gemini[Gemini CLI]
+    end
+
+    subgraph Proxy["🔀 RunJam Proxy"]
+        Router[Protocol Router]
+        Cache[Response Cache]
+        LLM[LLM Protocol Adapter]
+    end
+
+    subgraph Backend["☁️ LLM APIs"]
+        Anthropic[Anthropic API]
+        OpenAI[OpenAI API]
+        Google[Google AI API]
+        Custom[Custom APIs]
+    end
+
+    subgraph Local["💻 Local Models"]
+        Llama[llama.cpp Server]
+        GGUF[GGUF Models]
+    end
+
+    UI -->|"Tauri IPC"| Agents
+    Settings -->|"Tauri IPC"| Agents
+    WS -->|"Tauri IPC"| Agents
+    Agents -->|"stdin/stdout"| Proxy
+    Proxy -->|"Auto Protocol\nConversion"| Router
+    Router --> Cache
+    Cache --> LLM
+    LLM --> Anthropic
+    LLM --> OpenAI
+    LLM --> Google
+    LLM --> Custom
+    Router -.->|"local models"| Llama
+    Llama --> GGUF
+
+    style Frontend fill:#42b883,color:#fff
+    style Agents fill:#ce422b,color:#fff
+    style Proxy fill:#6366f1,color:#fff
+    style Backend fill:#f59e0b,color:#fff
+    style Local fill:#8b5cf6,color:#fff
 ```
-┌─────────────────────────────────────────────────────┐
-│                  RunJam (Tauri 2)                     │
-│                                                       │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐       │
-│  │ Session 1│    │ Session 2│    │ Session 3│       │
-│  │ (Claude) │    │ (Codex)  │    │ (Gemini) │       │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘       │
-│       │               │               │               │
-│  stdin/stdout     stdin/stdout    stdin/stdout       │
-│       │               │               │               │
-│  ┌────▼───────────────▼───────────────▼─────┐       │
-│  │         Vue 3 Frontend (Chat UI)          │       │
-│  └──────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────┘
+
+### System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Desktop["🖥️ RunJam Desktop (Tauri 2)"]
+        direction TB
+        subgraph Frontend2["Vue 3 Frontend"]
+            Chat[Chat Messages]
+            Sidebar[Session Sidebar]
+            Explorer[File Explorer]
+            Editor[Monaco Editor]
+            Terminal[xterm.js Terminal]
+        end
+
+        subgraph RustBackend["Rust Backend"]
+            Cmds[Tauri Commands]
+            AgentMgr[Agent Manager]
+            SessionMgr[Session Manager]
+            DB[(SQLite DB)]
+            Proxy2[API Proxy]
+            LlamaSrv[llama.cpp Manager]
+        end
+    end
+
+    subgraph Processes["📦 External Processes"]
+        ClaudeProc[Claude Code Process]
+        CodexProc[Codex ACP Process]
+        GeminiProc[Gemini CLI Process]
+        LlamaProc[llama-server Process]
+    end
+
+    Chat -->|"Tauri Events"| Cmds
+    Sidebar --> Cmds
+    Explorer --> Cmds
+    Editor --> Cmds
+    Terminal --> Cmds
+
+    Cmds --> AgentMgr
+    Cmds --> SessionMgr
+    AgentMgr --> DB
+    SessionMgr --> DB
+    Proxy2 --> DB
+
+    AgentMgr -->|"spawn & pipe"| ClaudeProc
+    AgentMgr -->|"spawn & pipe"| CodexProc
+    AgentMgr -->|"spawn & pipe"| GeminiProc
+    LlamaSrv -->|"spawn & manage"| LlamaProc
+
+    ClaudeProc -->|"stdout stream"| Proxy2
+    CodexProc -->|"stdout stream"| Proxy2
+    GeminiProc -->|"stdout stream"| Proxy2
+    LlamaProc -->|"OpenAI API"| Proxy2
+
+    Proxy2 -->|"HTTP"| AnthropicAPI[Anthropic API]
+    Proxy2 -->|"HTTP"| OpenAIAPI[OpenAI API]
+    Proxy2 -->|"HTTP"| GoogleAPI[Google AI API]
+
+    style Desktop fill:#1e1e2e,color:#fff
+    style Frontend2 fill:#42b883,color:#fff
+    style RustBackend fill:#ce422b,color:#fff
+    style Processes fill:#6366f1,color:#fff
 ```
 
 ### Tech Stack
@@ -236,10 +339,11 @@ RunJam manages AI agent CLI tools as child processes:
 1. **Detection** — Scans `PATH` for `claude`, `codex`, `gemini` executables
 2. **Invocation** — Spawns agent CLI as a child process with `stdin` piped
 3. **Streaming** — Reads `stdout` line-by-line, streams to frontend via Tauri events
-4. **Parsing** — Parses agent output (thinking steps, tool calls, final responses)
-5. **Rendering** — Vue frontend renders Markdown, code blocks, and Mermaid diagrams
+4. **Protocol Proxy** — RunJam's built-in proxy intercepts agent API calls and automatically converts between different LLM protocols (Anthropic ↔ OpenAI ↔ Gemini), so any agent can use any model
+5. **Parsing** — Parses agent output (thinking steps, tool calls, final responses)
+6. **Rendering** — Vue frontend renders Markdown, code blocks, and Mermaid diagrams
 
-**No network protocols. No agent modifications. No ACP.** Just native CLI processes.
+**No network protocols required. No agent modifications needed.** Just native CLI processes with automatic protocol adaptation.
 
 ---
 
@@ -255,8 +359,8 @@ RunJam manages AI agent CLI tools as child processes:
 - [x] i18n (English / 中文)
 - [x] Prompt cache optimization (auto-detect cache hits, response cache)
 - [x] llama.cpp local model support (download, run, manage GGUF models)
-- [ ] PTY session mode (persistent multi-turn context)
-- [ ] Cost tracking dashboard with charts
+- [x] PTY session mode (persistent multi-turn context)
+- [x] Cost tracking dashboard with charts
 - [ ] Git worktree integration
 - [ ] Agent auto-update detection
 - [ ] Plugin/skill system

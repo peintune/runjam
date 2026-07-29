@@ -4,9 +4,9 @@
 
 # RunJam
 
-### 一个桌面，管理你所有的 AI 编程助手
+### 一个桌面，管理你所有的 AI 助手
 
-在一个统一的桌面应用中运行多个 AI 编程助手 — Claude Code、Codex CLI、Gemini CLI。自动检测、一键安装、实时流式、本地优先。
+在一个统一的桌面应用中同时管理和运行多个AI助手 — Claude Code、Codex CLI、Gemini CLI等。自动检测、一键安装、实时流式、本地优先、模型协议自动代理、缓存优化、llama.cpp 本地模型、 代码编辑器、 终端等。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tauri](https://img.shields.io/badge/Tauri-2-orange.svg)](https://tauri.app)
@@ -15,6 +15,8 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 [功能特性](#-功能特性) · [快速开始](#-快速开始) · [架构](#-架构) · [路线图](#-路线图) · [常见问题](#-常见问题)
+
+[English](README.md)
 
 <br/>
 
@@ -26,21 +28,21 @@
 
 ## RunJam 是什么？
 
-RunJam 是一个**本地优先、跨平台的 AI 编程助手桌面管理器**。可以把它理解为**AI Agent 的 Docker Desktop** — 像 Docker Desktop 管理容器一样管理你的 AI 编程 CLI 工具。
+RunJam 是一个**本地优先、跨平台的 AI 助手桌面管理器**。可以管理你的 AI CLI 工具和LLM 模型配置。
 
-不必再在多个终端窗口之间切换、手动配置每个 Agent、搞不清哪个 Agent 在哪个项目上工作，RunJam 把所有东西整合到一个干净的界面里：
+不必再在多个终端窗口之间切换、手动配置每个 Agent、搞不清哪个 Agent 在哪个项目上工作，RunJam 把所有东西整合到一个干净的界面里, 一套模型配置，多项目、多 Agent 并行会话：
 
 - **自动检测**系统中已安装的 AI Agent
 - **一键安装**缺失的 Agent（Claude Code、Codex CLI、Gemini CLI）
 - **统一聊天界面**，支持实时流式输出、Markdown 渲染和代码高亮
 - **多项目、多 Agent** 并行会话
 - **内置文件浏览器、终端和代码编辑器**
-- **统一模型配置** — 配置一次，同步到所有 Agent
+- **统一模型配置** — 配置一次，同步到所有 Agent，Agent和模型协议自动代理
 - **缓存优化** — 自动检测 prompt cache 命中，节省 token 和费用
 - **本地模型** — 内置 llama.cpp 支持，免费离线使用开源模型
 - **本地优先** — 所有数据留在你的机器上，不上云，不收集数据
 
-> **核心理念：** RunJam 不要求 Agent 实现任何协议（如 ACP）。它直接通过 stdin/stdout 管道管理 Agent CLI 进程。**零修改，即装即用。**
+> **核心理念：** RunJam 不要求安装任何 Agent CLI 工具， 一键自动安装，不要手动配置合适的模型，RunJam代理自动转换模型协议。 多项目不需要多个编辑器窗口， 一个界面管理所有项目并行开发。**零修改，即装即用。**
 
 ---
 
@@ -172,21 +174,122 @@ npm run tauri build -- --target x86_64-unknown-linux-gnu
 
 ## 架构
 
+### 核心数据流
+
+```mermaid
+flowchart LR
+    subgraph Frontend["🖥️ Vue 3 前端"]
+        UI[聊天界面]
+        Settings[设置面板]
+        WS[工作区面板]
+    end
+
+    subgraph Agents["🤖 AI Agent"]
+        Claude[Claude Code]
+        Codex[Codex CLI]
+        Gemini[Gemini CLI]
+    end
+
+    subgraph Proxy["🔀 RunJam 代理"]
+        Router[协议路由]
+        Cache[响应缓存]
+        LLM[LLM 协议适配]
+    end
+
+    subgraph Backend["☁️ LLM 接口"]
+        Anthropic[Anthropic API]
+        OpenAI[OpenAI API]
+        Google[Google AI API]
+        Custom[自定义 API]
+    end
+
+    subgraph Local["💻 本地模型"]
+        Llama[llama.cpp 服务]
+        GGUF[GGUF 模型]
+    end
+
+    UI -->|"Tauri IPC"| Agents
+    Settings -->|"Tauri IPC"| Agents
+    WS -->|"Tauri IPC"| Agents
+    Agents -->|"stdin/stdout"| Proxy
+    Proxy -->|"自动协议转换"| Router
+    Router --> Cache
+    Cache --> LLM
+    LLM --> Anthropic
+    LLM --> OpenAI
+    LLM --> Google
+    LLM --> Custom
+    Router -.->|"本地模型"| Llama
+    Llama --> GGUF
+
+    style Frontend fill:#42b883,color:#fff
+    style Agents fill:#ce422b,color:#fff
+    style Proxy fill:#6366f1,color:#fff
+    style Backend fill:#f59e0b,color:#fff
+    style Local fill:#8b5cf6,color:#fff
 ```
-┌─────────────────────────────────────────────────────┐
-│                  RunJam (Tauri 2)                     │
-│                                                       │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐       │
-│  │ 会话 1   │    │ 会话 2   │    │ 会话 3   │       │
-│  │ (Claude) │    │ (Codex)  │    │ (Gemini) │       │
-│  └────┬─────┘    └────┬─────┘    └────┬─────┘       │
-│       │               │               │               │
-│  stdin/stdout     stdin/stdout    stdin/stdout       │
-│       │               │               │               │
-│  ┌────▼───────────────▼───────────────▼─────┐       │
-│  │         Vue 3 前端（聊天 UI）               │       │
-│  └──────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────┘
+
+### 系统架构
+
+```mermaid
+flowchart TB
+    subgraph Desktop["🖥️ RunJam 桌面应用 (Tauri 2)"]
+        direction TB
+        subgraph Frontend2["Vue 3 前端"]
+            Chat[聊天消息]
+            Sidebar[会话侧边栏]
+            Explorer[文件浏览器]
+            Editor[Monaco 编辑器]
+            Terminal[xterm.js 终端]
+        end
+
+        subgraph RustBackend["Rust 后端"]
+            Cmds[Tauri 命令]
+            AgentMgr[Agent 管理器]
+            SessionMgr[会话管理器]
+            DB[(SQLite 数据库)]
+            Proxy2[API 代理]
+            LlamaSrv[llama.cpp 管理器]
+        end
+    end
+
+    subgraph Processes["📦 外部进程"]
+        ClaudeProc[Claude Code 进程]
+        CodexProc[Codex ACP 进程]
+        GeminiProc[Gemini CLI 进程]
+        LlamaProc[llama-server 进程]
+    end
+
+    Chat -->|"Tauri 事件"| Cmds
+    Sidebar --> Cmds
+    Explorer --> Cmds
+    Editor --> Cmds
+    Terminal --> Cmds
+
+    Cmds --> AgentMgr
+    Cmds --> SessionMgr
+    AgentMgr --> DB
+    SessionMgr --> DB
+    Proxy2 --> DB
+
+    AgentMgr -->|"启动 & 管道"| ClaudeProc
+    AgentMgr -->|"启动 & 管道"| CodexProc
+    AgentMgr -->|"启动 & 管道"| GeminiProc
+    LlamaSrv -->|"启动 & 管理"| LlamaProc
+
+    ClaudeProc -->|"stdout 流"| Proxy2
+    CodexProc -->|"stdout 流"| Proxy2
+    GeminiProc -->|"stdout 流"| Proxy2
+    LlamaProc -->|"OpenAI API"| Proxy2
+
+    Proxy2 -->|"HTTP"| AnthropicAPI[Anthropic API]
+    Proxy2 -->|"HTTP"| OpenAIAPI[OpenAI API]
+    Proxy2 -->|"HTTP"| GoogleAPI[Google AI API]
+
+    style Desktop fill:#1e1e2e,color:#fff
+    style Frontend2 fill:#42b883,color:#fff
+    style RustBackend fill:#ce422b,color:#fff
+    style Processes fill:#6366f1,color:#fff
 ```
 
 ### 技术栈
@@ -236,10 +339,11 @@ RunJam 将 AI Agent CLI 工具作为子进程管理：
 1. **检测** — 在 `PATH` 中扫描 `claude`、`codex`、`gemini` 可执行文件
 2. **调用** — 将 Agent CLI 作为子进程启动，管道接入 `stdin`
 3. **流式输出** — 逐行读取 `stdout`，通过 Tauri 事件流式推送到前端
-4. **解析** — 解析 Agent 输出（思考步骤、工具调用、最终回复）
-5. **渲染** — Vue 前端渲染 Markdown、代码块和 Mermaid 图表
+4. **协议代理** — RunJam 内置代理拦截 Agent 的 API 调用，自动在不同 LLM 协议之间转换（Anthropic ↔ OpenAI ↔ Gemini），让任何 Agent 都能使用任何模型
+5. **解析** — 解析 Agent 输出（思考步骤、工具调用、最终回复）
+6. **渲染** — Vue 前端渲染 Markdown、代码块和 Mermaid 图表
 
-**不依赖网络协议。不修改 Agent。不使用 ACP。** 纯原生 CLI 进程。
+**不依赖网络协议。不修改 Agent。** 纯原生 CLI 进程 + 自动协议适配。
 
 ---
 
@@ -255,8 +359,8 @@ RunJam 将 AI Agent CLI 工具作为子进程管理：
 - [x] 国际化（English / 中文）
 - [x] Prompt cache 优化（自动检测缓存命中、响应缓存）
 - [x] llama.cpp 本地模型支持（下载、运行、管理 GGUF 模型）
-- [ ] PTY 会话模式（持久化多轮上下文）
-- [ ] 用量统计仪表板（带图表）
+- [x] PTY 会话模式（持久化多轮上下文）
+- [x] 用量统计仪表板（带图表）
 - [ ] Git worktree 集成
 - [ ] Agent 自动更新检测
 - [ ] 插件/技能系统
