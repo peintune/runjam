@@ -921,7 +921,16 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
         } else {
             format!("{}/npm", bin_str)
         };
-        if std::path::Path::new(&npm_path).exists() {
+        let npm_exists = std::path::Path::new(&npm_path).exists();
+        // On macOS/Linux, verify npm symlink wasn't resolved by the bundler
+        let npm_intact = if cfg!(not(target_os = "windows")) && npm_exists {
+            std::fs::symlink_metadata(&npm_path)
+                .map(|m| m.is_symlink())
+                .unwrap_or(false)
+        } else {
+            npm_exists
+        };
+        if npm_intact {
             return Ok(bin_str);
         }
     }

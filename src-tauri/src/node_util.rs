@@ -40,6 +40,7 @@ pub fn get_bundled_node_bin(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// Get the full path to the bundled npm binary.
+/// Returns None if the bundled npm symlink was resolved by the resource bundler.
 pub fn get_bundled_npm_bin(app: &AppHandle) -> Option<PathBuf> {
     let bin_dir = get_bundled_node_bin_dir(app)?;
     let npm = if cfg!(target_os = "windows") {
@@ -47,6 +48,20 @@ pub fn get_bundled_npm_bin(app: &AppHandle) -> Option<PathBuf> {
     } else {
         bin_dir.join("npm")
     };
+    if !npm.exists() {
+        return None;
+    }
+    // On macOS/Linux, verify the npm symlink wasn't resolved by the bundler
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(meta) = std::fs::symlink_metadata(&npm) {
+            if !meta.is_symlink() {
+                return None;
+            }
+        } else {
+            return None;
+        }
+    }
     Some(npm)
 }
 

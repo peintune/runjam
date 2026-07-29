@@ -400,6 +400,16 @@ AionUI requires agents to implement the ACP (Agent Client Protocol). RunJam take
 
 macOS, Windows, and Linux are all supported. The only prerequisite is **Node.js ≥ 18** (required by AI agent CLIs). RunJam will check and guide you through installation if needed.
 
+### macOS says "RunJam is damaged and can't be opened"?
+
+This is macOS Gatekeeper blocking unsigned apps. Run the following in Terminal to remove the quarantine attribute:
+
+```bash
+xattr -cr /Applications/RunJam.app
+```
+
+> We are working on Apple code signing and notarization to eliminate this step in the future.
+
 ---
 
 ## Contributing
