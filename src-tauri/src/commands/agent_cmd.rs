@@ -236,21 +236,49 @@ pub fn open_nodejs_download() -> Result<(), String> {
 /// Install an agent CLI.
 #[tauri::command]
 pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, Mutex<Database>>) -> Result<Agent, String> {
-    let node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
     let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
-    let npm_bin = if node_bin_dir.is_empty() {
+    let path_sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+
+    let mut node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
+    let mut npm_bin = if node_bin_dir.is_empty() {
         npm_name.to_string()
     } else if cfg!(target_os = "windows") {
         format!("{}\\{}", node_bin_dir, npm_name)
     } else {
         format!("{}/{}", node_bin_dir, npm_name)
     };
-    let path_sep = if cfg!(target_os = "windows") { ";" } else { ":" };
-    let path_env = if node_bin_dir.is_empty() {
+    let mut path_env = if node_bin_dir.is_empty() {
         crate::agent::detector::get_enhanced_path()
     } else {
         format!("{}{}{}", node_bin_dir, path_sep, std::env::var("PATH").unwrap_or_default())
     };
+
+    // Verify node.exe is reachable before running npm; if missing (broken installation),
+    // clean up the broken dir and force a fresh download
+    if !node_bin_dir.is_empty() {
+        let node_exe = if cfg!(target_os = "windows") {
+            format!("{}\\node.exe", node_bin_dir)
+        } else {
+            format!("{}/node", node_bin_dir)
+        };
+        if !std::path::Path::new(&node_exe).exists() {
+            eprintln!("[AGENT INSTALL] node.exe missing at {} — cleaning up and re-downloading", node_bin_dir);
+            let _ = std::fs::remove_dir_all(&node_bin_dir);
+            node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
+            npm_bin = if node_bin_dir.is_empty() {
+                npm_name.to_string()
+            } else if cfg!(target_os = "windows") {
+                format!("{}\\{}", node_bin_dir, npm_name)
+            } else {
+                format!("{}/{}", node_bin_dir, npm_name)
+            };
+            path_env = if node_bin_dir.is_empty() {
+                crate::agent::detector::get_enhanced_path()
+            } else {
+                format!("{}{}{}", node_bin_dir, path_sep, std::env::var("PATH").unwrap_or_default())
+            };
+        }
+    }
 
     let install_cmd = match agent_id.as_str() {
         "claude-code" => vec!["install", "-g", "@anthropic-ai/claude-code"],
@@ -264,18 +292,6 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         &event_name,
         serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_bin, install_cmd.join(" ")) }),
     );
-
-    // Verify node.exe is reachable before running npm
-    if !node_bin_dir.is_empty() {
-        let node_exe = if cfg!(target_os = "windows") {
-            format!("{}\\node.exe", node_bin_dir)
-        } else {
-            format!("{}/node", node_bin_dir)
-        };
-        if !std::path::Path::new(&node_exe).exists() {
-            return Err(format!("node.exe not found at {}. Please re-download Node.js.", node_bin_dir));
-        }
-    }
 
     let output = std::process::Command::new(&npm_bin)
         .args(&install_cmd)
@@ -929,6 +945,15 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     let _ = app.emit(&format!("agent-install:{}", agent_id), serde_json::json!({
         "status": "installing", "message": "Downloading Node.js v22.12.0..."
     }));
+
+    // Clean up any broken partial installation from a previous failed attempt
+    // (e.g. npm.cmd exists but node.exe is missing)
+    if std::path::Path::new(&npm_path).exists() && !std::path::Path::new(&node_exe).exists() {
+        let _ = std::fs::remove_dir_all(data_dir.join("nodejs"));
+    }
+    if std::path::Path::new(&bin_dir).exists() && !std::path::Path::new(&node_exe).exists() {
+        let _ = std::fs::remove_dir_all(&std::path::Path::new(&bin_dir));
+    }
 
     let url = if cfg!(target_os = "macos") {
         let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
