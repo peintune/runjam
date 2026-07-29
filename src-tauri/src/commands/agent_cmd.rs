@@ -5,8 +5,21 @@ use crate::models::agent::Agent;
 use crate::state::{AgentState, AppState};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, State};
+
+/// Create a Command with the console window hidden on Windows.
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentWithState {
@@ -293,7 +306,7 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_bin, install_cmd.join(" ")) }),
     );
 
-    let output = std::process::Command::new(&npm_bin)
+    let output = hidden_command(&npm_bin)
         .args(&install_cmd)
         .env("PATH", &path_env)
         .output()
@@ -494,7 +507,7 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
             &event_name,
             serde_json::json!({ "status": "uninstalling", "message": format!("Running: npm {}", uninstall_cmd.join(" ")) }),
         );
-        let _ = std::process::Command::new("npm")
+        let _ = hidden_command("npm")
             .args(&uninstall_cmd)
             .env("PATH", &enhanced_path)
             .output();
@@ -931,7 +944,7 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
 
     // 3. Check system node using enhanced PATH (includes Homebrew, nvm, etc.)
     let enhanced_path = crate::agent::detector::get_enhanced_path();
-    if std::process::Command::new("npm")
+    if hidden_command("npm")
         .arg("--version")
         .env("PATH", &enhanced_path)
         .output()
@@ -970,7 +983,7 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     std::fs::create_dir_all(data_dir.parent().unwrap_or(&data_dir)).map_err(|e| format!("Failed to create dir: {}", e))?;
 
     // Download using curl
-    let output = std::process::Command::new("curl")
+    let output = hidden_command("curl")
         .args(["-fsSL", &url, "-o", tmp.to_string_lossy().as_ref()])
         .output().map_err(|e| format!("Download failed: {}", e))?;
     if !output.status.success() {
@@ -984,7 +997,7 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     // Extract
     let is_tar = archive_name.ends_with(".tar.gz");
     if is_tar {
-        let output = std::process::Command::new("tar")
+        let output = hidden_command("tar")
             .args(["-xzf", tmp.to_string_lossy().as_ref(), "-C", data_dir.to_string_lossy().as_ref()])
             .output().map_err(|e| format!("Extract failed: {}", e))?;
         if !output.status.success() {
@@ -992,12 +1005,12 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
         }
     } else {
         // Windows: use tar (bsdtar, available since Win10 1803) which handles .zip
-        let output = std::process::Command::new("tar")
+        let output = hidden_command("tar")
             .args(["-xf", tmp.to_string_lossy().as_ref(), "-C", data_dir.to_string_lossy().as_ref()])
             .output().map_err(|e| format!("Extract failed: {}", e))?;
         if !output.status.success() {
             // Fallback: try PowerShell Expand-Archive
-            let ps_output = std::process::Command::new("powershell")
+            let ps_output = hidden_command("powershell")
                 .args(["-NoProfile", "-Command", &format!(
                     "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
                     tmp.to_string_lossy(), data_dir.to_string_lossy()

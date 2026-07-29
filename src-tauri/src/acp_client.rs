@@ -13,6 +13,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Create a Command with the console window hidden on Windows.
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
 fn safe_truncate(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -273,7 +285,7 @@ fn resolve_agent_paths(
 
             if !entry_point.exists() {
                 rjlog!("[ACP] Installing {}...", pkg_name);
-                let output = Command::new(&npm_bin)
+                let output = hidden_command(&npm_bin)
                     .args(["install", "--no-save", pkg_name])
                     .current_dir(&install_dir)
                     .output()
@@ -401,7 +413,7 @@ impl AcpClient {
         let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
 
-        let mut cmd = Command::new(cmd_path);
+        let mut cmd = hidden_command(&cmd_path);
         for arg in args {
             cmd.arg(arg);
         }
@@ -1287,7 +1299,7 @@ impl AcpClient {
 
         let (cmd_path, args, package_dir) = resolve_agent_paths(app, agent_id)?;
 
-        let mut cmd = Command::new(cmd_path);
+        let mut cmd = hidden_command(&cmd_path);
         for arg in args {
             cmd.arg(arg);
         }
