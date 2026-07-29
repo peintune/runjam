@@ -36,6 +36,8 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 - **Multi-project, multi-agent** sessions running in parallel
 - **Built-in file explorer, terminal, and code editor** for each project workspace
 - **Unified model configuration** — configure once, sync to all agents
+- **Cache optimization** — automatic prompt cache detection saves tokens and money
+- **Run local models** — built-in llama.cpp support for free, offline inference
 - **Local-first** — all data stays on your machine, no cloud, no telemetry
 
 > **Core philosophy:** RunJam doesn't require agents to implement any protocol (like ACP). It directly manages agent CLI processes via stdin/stdout pipes. **Zero agent modifications needed.**
@@ -67,10 +69,12 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 
 ### Model Management
 - **Unified model hub** — Configure models once, sync to all agents automatically
-- **Provider presets** — OpenAI, Anthropic, Google AI, Groq, DeepSeek, and custom APIs
+- **Provider presets** — OpenAI, Anthropic, Google AI, Groq, DeepSeek, custom APIs, and local models
 - **Per-agent model assignment** — Assign different models to different agents
 - **Model aliases** — Map friendly names to model IDs
 - **API proxy** — Built-in local proxy for unified API key management
+- **Cache optimization** — Automatic prompt cache hit detection & local response cache to save tokens and reduce costs
+- **Local models** — Built-in llama.cpp integration to run open-source models (DeepSeek Coder, Qwen, Llama, etc.) 100% locally and free
 
 ### Session Management
 - **Multi-session parallel** — Run multiple agent sessions simultaneously
@@ -84,6 +88,7 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 - **No telemetry** — Zero data collection, no analytics, no phone-home
 - **No cloud dependency** — Works fully offline (agents need their own API access)
 - **System keychain** — API keys stored securely in OS keychain
+- **Local models** — Run models via llama.cpp with zero API costs
 
 ---
 
@@ -248,6 +253,8 @@ RunJam manages AI agent CLI tools as child processes:
 - [x] Session persistence & search
 - [x] Local API proxy for unified key management
 - [x] i18n (English / 中文)
+- [x] Prompt cache optimization (auto-detect cache hits, response cache)
+- [x] llama.cpp local model support (download, run, manage GGUF models)
 - [ ] PTY session mode (persistent multi-turn context)
 - [ ] Cost tracking dashboard with charts
 - [ ] Git worktree integration
