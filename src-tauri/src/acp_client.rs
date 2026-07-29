@@ -434,7 +434,8 @@ impl AcpClient {
             .stderr(Stdio::piped())
             .current_dir(cwd);
 
-        // Tell claude-agent-acp where to find the native claude binary
+        // Tell claude-agent-acp where to find the native claude binary.
+        // On Windows, both set CLAUDE_CODE_EXECUTABLE and add node bin dir to PATH.
         if agent_type == "claude" {
             let node_dir = std::path::Path::new(&cmd_path).parent()
                 .map(|p| p.to_path_buf())
@@ -452,6 +453,13 @@ impl AcpClient {
             if let Some(ref bin) = claude_bin {
                 rjlog!("[ACP] Setting CLAUDE_CODE_EXECUTABLE={}", bin);
                 cmd.env("CLAUDE_CODE_EXECUTABLE", bin);
+            }
+            // Ensure node bin dir is in PATH so ACP wrapper can find node/npm
+            if !node_dir.as_os_str().is_empty() {
+                let node_dir_str = node_dir.to_string_lossy();
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}{}{}", node_dir_str, sep, current_path));
             }
         }
 
@@ -1358,6 +1366,12 @@ impl AcpClient {
             if let Some(ref bin) = claude_bin {
                 rjlog!("[ACP] Test: Setting CLAUDE_CODE_EXECUTABLE={}", bin);
                 cmd.env("CLAUDE_CODE_EXECUTABLE", bin);
+            }
+            if !node_dir.as_os_str().is_empty() {
+                let node_dir_str = node_dir.to_string_lossy();
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}{}{}", node_dir_str, sep, current_path));
             }
         }
 
