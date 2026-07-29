@@ -265,6 +265,18 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_bin, install_cmd.join(" ")) }),
     );
 
+    // Verify node.exe is reachable before running npm
+    if !node_bin_dir.is_empty() {
+        let node_exe = if cfg!(target_os = "windows") {
+            format!("{}\\node.exe", node_bin_dir)
+        } else {
+            format!("{}/node", node_bin_dir)
+        };
+        if !std::path::Path::new(&node_exe).exists() {
+            return Err(format!("node.exe not found at {}. Please re-download Node.js.", node_bin_dir));
+        }
+    }
+
     let output = std::process::Command::new(&npm_bin)
         .args(&install_cmd)
         .env("PATH", &path_env)
@@ -892,8 +904,12 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     } else {
         format!("{}/npm", bin_dir)
     };
-
-    if std::path::Path::new(&npm_path).exists() {
+    let node_exe = if cfg!(target_os = "windows") {
+        format!("{}\\node.exe", bin_dir)
+    } else {
+        format!("{}/node", bin_dir)
+    };
+    if std::path::Path::new(&npm_path).exists() && std::path::Path::new(&node_exe).exists() {
         return Ok(bin_dir);
     }
 
@@ -979,8 +995,11 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     if let Some(parent) = std::path::Path::new(&bin_dir).parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    // Move to canonical name
+    // Move to canonical name (remove old dir first if it exists)
     if extracted_dir != node_dir {
+        if node_dir.exists() {
+            let _ = std::fs::remove_dir_all(&node_dir);
+        }
         std::fs::rename(&extracted_dir, &node_dir).ok();
     }
     let _ = std::fs::remove_file(&tmp);

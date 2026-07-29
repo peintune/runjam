@@ -328,8 +328,29 @@ fn resolve_agent_paths(
             ))
         }
         "gemini" | "gemini-cli" => {
+            // The gemini binary is installed alongside node.exe via npm install -g
+            let node_dir = node_bin.parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let bin_candidates: [&str; 2] = if cfg!(target_os = "windows") {
+                ["gemini.exe", "gemini-cli.exe"]
+            } else {
+                ["gemini", "gemini-cli"]
+            };
+            let mut gemini_path = String::new();
+            for name in &bin_candidates {
+                let candidate = node_dir.join(name);
+                if candidate.exists() {
+                    gemini_path = candidate.to_string_lossy().to_string();
+                    break;
+                }
+            }
+            if gemini_path.is_empty() {
+                // Fallback: try PATH
+                gemini_path = "gemini".to_string();
+            }
             Ok((
-                "gemini".to_string(),
+                gemini_path,
                 vec!["--acp".to_string()],
                 std::env::current_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
             ))
@@ -1118,7 +1139,7 @@ impl AcpClient {
         writeln!(&mut stdin, "{}", json).map_err(|e| format!("Failed to write to stdin: {}", e))?;
         stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
-        for _ in 0..100 {
+        for _ in 0..600 {
             thread::sleep(std::time::Duration::from_millis(50));
             let mut responses = self.responses.lock().unwrap();
             if let Some(val) = responses.remove(&id) {
