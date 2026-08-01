@@ -86,6 +86,57 @@ export interface RenderOptions {
   sanitize?: boolean;
 }
 
+// ── Module-level render + shared cache ──
+function renderMarkdown(src: string, sanitize: boolean): string {
+  try {
+    let html = marked.parse(src) as string;
+    if (sanitize && typeof DOMPurify?.sanitize === "function") {
+      html = DOMPurify.sanitize(html, PURIFY_CONFIG as any) as unknown as string;
+    }
+    return html;
+  } catch {
+    return src;
+  }
+}
+
+/**
+ * Parse & sanitize Markdown with a MODULE-level cache keyed by source string.
+ * Markdown parsing (marked + DOMPurify + hljs) is the most expensive step in the
+ * streaming hot path. Keeping the cache at module scope lets it survive component
+ * re-mounts — switching back to a conversation with history renders instantly
+ * instead of re-parsing every message (the old per-component cache was cleared on
+ * every session switch, which is part of why switching sessions stuttered).
+ */
+const sharedMdCache = new Map<string, string>();
+const SHARED_MD_CACHE_MAX = 300;
+export function renderCached(
+  src: string,
+  opts: RenderOptions = {},
+  onMiss?: (renderMs: number) => void,
+  cache = true,
+): string {
+  if (!cache) {
+    // 流式中的部分内容：每次 slice 都不同，写入缓存只会冲掉已有条目
+    // （长流式 >300 chunks 会把整个 FIFO 缓存清空，上翻历史又得重新解析）。
+    const t0 = performance.now();
+    const html = renderMarkdown(src, opts.sanitize ?? true);
+    onMiss?.(performance.now() - t0);
+    return html;
+  }
+  let html = sharedMdCache.get(src);
+  if (html === undefined) {
+    const t0 = performance.now();
+    html = renderMarkdown(src, opts.sanitize ?? true);
+    onMiss?.(performance.now() - t0);
+    sharedMdCache.set(src, html);
+    if (sharedMdCache.size > SHARED_MD_CACHE_MAX) {
+      const oldest = sharedMdCache.keys().next().value;
+      if (oldest !== undefined) sharedMdCache.delete(oldest);
+    }
+  }
+  return html;
+}
+
 export function useMarkdown() {
   /**
    * Parse & sanitize Markdown → safe HTML.
@@ -93,16 +144,7 @@ export function useMarkdown() {
    * call `renderMermaidBlocks()` on the container after nextTick.
    */
   function render(src: string, opts: RenderOptions = {}): string {
-    const { sanitize = true } = opts;
-    try {
-      let html = marked.parse(src) as string;
-      if (sanitize && typeof DOMPurify?.sanitize === "function") {
-        html = DOMPurify.sanitize(html, PURIFY_CONFIG as any) as unknown as string;
-      }
-      return html;
-    } catch {
-      return src;
-    }
+    return renderMarkdown(src, opts.sanitize ?? true);
   }
 
   /** Returns true if `src` contains at least one mermaid code fence */

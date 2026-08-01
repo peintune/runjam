@@ -50,24 +50,30 @@ pub fn store_usage_for_latest(model: String, input_tokens: i64, output_tokens: i
     });
 }
 
-/// 获取最近的 usage 数据（不清除）
-pub fn get_last_usage() -> Option<(String, i64, i64, i64)> {
-    let store = usage_store().lock().unwrap();
-    // 找到最新的记录
-    let record = store.last()?;
-    Some((record.model.clone(), record.input_tokens, record.output_tokens, record.cached_tokens))
-}
-
-/// 获取并清除最近的 usage 数据
-pub fn take_last_usage() -> Option<(String, i64, i64, i64)> {
+/// 获取并清除最近的 usage 数据（优先按 model 匹配，回退到最近一条）
+///
+/// 并发场景下，多个会话可能共用同一批上游模型名（前端模型 id 与 agent 实际
+/// 请求的 model 名还可能不一致，如 deepseek-mrivjyj7 vs deepseek-v4-pro），
+/// 所以先按 model 精确匹配；匹配不到时取最近一条，避免单会话场景拿不到。
+pub fn take_last_usage(model: &str) -> Option<(String, i64, i64, i64)> {
     let mut store = usage_store().lock().unwrap();
     if store.is_empty() {
         return None;
     }
-    let record = store.pop()?;
+    let idx = store.iter().rposition(|r| r.model == model)
+        .unwrap_or(store.len() - 1);
+    let record = store.remove(idx);
     // 清理超过 5 分钟的旧记录
     store.retain(|r| r.timestamp.elapsed() < std::time::Duration::from_secs(300));
     Some((record.model, record.input_tokens, record.output_tokens, record.cached_tokens))
+}
+
+/// 获取最近的 usage 数据（不清除，优先按 model 匹配）
+pub fn get_last_usage(model: &str) -> Option<(String, i64, i64, i64)> {
+    let store = usage_store().lock().unwrap();
+    let record = store.iter().rev().find(|r| r.model == model)
+        .or_else(|| store.last())?;
+    Some((record.model.clone(), record.input_tokens, record.output_tokens, record.cached_tokens))
 }
 
 /// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
@@ -1007,7 +1013,9 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                         let arguments = item["arguments"].as_str().unwrap_or("");
                         msgs.push(serde_json::json!({
                             "role": "assistant",
-                            "content": null,
+                            // 上游（DeepSeek 等）校验 content 必须是 string 或 list，
+                            // null 会被拒绝（"content should be a string or a list"）。
+                            "content": "",
                             "tool_calls": [{
                                 "id": call_id,
                                 "type": "function",
@@ -1017,12 +1025,21 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                     }
                     "function_call_output" => {
                         let call_id = item["call_id"].as_str().unwrap_or("");
-                        let output = item["output"].as_str().unwrap_or("");
+                        // output 可能是字符串或对象（工具 JSON 结果）——统一转字符串
+                        let output = match item.get("output") {
+                            Some(v) if v.is_string() => v.as_str().unwrap_or("").to_string(),
+                            Some(v) => v.to_string(),
+                            None => String::new(),
+                        };
                         msgs.push(serde_json::json!({
                             "role": "tool",
                             "tool_call_id": call_id,
                             "content": output
                         }));
+                    }
+                    "reasoning" => {
+                        // codex 回传的推理项：无 role，且上游模型自己会推理，
+                        // 转成消息只会产生空的 user 消息导致上游校验失败。跳过。
                     }
                     _ => {
                         // Regular message items (message, developer, etc.)
@@ -1034,13 +1051,19 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                             if let Some(s) = c.as_str() {
                                 Value::String(s.to_string())
                             } else if let Some(arr) = c.as_array() {
+                                // 提取所有文本 part（text / output_text / input_text…）
                                 let text = arr.iter()
                                     .filter_map(|p| p["text"].as_str())
                                     .collect::<Vec<_>>()
                                     .join("");
                                 Value::String(text)
+                            } else if c.is_null() {
+                                // content: null → 空字符串（上游要求 string/list）
+                                Value::String("".into())
                             } else {
-                                c.clone()
+                                // 对象等非标准结构——尝试取 text，绝不把对象塞进 content
+                                let text = c.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                Value::String(text.to_string())
                             }
                         } else {
                             Value::String("".into())
@@ -1382,6 +1405,9 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
                     }
                 }
             }));
+            // Store usage to the global store so the ACP client can attach it to the
+            // finish event (codex sessions previously showed no token/cache info).
+            store_usage_for_latest(model.clone(), input_tokens as i64, output_tokens as i64, cached_tokens as i64);
             return result;
         }
 
@@ -1872,6 +1898,12 @@ fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": null},
                     "usage": {
+                        // claude-agent-acp reads snake_case (input_tokens etc.);
+                        // keep camelCase too for any client that expects it.
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "cache_read_input_tokens": cached_tokens,
+                        "cache_creation_input_tokens": 0,
                         "inputTokens": input_tokens,
                         "outputTokens": output_tokens,
                         "cachedReadTokens": cached_tokens,
@@ -2475,6 +2507,13 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
     };
 
     let mut openai_messages: Vec<Value> = vec![];
+    // Gemini functionCall parts carry no id. OpenAI requires each tool message to
+    // reference an assistant tool_call id, so synthesize ids deterministically and
+    // pair every functionResponse with the NEXT pending call (Gemini emits calls
+    // and their responses in order). The previous `gc_{name}` key never matched
+    // `gc_{ci}_{pi}`, so any tool-using turn was rejected by the upstream API
+    // with 400 ("tool_call_id not found") — exactly what surfaced after thinking.
+    let mut pending_function_call_ids: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     if let Some(contents_array) = contents.as_array() {
         for (ci, content) in contents_array.iter().enumerate() {
             if let Some(parts) = content.get("parts").and_then(|v| v.as_array()) {
@@ -2489,18 +2528,24 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
                     } else if let Some(fc) = part.get("functionCall") {
                         let name = fc["name"].as_str().unwrap_or("");
                         let args = fc["args"].to_string();
-                        // Gemini functionCall has no id, synthesize one
+                        // Gemini functionCall has no id, synthesize one deterministically
                         let call_id = format!("gc_{}_{}", ci, pi);
+                        pending_function_call_ids.push_back(call_id.clone());
                         tool_calls.push(serde_json::json!({
                             "id": call_id,
                             "type": "function",
                             "function": {"name": name, "arguments": args}
                         }));
                     } else if let Some(fr) = part.get("functionResponse") {
-                        let name = fr["name"].as_str().unwrap_or("");
                         let response = fr["response"].to_string();
-                        // Use function name as key to match with the call
-                        let call_id = format!("gc_{}", name);
+                        // Pair with the pending function call (responses arrive in
+                        // the same order as their calls).
+                        let call_id = pending_function_call_ids.pop_front()
+                            .unwrap_or_else(|| {
+                                let name = fr["name"].as_str().unwrap_or("");
+                                rjlog!("[PROXY] Gemini→OpenAI: functionResponse without matching functionCall (name={})", name);
+                                format!("gc_{}", name)
+                            });
                         openai_messages.push(serde_json::json!({
                             "role": "tool",
                             "tool_call_id": call_id,
@@ -2578,7 +2623,7 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
                 let converter = SseStreamConverter::new(
                     buf_reader,
-                    Box::new(make_gemini_sse_converter()),
+                    Box::new(make_gemini_sse_converter(model_name.to_string())),
                 );
                 rjlog!("[PROXY] Gemini: returning streaming response");
                 ProxyResponse::Stream { reader: Box::new(converter) }
@@ -2589,8 +2634,18 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
             }
         }
         Err(e) => {
+            // Surface the upstream's actual response body — a bare "status code
+            // 400" says nothing about WHICH field the API rejected.
+            let detail = match e {
+                ureq::Error::Status(code, resp) => {
+                    let body = resp.into_string().unwrap_or_default();
+                    rjlog!("[PROXY] Gemini upstream returned {}: {}", code, body.chars().take(500).collect::<String>());
+                    format!("status code {}: {}", code, body.chars().take(300).collect::<String>())
+                }
+                other => other.to_string(),
+            };
             let err_body = serde_json::json!({
-                "error": {"code": 502, "message": format!("Proxy error: {}", e)}
+                "error": {"code": 502, "message": format!("Proxy error: {}", detail)}
             });
             ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
@@ -2676,10 +2731,25 @@ fn convert_openai_to_gemini(openai_resp: &str) -> String {
 
 /// Returns a closure that converts OpenAI Chat Completions SSE lines
 /// → Gemini SSE format, line by line (for streaming).
-fn make_gemini_sse_converter() -> impl FnMut(&str) -> Vec<u8> {
+fn make_gemini_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
     use std::collections::HashMap;
     let mut pending_tools: HashMap<usize, (String, String)> = HashMap::new();
     let mut has_pending_tools = false;
+    // Gemini requires a candidate chunk carrying finishReason for the stream to
+    // be considered valid. Without it, gemini-cli treats the stream as an
+    // InvalidStreamError (NO_FINISH_REASON) and RETRIES the whole request —
+    // each retry re-generates a full reply that then gets appended to the same
+    // UI message (the "repeated welcome messages" bug). Track whether we've
+    // emitted a finishReason so we can synthesize one at stream end if the
+    // upstream never sent it.
+    let mut sent_finish = false;
+    // Accumulate upstream token usage so it can be stored to the global store at
+    // [DONE] — the ACP client attaches it to the finish event, and gemini-cli
+    // itself never forwards usage, so without this gemini sessions show no
+    // token/cache info at all.
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut cached_tokens: u64 = 0;
 
     let flush_tools = |result: &mut Vec<u8>, pending: &mut HashMap<usize, (String, String)>, has: &mut bool| {
         if !*has { return; }
@@ -2710,12 +2780,88 @@ fn make_gemini_sse_converter() -> impl FnMut(&str) -> Vec<u8> {
 
         if data == "[DONE]" {
             flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+            // Store upstream usage to the global store so the ACP client can
+            // attach it to the finish event (gemini-cli never sends usage_update).
+            store_usage_for_latest(model.clone(), input_tokens as i64, output_tokens as i64, cached_tokens as i64);
+            rjlog!("[PROXY USAGE] Gemini stream done: input={}, output={}, cached={}", input_tokens, output_tokens, cached_tokens);
+            // Gemini requires a finishReason to consider the stream valid; the
+            // upstream [DONE] carries none, so synthesize one now (unless a
+            // finishReason chunk was already forwarded above).
+            if !sent_finish {
+                sent_finish = true;
+                let event = serde_json::json!({
+                    "candidates": [{
+                        "content": { "parts": [], "role": "model" },
+                        "finishReason": "STOP",
+                        "safetyRatings": []
+                    }]
+                });
+                let _ = write!(result, "data: {}\n\n", event);
+            }
+            // Gemini CLI reads the stream's final `usageMetadata` (promptTokenCount
+            // / candidatesTokenCount / cachedContentTokenCount) and forwards it via
+            // ACP `usage_update` — without this, gemini-cli reports used=0 and the
+            // UI shows no token/cache info even though upstream returned usage.
+            if input_tokens > 0 || output_tokens > 0 || cached_tokens > 0 {
+                let usage_event = serde_json::json!({
+                    "candidates": [],
+                    "usageMetadata": {
+                        "promptTokenCount": input_tokens,
+                        "candidatesTokenCount": output_tokens,
+                        "cachedContentTokenCount": cached_tokens,
+                        "totalTokenCount": input_tokens + output_tokens,
+                    }
+                });
+                let _ = write!(result, "data: {}\n\n", usage_event);
+            }
             result.extend_from_slice(b"data: {\"done\":true}\n\n");
             return result;
         }
 
         if let Ok(chunk) = serde_json::from_str::<Value>(data) {
             let delta = &chunk["choices"][0]["delta"];
+
+            // Forward the upstream finish_reason (e.g. "stop"/"length") as a
+            // Gemini finishReason chunk so gemini-cli never sees a stream that
+            // ends without one (which would trigger a request retry).
+            if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                if !fr.is_empty() && !sent_finish {
+                    sent_finish = true;
+                    let gemini_fr = if fr == "length" { "MAX_TOKENS" } else { "STOP" };
+                    let event = serde_json::json!({
+                        "candidates": [{
+                            "content": { "parts": [], "role": "model" },
+                            "finishReason": gemini_fr,
+                            "safetyRatings": []
+                        }]
+                    });
+                    let _ = write!(result, "data: {}\n\n", event);
+                }
+            }
+
+            // Accumulate upstream token usage (OpenAI-style `usage` object in the
+            // final chunk: prompt_tokens/completion_tokens + DeepSeek's
+            // prompt_cache_hit_tokens / prompt_tokens_details.cached_tokens).
+            if let Some(usage) = chunk.get("usage") {
+                input_tokens = usage["prompt_tokens"].as_u64()
+                    .or_else(|| usage["input_tokens"].as_u64())
+                    .or_else(|| usage["inputTokens"].as_u64())
+                    .unwrap_or(input_tokens);
+                output_tokens = usage["completion_tokens"].as_u64()
+                    .or_else(|| usage["output_tokens"].as_u64())
+                    .or_else(|| usage["outputTokens"].as_u64())
+                    .unwrap_or(output_tokens);
+                cached_tokens = usage["cached_tokens"].as_u64()
+                    .or_else(|| usage["cache_hit_tokens"].as_u64())
+                    .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())
+                    .or_else(|| usage["cachedReadTokens"].as_u64())
+                    .or_else(|| usage["cached_content_tokens"].as_u64())
+                    .or_else(|| {
+                        usage["prompt_tokens_details"].as_object()
+                            .and_then(|d| d["cached_tokens"].as_u64())
+                    })
+                    .unwrap_or(cached_tokens);
+            }
 
             // Tool calls — accumulate for later emission
             if let Some(tcs) = delta["tool_calls"].as_array() {
@@ -2777,6 +2923,11 @@ fn convert_openai_sse_to_gemini_sse(openai_sse: &str) -> String {
     // Track accumulating tool calls: index → (name, accumulated_args)
     let mut pending_tools: HashMap<usize, (String, String)> = HashMap::new();
     let mut has_pending_tools = false;
+    // Same finishReason contract as make_gemini_sse_converter: gemini-cli treats a
+    // stream that ends without finishReason as InvalidStreamError and RETRIES the
+    // whole request, duplicating the reply. Emit a synthesized finishReason chunk
+    // at stream end if the upstream never sent one.
+    let mut sent_finish = false;
 
     let flush_tools = |result: &mut String, pending: &mut HashMap<usize, (String, String)>, has: &mut bool| {
         if !*has { return; }
@@ -2800,11 +2951,39 @@ fn convert_openai_sse_to_gemini_sse(openai_sse: &str) -> String {
         if let Some(data) = line.strip_prefix("data: ") {
             if data == "[DONE]" {
                 flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+                // Upstream [DONE] carries no finishReason — synthesize one so the
+                // stream is valid for gemini-cli (prevents request retries).
+                if !sent_finish {
+                    sent_finish = true;
+                    result.push_str(&format!("data: {}\n\n", serde_json::json!({
+                        "candidates": [{
+                            "content": { "parts": [], "role": "model" },
+                            "finishReason": "STOP",
+                            "safetyRatings": []
+                        }]
+                    })));
+                }
                 result.push_str("data: {\"done\":true}\n\n");
                 continue;
             }
             if let Ok(chunk) = serde_json::from_str::<Value>(data) {
                 let delta = &chunk["choices"][0]["delta"];
+
+                // Forward the upstream finish_reason as a Gemini finishReason chunk
+                // (same contract as make_gemini_sse_converter).
+                if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                    if !fr.is_empty() && !sent_finish {
+                        sent_finish = true;
+                        let gemini_fr = if fr == "length" { "MAX_TOKENS" } else { "STOP" };
+                        result.push_str(&format!("data: {}\n\n", serde_json::json!({
+                            "candidates": [{
+                                "content": { "parts": [], "role": "model" },
+                                "finishReason": gemini_fr,
+                                "safetyRatings": []
+                            }]
+                        })));
+                    }
+                }
 
                 // Tool calls — accumulate for later emission
                 if let Some(tcs) = delta["tool_calls"].as_array() {

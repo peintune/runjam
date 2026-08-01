@@ -10,6 +10,7 @@ import { getProviderLogo } from "../utils/providerIcons";
 import { sendInput, startSession as apiStartSession } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
+import { recordEvent } from "../lib/diag";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
@@ -91,7 +92,24 @@ function checkScrollPosition() {
   showScrollToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight > threshold;
 }
 
+// ═══ Smart auto-scroll (stick-to-bottom) ═══
+// 只在用户位于底部附近时自动跟随滚动；用户向上滚动查看历史后暂停跟随，
+// 滚回底部附近自动恢复。避免会话生成过程中被强制拉回底部、无法上翻。
+const STICK_THRESHOLD = 100;
+const stickToBottom = ref(true);
+
+function onChatScroll() {
+  const el = messageContainer.value;
+  if (el) {
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottom.value = distFromBottom <= STICK_THRESHOLD;
+  }
+  checkScrollPosition();
+}
+
 function scrollToMessage(msgIndex: number) {
+  // 用户主动跳转到历史消息 → 暂停自动跟随（与上翻查看一致）
+  stickToBottom.value = false;
   closeMessageList();
   nextTick(() => {
     const el = messageContainer.value;
@@ -264,6 +282,16 @@ watch(selectedAgentId, async (newAgentId) => {
 
 watch(selectedPermissionMode, (newMode) => {
   savePermissionMode(selectedAgentId.value, newMode);
+  // Live-propagate the new mode to EVERY running session of this agent's ACP
+  // client so it takes effect immediately — previously the mode was only
+  // persisted and only applied on session restart, so switching out of Plan
+  // Mode mid-conversation did nothing (and other sessions of the same agent
+  // kept the stale snapshot too).
+  for (const sess of store.sessions) {
+    if (sess.cli === selectedAgentId.value && (sess.status === 'running' || sess.status === 'idle')) {
+      invoke("set_session_permission_mode", { id: sess.id, mode: newMode }).catch(() => {});
+    }
+  }
 });
 
 const permissionModeOptions = [
@@ -385,6 +413,8 @@ function doSessionRename() {
 }
 
 function scrollToBottom() {
+  // 用户手动点击"回到底部"（或切换会话）时恢复自动跟随
+  stickToBottom.value = true;
   showScrollToBottom.value = false;
   nextTick(() => {
     if (messageContainer.value) {
@@ -525,6 +555,20 @@ function pushPhaseMessage(state: SessionState, phase: 'thinking' | 'tool') {
 }
 
 function handleAcpEvent(sessionId: string, p: AcpPayload) {
+  // Drop events for sessions the user already stopped or deleted — a few
+  // buffered lines can still arrive in the window between Stop and the process
+  // actually dying.
+  const sess = store.sessions.find(s => s.id === sessionId);
+  if (!sess || sess.status === 'stopped') return;
+  const t0 = performance.now();
+  try {
+    handleAcpEventInner(sessionId, p);
+  } finally {
+    recordEvent(performance.now() - t0, p.content?.length || 0);
+  }
+}
+
+function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   const detail = {
     type: p.type,
     content: p.content?.substring(0, 100),
@@ -536,9 +580,13 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
     stop_reason: p.stop_reason,
     error: p.message,
   };
-  console.log(`[ACP EVENT] ${sessionId.substring(0,8)} type=${p.type}`, JSON.stringify(detail));
   const state = getSessionState(sessionId);
   const isActiveSession = store.activeSessionId === sessionId;
+  // 仅活动会话打逐事件日志——每 chunk 的 console.log + JSON.stringify 在
+  // 主线程上是真实开销，多个后台会话并行流式时尤其明显（统计仍由 diag 记录）
+  if (isActiveSession) {
+    console.log(`[ACP EVENT] ${sessionId.substring(0,8)} type=${p.type}`, JSON.stringify(detail));
+  }
 
   switch (p.type) {
     case "start":
@@ -550,7 +598,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = true;
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     case "thinking":
@@ -569,7 +617,19 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
         if (state.thinkingStartTime === 0) {
           state.thinkingStartTime = Date.now();
         }
-        state.activeThinking += p.content;
+        // Gemini sends each agent_thought_chunk as a FULL SNAPSHOT of the
+        // thought text so far (its stream frames carry the complete thought,
+        // not incremental deltas). Appending unconditionally would duplicate
+        // the same thought repeatedly ("A"+"AB"+"ABC" → "AABABC").
+        // Claude/Codex send incremental deltas instead. Heuristic that works
+        // for both: if the new chunk starts with the already-accumulated text,
+        // treat it as a snapshot and REPLACE; otherwise APPEND (delta).
+        const prev = state.activeThinking;
+        if (prev && p.content.length > prev.length && p.content.startsWith(prev)) {
+          state.activeThinking = p.content; // snapshot — replace
+        } else {
+          state.activeThinking += p.content; // delta — append
+        }
         const l = ensureAgentMsg(state);
         l.thinking = state.activeThinking;
       }
@@ -590,7 +650,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     case "text":
@@ -617,7 +677,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       lt.content = state.activeContent;
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     case "tool_call": {
@@ -668,7 +728,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     }
@@ -714,7 +774,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       }
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     }
@@ -734,7 +794,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       });
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     }
@@ -751,7 +811,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       };
       if (isActiveSession) {
         messages.value = [...state.messages];
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     }
@@ -798,7 +858,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = false;
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
     case "error":
@@ -817,7 +877,7 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
       if (isActiveSession) {
         messages.value = [...state.messages];
         isProcessing.value = false;
-        msgStore.setMessages(sessionId, [...state.messages]);
+        msgStore.setMessages(sessionId, messages.value);
       }
       break;
   }
@@ -927,11 +987,16 @@ watch(selectedAgentId, async (id) => {
 }, { immediate: true });
 
 watch(messages, async () => {
+  // 仅当用户还停留在底部附近时才跟随滚动——上翻查看历史时不打扰。
+  // 每次更新都整体替换数组（handleAcpEvent/loadSessionMessages 均
+  // `messages.value = [...]`），浅监听即可，避免 deep 在流式热路径上
+  // 遍历整个数组。
+  if (!stickToBottom.value) return;
   await nextTick();
   if (messageContainer.value) {
     messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
   }
-}, { deep: true });
+});
 
 async function handleSend() {
   const text = inputText.value.trim(); if(!text)return;
@@ -1076,7 +1141,7 @@ watch(messages, (msgs) => {
       </div>
       
       <div class="flex-1 relative min-h-0">
-        <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="checkScrollPosition">
+        <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
             <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
             <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
@@ -1157,7 +1222,7 @@ watch(messages, (msgs) => {
                   <button @click.stop="showPermissionDropdown = !showPermissionDropdown"
                     class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                     <Shield :size="11" />
-                    {{ permissionModeLabel }}
+                    <span class="hidden md:inline">{{ permissionModeLabel }}</span>
                     <ChevronDown :size="10" />
                   </button>
                   <div v-if="showPermissionDropdown" class="absolute bottom-full right-0 mb-1 w-48 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
@@ -1182,7 +1247,7 @@ watch(messages, (msgs) => {
                     class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                     <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                     <Sparkles v-else :size="11" />
-                    <span class="text-left">
+                    <span class="text-left hidden md:inline">
                       <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || 'Select Model' }}</span>
                       <span v-if="selectedModelInfo && selectedModelInfo.alias" 
                             class="text-[10px] text-gray-400 ml-1">{{ selectedModelInfo.name }}</span>
@@ -1331,7 +1396,7 @@ watch(messages, (msgs) => {
                 <button @click.stop="showPermissionDropdown = !showPermissionDropdown"
                   class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                   <Shield :size="11" />
-                  {{ permissionModeLabel }}
+                  <span class="hidden md:inline">{{ permissionModeLabel }}</span>
                   <ChevronDown :size="10" />
                 </button>
                 <div v-if="showPermissionDropdown" class="absolute bottom-full right-0 mb-1 w-48 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
@@ -1356,7 +1421,7 @@ watch(messages, (msgs) => {
                   class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                   <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                   <Sparkles v-else :size="11" />
-                  <span class="text-left">
+                  <span class="text-left hidden md:inline">
                     <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || 'Select Model' }}</span>
                     <span v-if="selectedModelInfo && selectedModelInfo.alias" 
                           class="text-[10px] text-gray-400 ml-1">{{ selectedModelInfo.name }}</span>

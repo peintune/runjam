@@ -5,11 +5,12 @@ import {
   Wrench, MousePointerClick, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
-import { useMarkdown } from "../composables/useMarkdown";
+import { useMarkdown, renderCached } from "../composables/useMarkdown";
 import AgentIcon from "./AgentIcon.vue";
 import { invoke } from "@tauri-apps/api/core";
+import { recordRender, recordMdParse } from "../lib/diag";
 
-const { render: renderMd, safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
+const { safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
 
 // ═══ Types ═══
 export interface InteractionOption { key: string; label: string; is_default: boolean; }
@@ -122,7 +123,7 @@ const frozenDurations = reactive<Record<number, { thinking: number; content: num
 const now = ref(Date.now());
 const tickTimer = setInterval(() => {
   now.value = Date.now();
-}, 200);
+}, 500);
 const timers: ReturnType<typeof setInterval>[] = [];
 /** Track one timer per message index so we can avoid duplicate typewriters on streaming updates. */
 const timerMap = new Map<number, { thinking?: ReturnType<typeof setInterval>; content?: ReturnType<typeof setInterval> }>();
@@ -303,14 +304,26 @@ function formatTokens(n: number): string {
 }
 
 // ═══ Render content with safe streaming slice ═══
+// Markdown parsing (marked + DOMPurify + hljs) is the most expensive step in the
+// streaming hot path — it used to re-run for EVERY message on EVERY chunk and on
+// the `now` tick. renderCached keeps a MODULE-level cache keyed by source string,
+// so unchanged messages (the vast majority of a long conversation) are never
+// re-parsed, and the cache survives session switches.
 function renderContent(idx: number, msg: Message): string {
   const fullContent = msg.content;
   const displayed = displayMap[idx]?.content;
+  const t0 = performance.now();
+  let html: string;
   if (displayed === undefined || displayed.length >= fullContent.length) {
-    return renderMd(fullContent, { sanitize: true });
+    // 完成/历史内容：可缓存
+    html = renderCached(fullContent, { sanitize: true }, (ms) => recordMdParse(ms));
+  } else {
+    // 流式部分内容：只渲染不缓存（cache=false），避免冲掉历史缓存
+    const safeSlice = safeSliceForStreaming(displayed);
+    html = renderCached(safeSlice, { sanitize: true }, (ms) => recordMdParse(ms), false);
   }
-  const safeSlice = safeSliceForStreaming(displayed);
-  return renderMd(safeSlice, { sanitize: true });
+  recordRender(performance.now() - t0);
+  return html;
 }
 
 function isTyping(idx: number, msg: Message): boolean {
@@ -374,9 +387,9 @@ watch(
 
       if (isLive) {
         if (m.thinking && displayMap[i].thinking.length < m.thinking.length)
-          startTypewriter(i, m.thinking, "thinking", 3);
+          startTypewriter(i, m.thinking, "thinking", 16);
         if (m.content && displayMap[i].content.length < m.content.length)
-          startTypewriter(i, m.content, "content", 4);
+          startTypewriter(i, m.content, "content", 16);
       } else {
         // Message is no longer live — freeze any running durations
         if (startTimes[i].thinking && !frozenDurations[i].thinking) {
@@ -476,13 +489,10 @@ async function copyMessage(content: string, idx: number) {
 }
 
 // ═══ Auto-scroll ═══
-watch(
-  () => props.messages.length,
-  async () => {
-    await nextTick();
-    if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight;
-  },
-);
+// NOTE: scrolling is owned by SessionView's smart stick-to-bottom logic (it
+// knows whether the user scrolled up to read history). This component must NOT
+// force scrollTop on every new message, or the user can never scroll up while a
+// session streams.
 
 // Truncate a long label for display, keep full text in title
 function truncateLabel(label: string, maxLen = 32): string {

@@ -1,5 +1,5 @@
 use crate::acp::{AcpEvent, AcpMessage};
-use crate::acp_client::AcpClient;
+use crate::acp_client::{terminate_process_tree, AcpClient};
 use crate::models::session::Session;
 use crate::rjlog;
 use std::collections::HashMap;
@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter};
 use chrono::Local;
 
 enum ClientType {
-    Acp(Arc<Mutex<AcpClient>>),
+    Acp(Arc<Mutex<AcpClient>>, u32),
 }
 
 pub struct SessionManager {
@@ -53,8 +53,9 @@ impl SessionManager {
         let acp_client = AcpClient::start(app, &id, agent_type, directory, model, mode, permission_mode)
             .map_err(|e| format!("Failed to start ACP agent: {}", e))?;
 
+        let acp_pid = acp_client.pid();
         let acp_client_arc = Arc::new(Mutex::new(acp_client));
-        self.clients.lock().unwrap().insert(id.clone(), ClientType::Acp(acp_client_arc.clone()));
+        self.clients.lock().unwrap().insert(id.clone(), ClientType::Acp(acp_client_arc.clone(), acp_pid));
         self.active.insert(id.clone(), ());
         rjlog!("[SESSION DEBUG] session started, clients in map: {}", self.clients.lock().unwrap().len());
 
@@ -96,7 +97,7 @@ impl SessionManager {
         let _ = app.emit(&ev, &AcpMessage::new(&sid, &turn_id, &msg_id, AcpEvent::Start));
 
         match client {
-            ClientType::Acp(acp) => {
+            ClientType::Acp(acp, _) => {
                 let mut acp_client = acp.lock().unwrap();
                 let prompt = match history {
                     Some(h) if !h.is_empty() => format!("Previous conversation:\n{}\n---\nNew message: {}", h.join("\n"), text),
@@ -109,13 +110,28 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Live-update the permission mode of a running session's ACP client
+    /// (e.g. switching out of Plan Mode mid-conversation).
+    pub fn set_permission_mode(&self, id: &str, mode: &str) -> Result<(), String> {
+        let clients = self.clients.lock().unwrap();
+        let client = clients.get(id)
+            .ok_or_else(|| format!("No client for session: {}", id))?;
+        match client {
+            ClientType::Acp(acp, _) => {
+                let mut acp_client = acp.lock().unwrap();
+                acp_client.set_permission_mode(mode);
+            }
+        }
+        Ok(())
+    }
+
     pub fn respond(&self, id: &str, response: &str) -> Result<(), String> {
         let clients = self.clients.lock().unwrap();
         let client = clients.get(id)
             .ok_or_else(|| format!("No client for session: {}", id))?;
 
         match client {
-            ClientType::Acp(acp) => {
+            ClientType::Acp(acp, _) => {
                 let mut acp_client = acp.lock().unwrap();
                 acp_client.send_prompt(response)?;
             }
@@ -130,7 +146,7 @@ impl SessionManager {
             .ok_or_else(|| format!("No client for session: {}", id))?;
 
         match client {
-            ClientType::Acp(acp) => {
+            ClientType::Acp(acp, _) => {
                 let mut acp_client = acp.lock().unwrap();
                 acp_client.respond_permission(request_id, response)?;
             }
@@ -141,7 +157,22 @@ impl SessionManager {
 
     pub fn stop(&mut self, id: &str) -> Result<(), String> {
         rjlog!("[SESSION DEBUG] stop called for session: {}", id);
-        self.clients.lock().unwrap().remove(id);
+        // Terminate the agent process tree BEFORE dropping the client — dropping
+        // the Arc alone leaves the process running and the stdout reader thread
+        // emitting events (the "Stop button doesn't stop" bug).
+        let removed = self.clients.lock().unwrap().remove(id);
+        if let Some(ClientType::Acp(acp, pid)) = removed {
+            // Kill by pid WITHOUT taking the acp lock: the init thread may hold
+            // it for up to 30s during a hung handshake, and stop() must return
+            // immediately regardless of that.
+            terminate_process_tree(pid);
+            if let Ok(mut client) = acp.try_lock() {
+                // Reap and (re)kill via the client — a no-op if already dead.
+                client.stop();
+            }
+            // If the lock is busy, the process is already terminated above; the
+            // init thread will unwind and AcpClient::Drop reaps it.
+        }
         self.active.remove(id);
         rjlog!("[SESSION DEBUG] session stopped, clients in map: {}", self.clients.lock().unwrap().len());
         Ok(())

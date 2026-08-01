@@ -370,7 +370,16 @@ fn resolve_agent_paths(
                 }
             }
             if gemini_path.is_empty() {
-                rjlog!("[ACP DEBUG] Gemini: not found in node_dir {:?} or npm prefix, falling back to PATH", node_dir);
+                // Fallback: search common user install locations (nvm, ~/.local/bin, etc.)
+                // so we can use an absolute path instead of relying on PATH (which may not
+                // include the nvm bin dir when RunJam is launched from a non-interactive shell).
+                gemini_path = search_gemini_in_common_locations(bin_candidates);
+                if !gemini_path.is_empty() {
+                    rjlog!("[ACP DEBUG] Gemini: found in common user locations: {}", gemini_path);
+                }
+            }
+            if gemini_path.is_empty() {
+                rjlog!("[ACP DEBUG] Gemini: not found in node_dir {:?}, npm prefix, or common locations, falling back to PATH", node_dir);
                 gemini_path = "gemini".to_string();
             }
             Ok((
@@ -390,6 +399,62 @@ fn resolve_agent_paths(
     }
 }
 
+/// Search common user install locations for the gemini CLI binary, so we can
+/// return an absolute path instead of relying on PATH (which may not include
+/// the nvm bin dir when RunJam is launched from a non-interactive shell).
+///
+/// Locations searched (in order):
+///   1. Every `~/.nvm/versions/node/<version>/bin/{name}` (all installed node versions)
+///   2. `~/.local/bin/{name}`
+///   3. `~/.npm-global/bin/{name}`
+///   4. `/opt/homebrew/bin/{name}` (Apple Silicon)
+///   5. `/usr/local/bin/{name}` (Intel)
+///
+/// Returns the first existing candidate, or an empty string if none found.
+fn search_gemini_in_common_locations(bin_candidates: &[&str]) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // 1. nvm: ~/.nvm/versions/node/<version>/bin/{name}
+    let nvm_versions = std::path::PathBuf::from(&home).join(".nvm").join("versions").join("node");
+    if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+        let mut versions: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        // Prefer the highest node version (semver-ish sort descending).
+        versions.sort_by(|a, b| b.cmp(a));
+        for version_dir in versions {
+            let bin_dir = version_dir.join("bin");
+            for name in bin_candidates.iter() {
+                let candidate = bin_dir.join(name);
+                rjlog!("[ACP DEBUG] Gemini: checking nvm candidate: {:?}", candidate);
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    // 2-5. Other common install locations.
+    let mut dirs = Vec::new();
+    dirs.push(std::path::PathBuf::from(&home).join(".local").join("bin"));
+    dirs.push(std::path::PathBuf::from(&home).join(".npm-global").join("bin"));
+    dirs.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(std::path::PathBuf::from("/usr/local/bin"));
+
+    for dir in dirs {
+        for name in bin_candidates.iter() {
+            let candidate = dir.join(name);
+            rjlog!("[ACP DEBUG] Gemini: checking common dir candidate: {:?}", candidate);
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
 pub struct AcpClient {
     process: Child,
     stdin_writer: Arc<Mutex<std::process::ChildStdin>>,
@@ -398,7 +463,13 @@ pub struct AcpClient {
     responses: Arc<Mutex<HashMap<u64, Value>>>,
     cwd: String,
     mode: String,
-    permission_mode: String,
+    agent_type: String,
+    /// Live-updatable permission mode, shared with the stdout reader thread so
+    /// mid-session changes (e.g. switching out of Plan Mode) take effect immediately.
+    permission_mode: Arc<Mutex<String>>,
+    /// True once stop() has terminated+reaped the process (prevents Drop from
+    /// double-killing a reaped pid).
+    stopped: bool,
 }
 
 impl AcpClient {
@@ -434,6 +505,14 @@ impl AcpClient {
             .stderr(Stdio::piped())
             .current_dir(cwd);
 
+        // Run the agent in its own process group so stop() can terminate the
+        // whole tree (ACP wrapper + the CLI it spawns) with a single signal.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
         // Tell claude-agent-acp where to find the native claude binary.
         // On Windows, both set CLAUDE_CODE_EXECUTABLE and add node bin dir to PATH.
         if agent_type == "claude" {
@@ -460,6 +539,24 @@ impl AcpClient {
                 let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
                 let current_path = std::env::var("PATH").unwrap_or_default();
                 cmd.env("PATH", format!("{}{}{}", node_dir_str, sep, current_path));
+            }
+        }
+
+        // gemini's bundle entry has a `#!/usr/bin/env node` shebang, so ensure the
+        // directory containing the gemini binary (which also holds the matching
+        // `node`) is on PATH. Without this, spawn of an absolute gemini path fails
+        // with "No such file or directory (os error 2)" when the RunJam process
+        // PATH does not include the nvm bin dir.
+        if agent_type == "gemini" || agent_type == "gemini-cli" {
+            let gemini_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            if !gemini_dir.as_os_str().is_empty() {
+                let gemini_dir_str = gemini_dir.to_string_lossy();
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}{}{}", gemini_dir_str, sep, current_path));
+                rjlog!("[ACP DEBUG] Gemini: added {} to PATH", gemini_dir_str);
             }
         }
 
@@ -587,7 +684,10 @@ impl AcpClient {
         let responses_clone = responses.clone();
         let app_clone2 = app.clone();
         let session_id_clone = session_id.to_string();
-        let permission_mode_clone = permission_mode.to_string();
+        // Shared so the running session's permission mode can be changed live
+        // (see set_permission_mode) without restarting the agent process.
+        let permission_mode_shared = Arc::new(Mutex::new(permission_mode.to_string()));
+        let permission_mode_clone = permission_mode_shared.clone();
         let _agent_type_clone = agent_type.to_string();
         let model_clone = model.map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
         
@@ -620,10 +720,11 @@ impl AcpClient {
                         if let Ok(perm_req) = serde_json::from_value::<PermissionRequest>(val.clone()) {
                             if perm_req.method == "permission/request" {
                                 rjlog!("[ACP DEBUG] Received permission/request: {}", perm_req.params.prompt);
-                                
-                                match permission_mode_clone.as_str() {
+
+                                let pm = permission_mode_clone.lock().unwrap().clone();
+                                match pm.as_str() {
                                     "full_access" | "approve_for_me" => {
-                                        rjlog!("[ACP DEBUG] Auto-approving permission request due to mode: {}", permission_mode_clone);
+                                        rjlog!("[ACP DEBUG] Auto-approving permission request due to mode: {}", pm);
                                         let approve_option = perm_req.params.options.iter()
                                             .find(|o| o.key == "allow_once" || o.key == "allow")
                                             .or_else(|| perm_req.params.options.first())
@@ -701,10 +802,11 @@ impl AcpClient {
                                     }
                                 }).collect();
                                 rjlog!("[ACP DEBUG] Received session/request_permission id={} prompt={}", sess_perm.id, prompt);
-                                
-                                match permission_mode_clone.as_str() {
+
+                                let pm = permission_mode_clone.lock().unwrap().clone();
+                                match pm.as_str() {
                                     "full_access" | "approve_for_me" => {
-                                        rjlog!("[ACP DEBUG] Auto-approving session/request_permission due to mode: {}", permission_mode_clone);
+                                        rjlog!("[ACP DEBUG] Auto-approving session/request_permission due to mode: {}", pm);
                                         let approve_key = options.iter()
                                             .find(|o| o.key == "allow_once" || o.key == "allow")
                                             .map(|o| o.key.clone())
@@ -714,8 +816,10 @@ impl AcpClient {
                                             "jsonrpc": "2.0",
                                             "id": sess_perm.id,
                                             "result": {
-                                                "outcome": "selected",
-                                                "optionId": approve_key,
+                                                "outcome": {
+                                                    "outcome": "selected",
+                                                    "optionId": approve_key,
+                                                }
                                             }
                                         });
                                         if let Ok(response_str) = serde_json::to_string(&resp_json) {
@@ -728,17 +832,14 @@ impl AcpClient {
                                     }
                                     "read_only" => {
                                         rjlog!("[ACP DEBUG] Auto-denying session/request_permission in read_only mode");
-                                        // Find a deny option, or fall back to hardcoded "deny" (never use an allow option as fallback)
-                                        let deny_key = options.iter()
-                                            .find(|o| o.key == "deny" || o.key == "deny_once" || o.key == "reject")
-                                            .map(|o| o.key.clone())
-                                            .unwrap_or_else(|| "deny".to_string());
+                                        // ACP v1: RequestPermissionOutcome "cancelled" = user denied.
                                         let resp_json = serde_json::json!({
                                             "jsonrpc": "2.0",
                                             "id": sess_perm.id,
                                             "result": {
-                                                "outcome": "selected",
-                                                "optionId": deny_key,
+                                                "outcome": {
+                                                    "outcome": "cancelled",
+                                                }
                                             }
                                         });
                                         if let Ok(response_str) = serde_json::to_string(&resp_json) {
@@ -868,7 +969,14 @@ impl AcpClient {
                                             used, delta, record_input, record_output, cached_read, cached_write, usage_model);
                                         if delta > 0 || record_input > 0 || record_output > 0 {
                                             last_used_clone.store(used, Ordering::SeqCst);
-                                            if input_delta > 0 { last_input_clone.store(input_tokens, Ordering::SeqCst); }
+                                            if input_delta > 0 {
+                                                last_input_clone.store(input_tokens, Ordering::SeqCst);
+                                            } else if delta > 0 {
+                                                // Agent 只报 used 总数（无 input/output 拆分）时，
+                                                // 把 delta 当作 input 累积，否则 finish 时拿不到任何 token。
+                                                let acc = last_input_clone.load(Ordering::SeqCst);
+                                                last_input_clone.store(acc + delta, Ordering::SeqCst);
+                                            }
                                             if output_delta > 0 { last_output_clone.store(output_tokens, Ordering::SeqCst); }
                                             if cached_total > 0 { last_cached_clone.store(cached_total as u64, Ordering::SeqCst); }
                                             // Log cache hit rate for monitoring
@@ -999,8 +1107,15 @@ impl AcpClient {
                             
                             // Try to extract usage from the result, regardless of stopReason
                             let usage = result.get("usage");
-                            let result_input = usage.and_then(|u| u.get("inputTokens")).and_then(|v| v.as_i64());
-                            let result_output = usage.and_then(|u| u.get("outputTokens")).and_then(|v| v.as_i64());
+                            // Both camelCase (ACP standard) and snake_case (our codex
+                            // responses converter emits input_tokens/output_tokens) are
+                            // supported.
+                            let result_input = usage.and_then(|u| u.get("inputTokens"))
+                                .and_then(|v| v.as_i64())
+                                .or_else(|| usage.and_then(|u| u.get("input_tokens")).and_then(|v| v.as_i64()));
+                            let result_output = usage.and_then(|u| u.get("outputTokens"))
+                                .and_then(|v| v.as_i64())
+                                .or_else(|| usage.and_then(|u| u.get("output_tokens")).and_then(|v| v.as_i64()));
                             let result_cached_read = usage.and_then(|u| u.get("cachedReadTokens")).and_then(|v| v.as_i64()).unwrap_or(0);
                             let result_cached_write = usage.and_then(|u| u.get("cachedWriteTokens")).and_then(|v| v.as_i64()).unwrap_or(0);
                             let result_cached_total = result_cached_read + result_cached_write;
@@ -1025,7 +1140,8 @@ impl AcpClient {
                             // 如果 Agent 返回的 usage 全是 0，尝试从 Proxy 全局存储获取真实数据
                             let (result_input, result_output, result_cached_total, usage_model) = if !has_usage || (result_input == Some(0) && result_output == Some(0) && result_cached_total == 0) {
                                 rjlog!("[CACHE DEBUG] Agent usage is empty, trying Proxy global store");
-                                match crate::proxy::take_last_usage() {
+                                // 按本会话的 model 匹配取用，避免多会话并发时互相抢走
+                                match crate::proxy::take_last_usage(&model_clone) {
                                     Some((model, input, output, cached)) => {
                                         rjlog!("[CACHE DEBUG] Got usage from Proxy: model={}, input={}, output={}, cached={}", model, input, output, cached);
                                         (Some(input), Some(output), cached, model)
@@ -1146,10 +1262,58 @@ impl AcpClient {
             responses,
             cwd: cwd.to_string(),
             mode: mode.to_string(),
-            permission_mode: permission_mode.to_string(),
+            agent_type: agent_type.to_string(),
+            permission_mode: permission_mode_shared,
+            stopped: false,
         };
 
         Ok(client)
+    }
+
+    /// Update the permission mode of the *running* client so the change takes
+    /// effect immediately. Besides flipping our own auto-approve/deny switch,
+    /// this pushes the new mode into the live agent via the ACP `session/set_mode`
+    /// RPC — without that, an agent that already stopped requesting permissions
+    /// (e.g. after Plan-Mode denials) would keep refusing tools no matter how we
+    /// answer future permission requests.
+    pub fn set_permission_mode(&mut self, mode: &str) {
+        *self.permission_mode.lock().unwrap() = mode.to_string();
+        rjlog!("[ACP DEBUG] Live permission mode updated to: {}", mode);
+
+        // Only claude-agent-acp owns a real session-level mode ("plan",
+        // "acceptEdits", "auto", "bypassPermissions") that we can switch live;
+        // other agents keep the reader-side approve/deny behavior.
+        if self.agent_type != "claude" {
+            return;
+        }
+        let Some(mode_id) = Self::permission_mode_to_acp_mode(mode) else {
+            return;
+        };
+        let session_id = self.session_id.lock().unwrap().clone();
+        if session_id.is_empty() {
+            rjlog!("[ACP DEBUG] session/set_mode skipped: ACP session id not ready");
+            return;
+        }
+        let params = serde_json::json!({
+            "sessionId": session_id,
+            "modeId": mode_id,
+        });
+        match self.send_request_no_wait("session/set_mode", params) {
+            Ok(()) => rjlog!("[ACP DEBUG] session/set_mode sent (modeId={})", mode_id),
+            Err(e) => rjlog!("[ACP WARN] session/set_mode failed: {}", e),
+        }
+    }
+
+    /// Map RunJam's permission modes to the permission-mode ids understood by
+    /// claude-agent-acp (`session/set_mode`).
+    fn permission_mode_to_acp_mode(mode: &str) -> Option<&'static str> {
+        match mode {
+            "read_only" => Some("plan"),
+            "ask_approval" => Some("acceptEdits"),
+            "approve_for_me" => Some("auto"),
+            "full_access" => Some("bypassPermissions"),
+            _ => None,
+        }
     }
 
     pub fn initialize_session(&mut self, app: &AppHandle, session_id: &str) -> Result<(), String> {
@@ -1335,6 +1499,24 @@ impl AcpClient {
             .map_err(|e| format!("Permission response failed: {}", e))
     }
 
+    /// Terminate the agent process and its whole tree. Dropping the client alone
+    /// does NOT stop anything (std::process::Child only closes the pipe handles),
+    /// which is why clicking Stop used to leave the agent running and emitting
+    /// events — the process kept generating after the client was dropped.
+    pub fn stop(&mut self) {
+        let pid = self.process.id();
+        rjlog!("[ACP DEBUG] Stopping session, terminating process tree pid={}", pid);
+        terminate_process_tree(pid);
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+        self.stopped = true;
+        rjlog!("[ACP DEBUG] Session process terminated (pid={})", pid);
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.process.id()
+    }
+
     pub async fn new(agent_id: &str, _session_id: &str, app: &AppHandle) -> Result<Self, String> {
         rjlog!("[ACP DEBUG] Creating test ACP client for agent: {}", agent_id);
 
@@ -1443,9 +1625,49 @@ impl AcpClient {
             responses,
             cwd: package_dir.clone(),
             mode: "default".to_string(),
-            permission_mode: "ask_approval".to_string(),
+            agent_type: "claude".to_string(),
+            permission_mode: Arc::new(Mutex::new("ask_approval".to_string())),
+            stopped: false,
         };
 
         Ok(client)
     }
+}
+
+impl Drop for AcpClient {
+    fn drop(&mut self) {
+        // std::process::Child does NOT kill the process when dropped — it only
+        // closes the pipe handles, orphaning the agent. Make sure a client that
+        // goes away without an explicit stop() (e.g. app teardown, failed path)
+        // doesn't leave a running agent process behind. stopped=true means the
+        // process was already terminated AND reaped by stop(), so there is
+        // nothing left to kill.
+        if self.stopped {
+            return;
+        }
+        if let Ok(Some(_)) = self.process.try_wait() {
+            return; // already exited on its own
+        }
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+/// Terminate an agent process tree by pid. Works without holding the client
+/// lock, so stop paths never block on a hung handshake that holds it.
+/// On Unix the agent runs in its own process group (process_group(0)), so a
+/// single TERM signal reaches the ACP wrapper AND the CLI it spawned; on
+/// Windows taskkill /T /F kills the whole tree.
+#[cfg(unix)]
+pub(crate) fn terminate_process_tree(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .args(["-s", "TERM", &format!("-{}", pid)])
+        .status();
+}
+
+#[cfg(windows)]
+pub(crate) fn terminate_process_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
 }

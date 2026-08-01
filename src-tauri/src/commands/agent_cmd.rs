@@ -781,23 +781,40 @@ fn dirs_home() -> PathBuf {
 }
 
 #[tauri::command]
-pub fn get_agent_statuses(app_state: State<'_, Mutex<AppState>>, db: State<'_, Mutex<Database>>, force_refresh: Option<bool>) -> Vec<AgentWithState> {
+pub async fn get_agent_statuses(
+    app_state: State<'_, Mutex<AppState>>,
+    db: State<'_, Mutex<Database>>,
+    force_refresh: Option<bool>,
+) -> Result<Vec<AgentWithState>, String> {
     let state = app_state.lock().unwrap();
-    let db_guard = db.lock().unwrap();
-    let conn = db_guard.conn.lock().unwrap();
-    
     let force = force_refresh.unwrap_or(false);
-    
-    // 1. Try cache first (detected within last 5 min, saves a filesystem scan)
-    //    Skip cache when force_refresh is true
-    let mut agents = if force {
-        let detected = detector::detect_agents();
-        for agent in &detected {
-            save_detected_agent(&conn, agent);
-        }
-        detected
+
+    // 1. Snapshot the cache under a short lock, then release it — detection
+    //    below spawns a CLI process (`<agent> --version`) per installed agent,
+    //    which takes seconds (Node CLIs like `gemini --version` alone ~1.8s).
+    //    It must not run while holding the DB lock (get_models / get_last_agent
+    //    would stall) nor on the main thread (the whole UI would freeze while
+    //    startup commands are serialized behind it). async command = off the
+    //    main thread, concurrent with the other startup commands.
+    let cached = if force {
+        None
     } else {
-        match load_cached_agents(&conn) {
+        let db_guard = db.lock().unwrap();
+        let conn = db_guard.conn.lock().unwrap();
+        load_cached_agents(&conn)
+    };
+
+    // 2. Detect on disk (slow: spawns `claude --version`, `codex --version`,
+    //    `gemini --version`, ...). Collect what to persist and write it after
+    //    detection, so the DB lock is only held for short bursts.
+    let mut agents: Vec<Agent>;
+    let mut to_save: Vec<Agent> = Vec::new();
+    if force {
+        let detected = detector::detect_agents();
+        to_save.extend(detected.clone());
+        agents = detected;
+    } else {
+        match cached {
             Some(cached) => {
                 // Merge partial cache with fresh detection.
                 // Prefer cached install data when the cache says "installed"
@@ -814,41 +831,53 @@ pub fn get_agent_statuses(app_state: State<'_, Mutex<AppState>>, db: State<'_, M
                         if cached_agent.installed && !det_agent.installed {
                             // Cache knows about an install that detection missed
                             result.push((*cached_agent).clone());
-                            save_detected_agent(&conn, cached_agent);
+                            to_save.push((*cached_agent).clone());
                         } else {
                             result.push(det_agent.clone());
-                            save_detected_agent(&conn, det_agent);
+                            to_save.push(det_agent.clone());
                         }
                     } else {
                         result.push(det_agent.clone());
-                        save_detected_agent(&conn, det_agent);
+                        to_save.push(det_agent.clone());
                     }
                 }
-                result
+                agents = result;
             }
             None => {
-                // 2. Cache miss or stale — full detection + persist
+                // Cache miss or stale — full detection + persist
                 let detected = detector::detect_agents();
-                for agent in &detected {
-                    save_detected_agent(&conn, agent);
-                }
-                detected
+                to_save.extend(detected.clone());
+                agents = detected;
             }
         }
-    };
-    
-    // 3. Overlay DB status/last_tested_at (preserved from Test runs)
-    for agent in agents.iter_mut() {
-        let (status, last_tested_at) = load_agent_status_from_db(&conn, &agent.id);
-        if agent.installed {
-            agent.status = status;
-            agent.last_tested_at = last_tested_at;
-        } else {
-            agent.status = "not_installed".to_string();
-            agent.last_tested_at = None;
+    }
+
+    // Persist detection results (short lock).
+    {
+        let db_guard = db.lock().unwrap();
+        let conn = db_guard.conn.lock().unwrap();
+        for agent in &to_save {
+            save_detected_agent(&conn, agent);
         }
     }
-    merge_state(agents, &state)
+
+    // 3. Overlay DB status/last_tested_at (preserved from Test runs) — short lock.
+    {
+        let db_guard = db.lock().unwrap();
+        let conn = db_guard.conn.lock().unwrap();
+        for agent in agents.iter_mut() {
+            let (status, last_tested_at) = load_agent_status_from_db(&conn, &agent.id);
+            if agent.installed {
+                agent.status = status;
+                agent.last_tested_at = last_tested_at;
+            } else {
+                agent.status = "not_installed".to_string();
+                agent.last_tested_at = None;
+            }
+        }
+    }
+
+    Ok(merge_state(agents, &state))
 }
 
 #[derive(Debug, Clone, Serialize)]

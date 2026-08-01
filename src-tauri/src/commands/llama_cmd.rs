@@ -387,7 +387,7 @@ fn check_server_running(port: u16) -> bool {
 }
 
 #[tauri::command]
-pub fn get_server_status() -> Result<serde_json::Value, String> {
+pub async fn get_server_status() -> Result<serde_json::Value, String> {
     let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
     let model = LLAMA_SERVER_MODEL.lock().unwrap().clone();
     

@@ -116,6 +116,7 @@ pub fn run() {
             commands::session_cmd::stop_session,
             commands::session_cmd::send_input,
             commands::session_cmd::respond_interaction,
+            commands::session_cmd::set_session_permission_mode,
             commands::session_cmd::respond_permission,
             commands::session_cmd::list_sessions,
             commands::session_cmd::get_session_logs,

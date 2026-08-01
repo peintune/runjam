@@ -222,6 +222,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   async function stopSession(id: string) {
+    // Mark stopped immediately so late ACP events from the dying process are
+    // dropped (SessionView.handleAcpEvent), then terminate the process.
+    const s0 = sessions.value.find((s) => s.id === id);
+    if (s0) s0.status = "stopped";
     try { await tauriStopSession(id); } catch (err) { console.error(err); }
     const s = sessions.value.find((s) => s.id === id);
     if (s) {
@@ -232,6 +236,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   async function removeSession(id: string) {
+    // Terminate any still-running agent process for this session — otherwise the
+    // process keeps running and emitting events after the session is deleted.
+    const delSession = sessions.value.find((s) => s.id === id);
+    if (delSession && (delSession.status === "running" || delSession.status === "idle")) {
+      try { await tauriStopSession(id); } catch (err) { console.error(err); }
+    }
     sessions.value = sessions.value.filter((s) => s.id !== id);
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id ?? null;

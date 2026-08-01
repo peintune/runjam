@@ -68,7 +68,7 @@ pub async fn start_session(
 }
 
 #[tauri::command]
-pub fn stop_session(
+pub async fn stop_session(
     manager: State<'_, Mutex<SessionManager>>,
     id: String,
 ) -> Result<(), String> {
@@ -86,6 +86,16 @@ pub async fn send_input(
 ) -> Result<(), String> {
     let mgr = manager.lock().map_err(|e| e.to_string())?;
     mgr.send_input(&app, &id, &text, history.as_deref())
+}
+
+#[tauri::command]
+pub async fn set_session_permission_mode(
+    manager: State<'_, Mutex<SessionManager>>,
+    id: String,
+    mode: String,
+) -> Result<(), String> {
+    let mgr = manager.lock().map_err(|e| e.to_string())?;
+    mgr.set_permission_mode(&id, &mode)
 }
 
 #[tauri::command]
