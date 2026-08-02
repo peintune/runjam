@@ -1330,7 +1330,13 @@ impl AcpClient {
             session_id, "0", "0",
             AcpEvent::Text { content: format!("__ACP_SESSION_ID__{}", acp_session_id) }
         ));
-        
+
+        // Push the initial permission mode into the agent so it takes effect on
+        // the very first turn — otherwise claude starts in its default mode and
+        // asks for permission even when the user selected full_access/bypass.
+        let initial_mode = self.permission_mode.lock().unwrap().clone();
+        self.set_permission_mode(&initial_mode);
+
         Ok(())
     }
 
