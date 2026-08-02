@@ -593,7 +593,13 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       state.messages.push({ role: "agent", content: "", startTime: Date.now(), isProcessing: true });
       state.activeThinking = ""; state.activeContent = ""; state.thoughtDuration = "";
       state.thinkingStartTime = 0;
-      state.turnStartTime = Date.now();
+      // Only set turnStartTime on the real turn start (when it's 0).
+      // agent_message_end emits Start to create a new bubble, but we must
+      // NOT reset the turn timer — otherwise totalDurationMs in finish
+      // only reflects the last message, not the whole turn.
+      if (state.turnStartTime === 0) {
+        state.turnStartTime = Date.now();
+      }
       state.isProcessing = true;
       if (isActiveSession) {
         messages.value = [...state.messages];
@@ -672,7 +678,16 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         const lt2 = ensureAgentMsg(state);
         lt2.thoughtDuration = state.thoughtDuration;
       }
-      state.activeContent += (p.content||"");
+      // Gemini agent_message_chunk sends the FULL message text each time
+      // (snapshot), not incremental deltas. If we blindly append, the same
+      // text gets duplicated. Use the same heuristic as thinking: if the
+      // new chunk starts with the accumulated text, replace; else append.
+      const prev = state.activeContent;
+      if (prev && p.content && p.content.length > prev.length && p.content.startsWith(prev)) {
+        state.activeContent = p.content;
+      } else {
+        state.activeContent += (p.content||"");
+      }
       const lt = ensureAgentMsg(state);
       lt.content = state.activeContent;
       if (isActiveSession) {
@@ -821,6 +836,14 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       // Mark all agent messages in this turn as not processing
       for (const m of state.messages) {
         if (m.role === 'agent') m.isProcessing = false;
+      }
+      // Remove trailing empty message (Gemini agent_message_end emits Start
+      // which pushes a new empty bubble; the last one has no content).
+      {
+        const last = lastAgentMsg(state.messages);
+        if (last && !last.content && !last.thinking && (!last.toolCalls || last.toolCalls.length === 0)) {
+          state.messages.pop();
+        }
       }
       // Attach total duration and token count to the last agent message
       {

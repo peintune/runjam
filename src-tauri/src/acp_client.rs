@@ -890,8 +890,14 @@ impl AcpClient {
                                     }
                                     "agent_message_end" => {
                                         rjlog!("[ACP DEBUG] Agent message end");
-                                        // Don't send Finish here — this is per-message, not end of turn.
-                                        // The true end of turn is signaled by stopReason in the prompt response.
+                                        // Gemini sends agent_message_chunk as full snapshots of each
+                                        // message. Emit Start so the frontend pushes a new message
+                                        // bubble and resets activeContent, preventing messages from
+                                        // concatenating into one giant bubble.
+                                        let _ = app_clone2.emit(&event_name, &AcpMessage::new(
+                                            &session_id_clone, "0", "0",
+                                            AcpEvent::Start
+                                        ));
                                     }
                                     "agent_thought_chunk" => {
                                         let raw = get_content_text(&update.params.update);
@@ -934,8 +940,12 @@ impl AcpClient {
                                     }
                                     "message_end" => {
                                         rjlog!("[ACP DEBUG] Message end");
-                                        // Don't send Finish here — this is per-message, not end of turn.
-                                        // The true end of turn is signaled by stopReason in the prompt response.
+                                        // Same as agent_message_end: signal the frontend to start a
+                                        // new message bubble so the next message_chunk doesn't append.
+                                        let _ = app_clone2.emit(&event_name, &AcpMessage::new(
+                                            &session_id_clone, "0", "0",
+                                            AcpEvent::Start
+                                        ));
                                     }
                                     "usage_update" => {
                                         let used = update.params.update.used.unwrap_or(0);
