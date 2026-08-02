@@ -590,6 +590,13 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
 
   switch (p.type) {
     case "start":
+      // Save previous agent message before resetting activeContent.
+      // Gemini sends multiple messages per turn; agent_message_end emits
+      // Start to begin a new bubble. Without saving here, only the last
+      // message would be persisted (or none if activeContent was reset).
+      if (state.activeContent && sessionId) {
+        saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
+      }
       state.messages.push({ role: "agent", content: "", startTime: Date.now(), isProcessing: true });
       state.activeThinking = ""; state.activeContent = ""; state.thoughtDuration = "";
       state.thinkingStartTime = 0;
@@ -868,6 +875,12 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         }
       }
       state.turnStartTime = 0;
+      // Save the last agent message if activeContent is non-empty.
+      // For Gemini, earlier messages are already saved in the start handler
+      // (triggered by agent_message_end → Start). The last message may or may
+      // not have a trailing agent_message_end; if it does, activeContent is
+      // empty here (already saved). If not, activeContent holds the last
+      // message and we save it now.
       if (sessionId && state.activeContent) {
         saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
       }

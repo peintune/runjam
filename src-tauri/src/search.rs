@@ -43,6 +43,8 @@ fn get_conn() -> Result<Connection> {
 
 pub fn init_db() {
     if let Ok(conn) = get_conn() {
+        // Table creation — each group is independent so a failure in one
+        // (e.g. ALTER TABLE on an existing column) doesn't block the rest.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -54,21 +56,29 @@ pub fn init_db() {
                 pid INTEGER,
                 pinned INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-            );
-            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS title TEXT;
-            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS directory TEXT;
-            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pinned INTEGER DEFAULT 0;
-            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS archived INTEGER DEFAULT 0;
-            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS acp_session_id TEXT DEFAULT '';
-            CREATE TABLE IF NOT EXISTS messages (
+            );"
+        ).ok();
+        // Schema migrations (ignore errors if column already exists)
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN directory TEXT", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN acp_session_id TEXT DEFAULT ''", []).ok();
+        // Messages table
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
-            CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
-            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);"
+        ).ok();
+        // FTS5 virtual table + triggers (separate batch so earlier failures
+        // don't prevent search from working)
+        let fts_result = conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 session_id, role, content,
                 content=messages, content_rowid=id
             );
@@ -79,8 +89,11 @@ pub fn init_db() {
             CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
                 INSERT INTO messages_fts(messages_fts, rowid, session_id, role, content)
                 VALUES ('delete', old.id, old.session_id, old.role, old.content);
-            END;",
-        ).ok();
+            END;"
+        );
+        if let Err(e) = fts_result {
+            rjlog!("[DB ERROR] FTS5 init failed: {}", e);
+        }
     }
 }
 
@@ -95,6 +108,9 @@ pub fn save_message(session_id: &str, role: &str, content: &str) {
 
 pub fn search_messages(query: &str, limit: usize) -> Vec<SearchResult> {
     let conn = match get_conn() { Ok(c) => c, Err(_) => return vec![] };
+    // Wrap the query in double quotes so FTS5 treats it as a string literal
+    // (prevents *, :, "" etc. from being interpreted as FTS5 syntax).
+    let safe_query = format!("\"{}\"", query.replace("\"", "\"\""));
     let mut stmt = match conn.prepare(
         "SELECT m.session_id, m.role, m.content, m.created_at
          FROM messages_fts fts
@@ -102,9 +118,9 @@ pub fn search_messages(query: &str, limit: usize) -> Vec<SearchResult> {
          WHERE messages_fts MATCH ?1
          ORDER BY rank
          LIMIT ?2"
-    ) { Ok(s) => s, Err(_) => return vec![] };
+    ) { Ok(s) => s, Err(e) => { rjlog!("[SEARCH ERROR] prepare failed: {}", e); return vec![]; } };
 
-    let results = stmt.query_map(params![query, limit as i64], |row| {
+    let results = stmt.query_map(params![safe_query, limit as i64], |row| {
         Ok(SearchResult {
             session_id: row.get(0)?,
             role: row.get(1)?,
@@ -115,7 +131,7 @@ pub fn search_messages(query: &str, limit: usize) -> Vec<SearchResult> {
 
     match results {
         Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(_) => vec![],
+        Err(e) => { rjlog!("[SEARCH ERROR] query failed: {}", e); vec![] }
     }
 }
 
