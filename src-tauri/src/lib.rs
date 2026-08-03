@@ -21,6 +21,7 @@ use session::runner::SessionManager;
 use state::AppState;
 use proxy::ProxyState;
 use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

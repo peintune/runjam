@@ -84,7 +84,7 @@ pub fn record_usage(
     cost_estimate: f64,
     cached_tokens: i64,
 ) {
-    let id = format!("tu_{}", Local::now().timestamp_nanos());
+    let id = format!("tu_{}", Local::now().timestamp_nanos_opt().unwrap_or(0));
     let now = Local::now().to_rfc3339();
     conn.execute(
         "INSERT INTO token_usage (id, session_id, model, input_tokens, output_tokens, cost_estimate, cached_tokens, recorded_at)
