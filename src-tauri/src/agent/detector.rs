@@ -67,6 +67,47 @@ fn home_dir() -> Option<PathBuf> {
     directories::UserDirs::new().map(|d| d.home_dir().to_path_buf())
 }
 
+/// Read version from a package's package.json instead of running --version.
+fn version_from_package(bin_dir: &std::path::Path, scope: &str, pkg: &str) -> Option<String> {
+    // npm global layout: <node_dir>/bin/claude (Unix) or <node_dir>/claude.exe (Windows)
+    // with <node_dir>/node_modules/<scope>/<pkg>/package.json
+    // Try bin_dir first, then its parent (covers both layouts)
+    for dir in [bin_dir, &bin_dir.parent().unwrap_or(bin_dir)] {
+        let pkg_json = dir.join("node_modules").join(scope).join(pkg).join("package.json");
+        if let Ok(content) = std::fs::read_to_string(&pkg_json) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(ver) = json.get("version").and_then(|v| v.as_str()) {
+                    return Some(format!("v{}", ver));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// On Windows, standalone .exe binaries for claude/codex statically link
+/// ConPTY APIs (ClosePseudoConsole/ResizePseudoConsole) which only exist on
+/// Windows 10 1809+. Running --version triggers a system dialog on older
+/// Windows. Fall back to reading version from package.json instead.
+fn safe_get_version(agent_id: &str, bin_path: &str, bin_dir: &std::path::Path, path_env: &str) -> Option<String> {
+    if cfg!(target_os = "windows") {
+        match agent_id {
+            "claude-code" => {
+                if let Some(v) = version_from_package(bin_dir, "@anthropic-ai", "claude-code") {
+                    return Some(v);
+                }
+            }
+            "codex-cli" => {
+                if let Some(v) = version_from_package(bin_dir, "@openai", "codex") {
+                    return Some(v);
+                }
+            }
+            _ => {}
+        }
+    }
+    get_version(bin_path, path_env)
+}
+
 /// Scan PATH for installed AI coding agents.
 pub fn detect_agents() -> Vec<Agent> {
     let mut agents = Agent::builtin_agents();
@@ -79,6 +120,7 @@ pub fn detect_agents() -> Vec<Agent> {
             "gemini-cli" => "gemini",
             _ => continue,
         };
+        let agent_id = agent.id.clone();
 
         // Also check RunJam's bundled Node.js global bin dir and common npm dirs
         let extra_paths: Vec<std::path::PathBuf> = vec![
@@ -93,7 +135,12 @@ pub fn detect_agents() -> Vec<Agent> {
         for dir in &extra_paths {
             let bin_path = dir.join(bin_name);
             if bin_path.exists() {
-                let version = get_version(&bin_path.to_string_lossy(), &enhanced_path);
+                let version = safe_get_version(
+                    &agent_id,
+                    &bin_path.to_string_lossy(),
+                    dir,
+                    &enhanced_path,
+                );
                 agent.install_path = Some(bin_path.to_string_lossy().to_string());
                 agent.version = version;
                 agent.installed = true;
@@ -119,9 +166,10 @@ pub fn detect_agents() -> Vec<Agent> {
                     .map(|s| s.trim().to_string());
 
                 let version = if let Some(ref p) = path {
-                    get_version(p, &enhanced_path)
+                    let dir = std::path::Path::new(p).parent().unwrap_or_else(|| std::path::Path::new("")).to_path_buf();
+                    safe_get_version(&agent_id, p, &dir, &enhanced_path)
                 } else {
-                    get_version(bin_name, &enhanced_path)
+                    None
                 };
 
                 agent.install_path = path;

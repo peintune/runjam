@@ -6,6 +6,7 @@ import Sidebar from "./Sidebar.vue";
 import SessionView from "./SessionView.vue";
 import WorkspacePanel from "./WorkspacePanel.vue";
 import SearchButton from "./SearchButton.vue";
+import WindowControls from "./WindowControls.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
@@ -21,6 +22,11 @@ const isWorkspaceMode = ref(false);
 
 const store = useWorkspaceStore();
 const { layout, switchDirectory, saveLayout } = useSessionLayout();
+
+/** macOS keeps native traffic lights (titleBarStyle: Overlay); other platforms
+ *  use decorations:false + our custom title bar, so no traffic-light spacer. */
+const isMac =
+  typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent);
 
 /** Get directoryId from current active session */
 function currentDirectoryId(): string | null {
@@ -110,7 +116,8 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
       class="flex-shrink-0 h-8 flex items-center px-4 w-full border-b border-gray-200/60 bg-white/90 backdrop-blur-sm z-30"
       style="-webkit-app-region: drag"
     >
-      <div class="w-[70px] flex-shrink-0" />
+      <!-- macOS traffic-light spacer (hidden on Windows/Linux custom title bar) -->
+      <div v-if="isMac" class="w-[70px] flex-shrink-0" />
 
       <!-- Sidebar toggle: hide when pinned, show when hidden -->
       <button
@@ -159,6 +166,9 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
       >
         <Terminal :size="18" />
       </button>
+
+      <!-- Window controls (Windows/Linux: replaces native title bar buttons) -->
+      <WindowControls />
     </div>
 
     <!-- ═══ Sidebar Overlay: slides in from left when hovering toggle ═══ -->

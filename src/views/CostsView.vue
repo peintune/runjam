@@ -3,6 +3,7 @@ import { onMounted, computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useCostStore } from "../stores/useCostStore";
 import { BarChart3, Zap, Folder, Calendar, MessageSquare, ArrowLeft, Database } from "lucide-vue-next";
+import WindowControls from "../components/WindowControls.vue";
 
 const router = useRouter();
 const store = useCostStore();
@@ -110,7 +111,11 @@ async function changeDays(d: number) {
 
 <template>
   <div class="flex flex-col h-screen bg-[#f8f9fb]">
-    <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full" style="-webkit-app-region: drag" />
+    <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full relative" style="-webkit-app-region: drag">
+      <div class="absolute right-0 top-0">
+        <WindowControls />
+      </div>
+    </div>
     <div class="flex-1 overflow-auto">
       <div class="max-w-4xl mx-auto p-8">
         <!-- Header -->

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from "vue-router";
 import { ArrowLeft, Bot, Cpu, Settings } from "lucide-vue-next";
+import WindowControls from "./WindowControls.vue";
 
 const router = useRouter();
 const route = useRoute();
@@ -15,7 +16,11 @@ const navItems = [
 <template>
   <div class="flex flex-col h-screen bg-[#f8f9fb]">
     <!-- drag region -->
-    <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full" style="-webkit-app-region: drag" />
+    <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full relative" style="-webkit-app-region: drag">
+      <div class="absolute right-0 top-0">
+        <WindowControls />
+      </div>
+    </div>
 
     <!-- body -->
     <div class="flex flex-1 min-h-0">

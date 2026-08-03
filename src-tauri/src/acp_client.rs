@@ -302,10 +302,19 @@ fn resolve_agent_paths(
             std::fs::create_dir_all(&install_dir).ok();
 
             let pkg_dir = install_dir.join("node_modules").join("@zed-industries").join(format!("codex-acp-{}", os_arch));
-            // Prefer .cmd wrapper — the standalone .exe statically links
-            // ConPTY APIs (ResizePseudoConsole) missing on older Windows.
-            let binary_name = if cfg!(target_os = "windows") { "codex-acp.cmd" } else { "codex-acp" };
-            let binary_path = pkg_dir.join("bin").join(binary_name);
+            // npm's bin key is "codex-acp-win32-x64" (etc.), not "codex-acp".
+            // The .cmd wrapper lives in node_modules/.bin/, not pkg/bin/.
+            let bin_entry_name = format!("codex-acp-{}", os_arch);
+            let cmd_path = install_dir.join("node_modules").join(".bin").join(format!("{}.cmd", bin_entry_name));
+            let exe_path = pkg_dir.join("bin").join(format!("{}.exe", bin_entry_name));
+
+            let binary_path = if cfg!(target_os = "windows") {
+                // Prefer .cmd wrapper — the standalone .exe statically links
+                // ConPTY APIs (ResizePseudoConsole) missing on older Windows.
+                if cmd_path.exists() { cmd_path.clone() } else { exe_path.clone() }
+            } else {
+                pkg_dir.join("bin").join("codex-acp")
+            };
 
             if !binary_path.exists() {
                 rjlog!("[ACP] Installing {}...", pkg_name);

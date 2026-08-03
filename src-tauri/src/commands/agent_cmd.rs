@@ -375,10 +375,40 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
             if p.exists() { Some(p) } else { None }
         };
         let (install_path, version) = if let Some(ref binary) = expected_binary {
-            let ver = detector::get_version(
-                &binary.to_string_lossy(),
-                &path_env,
-            );
+            let ver = if cfg!(target_os = "windows") {
+                // claude.exe / codex.exe / gemini.exe are standalone Node.js
+                // binaries that statically link ConPTY APIs
+                // (ClosePseudoConsole/ResizePseudoConsole, Win10 1809+).
+                // Running --version triggers a system error dialog on older
+                // Windows. Read version from package.json instead.
+                let (scope, pkg) = match agent_id.as_str() {
+                    "claude-code" => ("@anthropic-ai", "claude-code"),
+                    "codex-cli" => ("@openai", "codex"),
+                    "gemini-cli" => ("@google", "gemini-cli"),
+                    _ => unreachable!(),
+                };
+                let pkg_json = std::path::Path::new(&node_bin_dir)
+                    .join("node_modules")
+                    .join(scope)
+                    .join(pkg)
+                    .join("package.json");
+                if let Ok(content) = std::fs::read_to_string(&pkg_json) {
+                    serde_json::from_str::<serde_json::Value>(&content)
+                        .ok()
+                        .and_then(|json| {
+                            json.get("version")
+                                .and_then(|v| v.as_str())
+                                .map(|v| format!("v{}", v))
+                        })
+                } else {
+                    None
+                }
+            } else {
+                detector::get_version(
+                    &binary.to_string_lossy(),
+                    &path_env,
+                )
+            };
             (Some(binary.to_string_lossy().to_string()), ver)
         } else {
             // Fallback to full PATH scan (handles unusual npm prefixes)

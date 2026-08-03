@@ -158,6 +158,21 @@ pub fn run() {
                 let _ = commands::llama_cmd::stop_llama_server();
             }
         })
+        .setup(|app| {
+            // `titleBarStyle: Overlay` + `hiddenTitle` in tauri.conf.json are
+            // macOS-only. On Windows they are ignored, so the app would show a
+            // native title bar on top of our custom in-app nav bar (the h-8
+            // `data-tauri-drag-region` strip), leaving a big empty gap between
+            // the title bar and the content. Remove the window decorations on
+            // non-macOS so the custom title bar takes over instead.
+            #[cfg(not(target_os = "macos"))]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_decorations(false);
+                }
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
