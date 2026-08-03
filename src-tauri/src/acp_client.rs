@@ -302,7 +302,9 @@ fn resolve_agent_paths(
             std::fs::create_dir_all(&install_dir).ok();
 
             let pkg_dir = install_dir.join("node_modules").join("@zed-industries").join(format!("codex-acp-{}", os_arch));
-            let binary_name = if cfg!(target_os = "windows") { "codex-acp.exe" } else { "codex-acp" };
+            // Prefer .cmd wrapper — the standalone .exe statically links
+            // ConPTY APIs (ResizePseudoConsole) missing on older Windows.
+            let binary_name = if cfg!(target_os = "windows") { "codex-acp.cmd" } else { "codex-acp" };
             let binary_path = pkg_dir.join("bin").join(binary_name);
 
             if !binary_path.exists() {
@@ -334,7 +336,7 @@ fn resolve_agent_paths(
                 .map(|p| p.to_path_buf())
                 .unwrap_or_default();
             let bin_candidates: &[&str] = if cfg!(target_os = "windows") {
-                &["gemini.exe", "gemini-cli.exe", "gemini.cmd", "gemini-cli.cmd"]
+                &["gemini.cmd", "gemini-cli.cmd", "gemini.exe", "gemini-cli.exe"]
             } else {
                 &["gemini", "gemini-cli"]
             };

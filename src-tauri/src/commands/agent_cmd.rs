@@ -284,7 +284,9 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
     let install_cmd = match agent_id.as_str() {
         "claude-code" => vec!["install", "-g", "@anthropic-ai/claude-code"],
         "codex-cli" => vec!["install", "-g", "@openai/codex"],
-        "gemini-cli" => vec!["install", "-g", "@google/gemini-cli"],
+        // --force helps with EBUSY on Windows where node-pty native
+        // modules are locked by Defender/antivirus during install.
+        "gemini-cli" => vec!["install", "-g", "--force", "@google/gemini-cli"],
         _ => return Err(format!("Unknown agent: {}", agent_id)),
     };
 
@@ -294,17 +296,51 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_bin, install_cmd.join(" ")) }),
     );
 
-    let output = hidden_command(&npm_bin)
-        .args(&install_cmd)
-        .env("PATH", &path_env)
-        .output()
-        .map_err(|e| format!("Failed to run installer: {}", e))?;
+    // Retry up to 3 times on EBUSY/file-lock errors (common on Windows
+    // when Defender/antivirus locks native modules like node-pty).
+    let mut output = None;
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        match hidden_command(&npm_bin)
+            .args(&install_cmd)
+            .env("PATH", &path_env)
+            .output()
+        {
+            Ok(out) => {
+                if out.status.success() {
+                    output = Some(out);
+                    break;
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                if stderr.contains("EBUSY") || stderr.contains("resource busy") {
+                    last_err = stderr.to_string();
+                    if attempt < 3 {
+                        let _ = app.emit(
+                            &event_name,
+                            serde_json::json!({ "status": "installing", "message": format!("Retrying ({}/3)...", attempt + 1) }),
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        continue;
+                    }
+                }
+                return Err(format!("Installation failed: {}", stderr));
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                if attempt < 3 {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    continue;
+                }
+                return Err(format!("Failed to run installer: {}", e));
+            }
+        }
+    }
+    let output = output.ok_or_else(|| format!("Installation failed after 3 attempts: {}", last_err))?;
 
-    if output.status.success() {
-        let _ = app.emit(
-            &event_name,
-            serde_json::json!({ "status": "done", "message": "Installation complete" }),
-        );
+    let _ = app.emit(
+        &event_name,
+        serde_json::json!({ "status": "done", "message": "Installation complete" }),
+    );
 
         let bin_name = match agent_id.as_str() {
             "claude-code" => "claude",
@@ -318,9 +354,12 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         // whether it's bundled, nvm, or system Node.js.
         let bin_candidates: &[&str] = if cfg!(target_os = "windows") {
             match bin_name {
-                "claude" => &["claude.exe", "claude.cmd"],
-                "codex" => &["codex.exe", "codex.cmd"],
-                "gemini" => &["gemini.exe", "gemini-cli.exe", "gemini.cmd", "gemini-cli.cmd"],
+                // Prefer .cmd wrapper over .exe — the standalone .exe bundles
+                // a Node.js runtime that statically links ClosePseudoConsole
+                // (Win10 1809+), causing load failure on older Windows.
+                "claude" => &["claude.cmd", "claude.exe"],
+                "codex" => &["codex.cmd", "codex.exe"],
+                "gemini" => &["gemini.cmd", "gemini-cli.cmd", "gemini.exe", "gemini-cli.exe"],
                 _ => &[],
             }
         } else {
@@ -409,14 +448,6 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
             status,
             last_tested_at: Some(now),
         })
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = app.emit(
-            &event_name,
-            serde_json::json!({ "status": "error", "message": stderr }),
-        );
-        Err(format!("Installation failed: {}", stderr))
-    }
 }
 
 /// Given an agent binary's full install path, resolve the npm binary from the

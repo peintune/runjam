@@ -9,6 +9,15 @@ export interface FileEntry {
   extension: string;
 }
 
+export interface FileSearchResult {
+  path: string;
+  name: string;
+  relative_path: string;
+  match_type: string; // "filename" | "content"
+  line_number: number | null;
+  line_content: string | null;
+}
+
 export async function listDir(path: string): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("list_dir", { path });
 }
@@ -23,4 +32,8 @@ export async function writeFile(path: string, content: string): Promise<void> {
 
 export async function readFileBytes(path: string): Promise<number[]> {
   return invoke<number[]>("read_file_bytes", { path });
+}
+
+export async function searchFiles(rootPath: string, query: string, limit?: number): Promise<FileSearchResult[]> {
+  return invoke<FileSearchResult[]>("search_files", { rootPath, query, limit });
 }

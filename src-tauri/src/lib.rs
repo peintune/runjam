@@ -125,6 +125,7 @@ pub fn run() {
             commands::fs_cmd::read_file_text,
             commands::fs_cmd::write_file,
             commands::fs_cmd::read_file_bytes,
+            commands::fs_cmd::search_files,
             commands::cost_cmd::get_cost_summary,
             commands::cost_cmd::get_cost_by_agent,
             commands::cost_cmd::get_cost_by_day,
