@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox OFF — Tauri needs shell, child processes (node.js),
+         and unrestricted FS access for agent CLIs. If you later enroll in
+         the Apple Developer Program for notarization, re-enable sandbox
+         and switch to fine-grained entitlements instead. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Required by V8 (embedded Node.js) and Tauri WebView on Apple Silicon
+         for writable / executable memory regions. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Allow loading unsigned frameworks / binaries bundled inside the app
+         (e.g. nodejs/, binaries/, agent CLIs installed to Resources). -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Allow spawning helper processes (agent CLIs, terminal shells, npm,
+         cargo, etc.). Without this, `--target aarch64-apple-darwin` builds
+         are flagged "damaged" by Gatekeeper on first launch attempt. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Outbound + inbound network (AI agent APIs, local proxy for model
+         routing). -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!-- File access required for "Open Folder", file tree editor, and
+         build tools writing to project dirs. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>

@@ -65,6 +65,43 @@ jobs:
         with:
           args: --target x86_64-apple-darwin
 
+      - name: Deep-sign embedded binaries (macOS x64)
+        run: |
+          APP_DIR="src-tauri/target/x86_64-apple-darwin/release/bundle/macos/RunJam.app"
+          if [ ! -d "$APP_DIR" ]; then echo "App bundle not found at $APP_DIR"; exit 1; fi
+          # 1) Ad-hoc sign every Mach-O binary inside Resources/ (nodejs/, binaries/, agents)
+          #    Apple Silicon Gatekeeper requires ALL embedded executables signed or the
+          #    whole app is flagged "damaged".
+          find "$APP_DIR/Contents/Resources" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 | \
+            xargs -0 -I{} codesign --force --deep --sign - --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" 2>/dev/null || true
+          # 2) Re-sign the frameworks directory
+          find "$APP_DIR/Contents/Frameworks" -type f -name "*.dylib" -o -name "*.framework" 2>/dev/null | \
+            xargs -I{} codesign --force --deep --sign - --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" 2>/dev/null || true
+          # 3) Re-sign the main app with entitlements (overwrite Tauri's default signature
+          #    which misses entitlements on unsigned ad-hoc builds)
+          ENTITLEMENTS="$GITHUB_WORKSPACE/src-tauri/RunJam.entitlements"
+          if [ -f "$ENTITLEMENTS" ]; then
+            codesign --force --deep --sign - --timestamp=none \
+              --entitlements "$ENTITLEMENTS" \
+              --preserve-metadata=identifier,flags \
+              "$APP_DIR"
+          else
+            codesign --force --deep --sign - --timestamp=none \
+              --preserve-metadata=identifier,entitlements,flags \
+              "$APP_DIR"
+          fi
+          # 4) Verify
+          codesign --verify --deep --strict "$APP_DIR" && echo "✅ codesign verify passed"
+          # 5) Rebuild DMG with the newly-signed .app
+          which create-dmg >/dev/null 2>&1 || npm install -g create-dmg 2>/dev/null || true
+          DMG_OUT="src-tauri/target/x86_64-apple-darwin/release/bundle/dmg"
+          mkdir -p "$DMG_OUT"
+          rm -f "$DMG_OUT"/*.dmg
+          if command -v hdiutil >/dev/null 2>&1; then
+            hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
+              "$DMG_OUT/RunJam_0.1.0_x64.dmg"
+          fi
+
       - name: Upload macOS Intel artifacts
         uses: actions/upload-artifact@v5
         with:
@@ -91,6 +128,66 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deep-sign embedded binaries (macOS ARM)
+        run: |
+          APP_DIR="src-tauri/target/release/bundle/macos/RunJam.app"
+          if [ ! -d "$APP_DIR" ]; then echo "App bundle not found at $APP_DIR"; exit 1; fi
+          # 1) Ad-hoc sign every Mach-O binary inside Resources/ (nodejs/, binaries/, agents).
+          #    On Apple Silicon this is MANDATORY — any unsigned executable in the bundle
+          #    triggers Gatekeeper's "is damaged and can't be opened" on launch.
+          find "$APP_DIR/Contents/Resources" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 | \
+            xargs -0 -I{} codesign --force --deep --sign - --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" 2>/dev/null || true
+          # 2) Frameworks
+          find "$APP_DIR/Contents/Frameworks" -type f -name "*.dylib" -o -name "*.framework" 2>/dev/null | \
+            xargs -I{} codesign --force --deep --sign - --timestamp=none --preserve-metadata=identifier,entitlements,flags "{}" 2>/dev/null || true
+          # 3) Re-sign main app with our entitlements.
+          ENTITLEMENTS="$GITHUB_WORKSPACE/src-tauri/RunJam.entitlements"
+          if [ -f "$ENTITLEMENTS" ]; then
+            codesign --force --deep --sign - --timestamp=none \
+              --entitlements "$ENTITLEMENTS" \
+              --preserve-metadata=identifier,flags \
+              "$APP_DIR"
+          else
+            codesign --force --deep --sign - --timestamp=none \
+              --preserve-metadata=identifier,entitlements,flags \
+              "$APP_DIR"
+          fi
+          # 4) Verify signature & spctl assessment
+          codesign --verify --deep --strict "$APP_DIR" && echo "✅ codesign verify passed"
+          # NOTE: spctl --assess will FAIL on ad-hoc signed builds (-s "-")
+          # because ad-hoc signatures have no certificate chain. That's expected.
+          # It will pass once you add Developer ID signing + notarization (step below).
+          # To let users bypass: xattr -rd com.apple.quarantine /Applications/RunJam.app
+
+          # 5) Rebuild DMG so it contains the newly re-signed app.
+          DMG_OUT="src-tauri/target/release/bundle/dmg"
+          mkdir -p "$DMG_OUT"
+          rm -f "$DMG_OUT"/*.dmg
+          if command -v hdiutil >/dev/null 2>&1; then
+            hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
+              "$DMG_OUT/RunJam_0.1.0_aarch64.dmg"
+          fi
+
+      # Optional — Developer ID + Notarization (removes the need for xattr workaround).
+      # Uncomment and add the following GitHub Repo Secrets to enable:
+      #   APPLE_CERTIFICATE        → base64-encoded .p12
+      #   APPLE_CERTIFICATE_PWD    → .p12 password
+      #   APPLE_ID                 → your Apple ID email
+      #   APPLE_APP_PASSWORD       → app-specific password
+      #   APPLE_TEAM_ID            → 10-char Team ID
+      # - name: Notarize macOS ARM
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   env:
+      #     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #     APPLE_CERTIFICATE_PWD: ${{ secrets.APPLE_CERTIFICATE_PWD }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #   run: |
+      #     # import certificate into keychain, sign with Developer ID, then
+      #     # xcrun notarytool submit --wait, then xcrun stapler staple the dmg.
+      #     echo "See tauri.app docs for full notarization script"
 
       - name: Upload macOS ARM artifacts
         uses: actions/upload-artifact@v5
