@@ -9,6 +9,8 @@ pub(crate) fn get_enhanced_path() -> String {
 
     if let Some(home) = home_dir() {
         paths.push(home.join(".nvm").join("versions").join("node"));
+        paths.push(home.join(".local").join("nodejs"));
+        paths.push(home.join(".local").join("bin"));
         paths.push(home.join(".npm-global").join("bin"));
         paths.push(home.join(".yarn").join("bin"));
         paths.push(home.join(".cargo").join("bin"));
@@ -37,15 +39,15 @@ pub(crate) fn get_enhanced_path() -> String {
                     let path = entry.path();
                     if path.is_dir() {
                         if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-                            if dir_name.starts_with("v") {
-                                let bin_path = path.join("bin");
-                                if bin_path.exists() {
-                                    if !enhanced.is_empty() {
-                                        enhanced.push(':');
+                            if dir_name.starts_with("v") || dir_name.starts_with("node-") {
+                                    let bin_path = path.join("bin");
+                                    if bin_path.exists() {
+                                        if !enhanced.is_empty() {
+                                            enhanced.push(':');
+                                        }
+                                        enhanced.push_str(bin_path.to_string_lossy().as_ref());
                                     }
-                                    enhanced.push_str(bin_path.to_string_lossy().as_ref());
                                 }
-                            }
                         }
                     }
                 }
@@ -123,12 +125,29 @@ pub fn detect_agents() -> Vec<Agent> {
         let agent_id = agent.id.clone();
 
         // Also check RunJam's bundled Node.js global bin dir and common npm dirs
-        let extra_paths: Vec<std::path::PathBuf> = vec![
+        let mut extra_paths: Vec<std::path::PathBuf> = vec![
             // RunJam auto-downloaded Node.js
             dirs_data_dir().join("nodejs").join("node-v22.12.0").join("bin"),
             // Common npm global dirs
             home_dir().unwrap_or_default().join(".npm-global").join("bin"),
+            // ~/.local/bin (common user-local install location)
+            home_dir().unwrap_or_default().join(".local").join("bin"),
         ];
+        // Scan ~/.local/nodejs/*/bin for versioned standalone Node.js installs
+        if let Some(home) = home_dir() {
+            let local_nodejs = home.join(".local").join("nodejs");
+            if let Ok(entries) = std::fs::read_dir(&local_nodejs) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let bin_path = path.join("bin");
+                        if bin_path.exists() {
+                            extra_paths.push(bin_path);
+                        }
+                    }
+                }
+            }
+        }
         let mut found = false;
 
         // Check extra paths
