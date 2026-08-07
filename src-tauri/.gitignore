@@ -9,3 +9,8 @@
 # Bundled Node.js (downloaded by build.rs)
 /nodejs/
 
+# LLD linker (copied from Rust toolchain; used as MSVC link.exe replacement)
+/lld-link.exe
+/link-wrapper.bat
+/lib-wrapper.bat
+
