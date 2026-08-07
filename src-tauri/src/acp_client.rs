@@ -367,7 +367,13 @@ fn resolve_agent_paths(
                 if let Ok(out) = npm_prefix_output {
                     let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     if !prefix.is_empty() {
-                        let prefix_bin = std::path::PathBuf::from(&prefix);
+                        // on Unix, npm global binaries live in  '<prefix>/bin/';
+                        // on Windows, they live in '<prefix>/'.
+                        let prefix_bin = if cfg!(target_os = "windows") {
+                            std::path::PathBuf::from(&prefix)
+                        } else {
+                            std::path::PathBuf::from(&prefix).join("bin")
+                        };
                         for name in bin_candidates.iter() {
                             let candidate = prefix_bin.join(name);
                             rjlog!("[ACP DEBUG] Gemini: checking npm prefix candidate: {:?}", candidate);
