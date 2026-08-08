@@ -346,6 +346,41 @@ pub(crate) fn find_bundled_claude_acp() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Locate the pre-bundled Claude native binary from the platform-specific
+/// `@anthropic-ai/claude-agent-sdk-{os}-{arch}` package shipped in app
+/// resources. This is the binary that `claude-agent-acp` spawns under the
+/// hood; setting `CLAUDE_CODE_EXECUTABLE` to it bypasses the SDK's runtime
+/// resolution (which relies on `import.meta.resolve` and can fail when the
+/// bundled Node.js version or node_modules layout differs from what the SDK
+/// expects).
+fn find_bundled_claude_sdk_binary() -> Option<std::path::PathBuf> {
+    // Reuse the same npm {os}-{arch} suffix mapping as codex.
+    let platform_suffix = get_codex_platform(); // e.g. "darwin-x64"
+    let bin_name = if cfg!(target_os = "windows") { "claude.exe" } else { "claude" };
+
+    // Derive from the bundled ACP entry point:
+    //   .../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js
+    //   → .../node_modules/@anthropic-ai/claude-agent-sdk-{suffix}/{bin_name}
+    let entry = find_bundled_claude_acp()?;
+    // entry = .../node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js
+    let node_modules = entry
+        .parent()?                    // .../dist
+        .parent()?                     // .../claude-agent-acp
+        .parent()?                     // .../@agentclientprotocol
+        .parent()?;                    // .../node_modules
+    let bin = node_modules
+        .join("@anthropic-ai")
+        .join(format!("claude-agent-sdk-{}", platform_suffix))
+        .join(bin_name);
+    if bin.exists() {
+        rjlog!("[ACP] Found bundled Claude SDK binary: {:?}", bin);
+        Some(bin)
+    } else {
+        rjlog!("[ACP] Bundled Claude SDK binary not found at: {:?}", bin);
+        None
+    }
+}
+
 /// Resolve the command path, args, and working directory for an agent,
 /// using RunJam's bundled Node.js and installing ACP packages to the
 /// RunJam data dir as needed.
@@ -646,6 +681,9 @@ impl AcpClient {
             .unwrap_or_else(|_| package_dir.to_string());
         let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
+        // Ensure the working directory exists — Command::current_dir fails
+        // with ENOENT ("No such file or directory") if it doesn't.
+        std::fs::create_dir_all(&cwd).ok();
 
         let mut cmd = hidden_command(&cmd_path);
         for arg in args {
@@ -683,6 +721,16 @@ impl AcpClient {
                     if p.exists() { return Some(p.to_string_lossy().to_string()); }
                 }
                 None
+            });
+            // Fall back to the pre-bundled SDK native binary. When using the
+            // bundled claude-agent-acp there is no standalone `claude` CLI —
+            // the binary lives inside the platform-specific SDK package.
+            // Setting CLAUDE_CODE_EXECUTABLE to it bypasses the SDK's own
+            // import.meta.resolve-based lookup, which can fail in the
+            // bundled Node.js environment.
+            let claude_bin = claude_bin.or_else(|| {
+                find_bundled_claude_sdk_binary()
+                    .map(|p| p.to_string_lossy().to_string())
             });
             if let Some(ref bin) = claude_bin {
                 rjlog!("[ACP] Setting CLAUDE_CODE_EXECUTABLE={}", bin);

@@ -32,10 +32,12 @@ pub async fn start_session(
 
     // Default to ~/.runjam/session/{id} when no directory selected
     let dir = directory.unwrap_or_else(|| {
-        let path = default_session_dir().join(&id);
-        std::fs::create_dir_all(&path).ok();
-        path.to_string_lossy().to_string()
+        default_session_dir().join(&id).to_string_lossy().to_string()
     });
+    // Always ensure the session working directory exists — the frontend may
+    // pass a path that hasn't been created yet, and Command::current_dir fails
+    // with ENOENT if the directory is missing.
+    std::fs::create_dir_all(&dir).ok();
 
     let session = {
         let mut mgr = manager.lock().map_err(|e| e.to_string())?;

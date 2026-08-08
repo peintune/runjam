@@ -37,6 +37,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicit platform target so that `pretauri` sync-resources.mjs
+          # and `beforeBuildCommand` preinstall-claude-acp.mjs (both spawned
+          # inside tauri-action) pick the right host==target platform
+          # instead of relying on the host's process.platform (which is
+          # fine here on x64 Windows, but set for consistency).
+          TAURI_ENV_PLATFORM_TARGET: x86_64-pc-windows-msvc
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v5
@@ -73,6 +79,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CRITICAL: tauri-action spawns `pretauri` sync-resources.mjs and
+          # `beforeBuildCommand` preinstall-claude-acp.mjs as subprocesses.
+          # The macOS x64 job runs on Apple Silicon runners — without these
+          # env vars, both scripts fall back to `process.platform/arch`
+          # (darwin arm64) and bundle the WRONG platform binaries
+          # (llama-server macos-aarch64 instead of macos-x86_64, and the
+          # wrong claude-agent-sdk optional dependency).
+          TAURI_ENV_PLATFORM_TARGET: x86_64-apple-darwin
         with:
           args: --target x86_64-apple-darwin
 
@@ -145,6 +159,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicit target so `pretauri` and `beforeBuildCommand` scripts
+          # inside tauri-action don't depend on process.platform/arch
+          # (matches host here but set for robustness & consistency).
+          TAURI_ENV_PLATFORM_TARGET: aarch64-apple-darwin
 
       - name: Deep-sign embedded binaries (macOS ARM)
         run: |
