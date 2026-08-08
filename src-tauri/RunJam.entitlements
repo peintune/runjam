@@ -20,8 +20,8 @@
     <true/>
 
     <!-- Allow spawning helper processes (agent CLIs, terminal shells, npm,
-         cargo, etc.). Without this, `--target aarch64-apple-darwin` builds
-         are flagged "damaged" by Gatekeeper on first launch attempt. -->
+         cargo, etc.). Without this, ARM64 builds are flagged "damaged"
+         by Gatekeeper on first launch attempt. -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
 
