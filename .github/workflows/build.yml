@@ -27,6 +27,12 @@ jobs:
       - name: Install dependencies (npm)
         run: npm ci
 
+      - name: Prepare platform resources
+        run: node scripts/sync-resources.mjs
+        env:
+          TAURI_ENV_PLATFORM: windows
+          TAURI_ENV_ARCH: x86_64
+
       - name: Build Tauri (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -57,6 +63,11 @@ jobs:
 
       - name: Install dependencies (npm)
         run: npm ci
+
+      - name: Prepare platform resources
+        run: node scripts/sync-resources.mjs
+        env:
+          TAURI_ENV_PLATFORM_TARGET: x86_64-apple-darwin
 
       - name: Build Tauri (macOS Intel)
         uses: tauri-apps/tauri-action@v0
@@ -123,6 +134,12 @@ jobs:
 
       - name: Install dependencies (npm)
         run: npm ci
+
+      - name: Prepare platform resources
+        run: node scripts/sync-resources.mjs
+        env:
+          TAURI_ENV_PLATFORM: macos
+          TAURI_ENV_ARCH: aarch64
 
       - name: Build Tauri (macOS ARM)
         uses: tauri-apps/tauri-action@v0

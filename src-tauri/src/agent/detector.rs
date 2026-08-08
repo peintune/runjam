@@ -170,6 +170,30 @@ pub fn detect_agents() -> Vec<Agent> {
 
         if found { continue; }
 
+        // For claude, the pre-bundled ACP adapter (shipped in app resources)
+        // is enough — ACP mode runs via node + the bundled
+        // @agentclientprotocol/claude-agent-acp package, so the standalone
+        // `claude` CLI isn't required.
+        if agent.id == "claude-code" {
+            if let Some(entry) = crate::acp_client::find_bundled_claude_acp() {
+                let version = entry
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| std::fs::read_to_string(p.join("package.json")).ok())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|j| {
+                        j.get("version")
+                            .and_then(|v| v.as_str())
+                            .map(|s| format!("v{}", s))
+                    });
+                agent.install_path = Some(entry.to_string_lossy().to_string());
+                agent.version = version;
+                agent.installed = true;
+                agent.status = "installed".to_string();
+                continue;
+            }
+        }
+
         // Fallback to system PATH (using enhanced_path that includes Homebrew, nvm, etc.)
         let which = if cfg!(target_os = "windows") {
             hidden_command("where").arg(bin_name).output()

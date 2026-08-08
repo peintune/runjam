@@ -283,7 +283,7 @@ fn find_agent_binary(app: &AppHandle, candidates: &[&str]) -> Option<String> {
 /// Locate the pre-bundled claude-agent-acp entry point (dist/index.js) shipped
 /// in the app resources. Returns None when running from a source tree without
 /// the pre-install step or in a non-bundled dev build.
-fn find_bundled_claude_acp() -> Option<std::path::PathBuf> {
+pub(crate) fn find_bundled_claude_acp() -> Option<std::path::PathBuf> {
     let rel = std::path::PathBuf::from("acp")
         .join("claude-agent-acp")
         .join("node_modules")
