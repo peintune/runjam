@@ -280,6 +280,72 @@ fn find_agent_binary(app: &AppHandle, candidates: &[&str]) -> Option<String> {
     None
 }
 
+/// Locate the pre-bundled claude-agent-acp entry point (dist/index.js) shipped
+/// in the app resources. Returns None when running from a source tree without
+/// the pre-install step or in a non-bundled dev build.
+fn find_bundled_claude_acp() -> Option<std::path::PathBuf> {
+    let rel = std::path::PathBuf::from("acp")
+        .join("claude-agent-acp")
+        .join("node_modules")
+        .join("@agentclientprotocol")
+        .join("claude-agent-acp")
+        .join("dist")
+        .join("index.js");
+
+    // Dev mode: resolve from CARGO_MANIFEST_DIR (src-tauri/).
+    #[cfg(debug_assertions)]
+    {
+        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&rel);
+        if dev_path.exists() {
+            return Some(dev_path);
+        }
+    }
+
+    // Executable-relative (generic fallback).
+    let mut exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    exe_path.pop();
+    let exe_rel = exe_path.join(&rel);
+    if exe_rel.exists() {
+        return Some(exe_rel);
+    }
+
+    // macOS .app bundle: Contents/Resources/
+    #[cfg(target_os = "macos")]
+    {
+        let mut bundle_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        bundle_path.pop(); // remove binary name -> Contents/MacOS
+        bundle_path.pop(); // remove "MacOS" -> Contents
+        let bundle_resources = bundle_path.join("Resources").join(&rel);
+        if bundle_resources.exists() {
+            return Some(bundle_resources);
+        }
+    }
+
+    // Windows: <exe>/resources/
+    #[cfg(target_os = "windows")]
+    {
+        let mut exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        exe_path.pop();
+        let resources_path = exe_path.join("resources").join(&rel);
+        if resources_path.exists() {
+            return Some(resources_path);
+        }
+    }
+
+    // Linux: <exe>/share/runjam/
+    #[cfg(target_os = "linux")]
+    {
+        let mut exe_path = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        exe_path.pop();
+        let resources_path = exe_path.join("share").join("runjam").join(&rel);
+        if resources_path.exists() {
+            return Some(resources_path);
+        }
+    }
+
+    None
+}
+
 /// Resolve the command path, args, and working directory for an agent,
 /// using RunJam's bundled Node.js and installing ACP packages to the
 /// RunJam data dir as needed.
@@ -299,6 +365,25 @@ fn resolve_agent_paths(
     match agent_type {
         "claude" | "claude-code" => {
             let pkg_name = "@agentclientprotocol/claude-agent-acp";
+
+            // 1) Prefer the pre-bundled ACP package shipped in app resources.
+            //    This avoids a runtime npm install for users.
+            if let Some(bundled_entry) = find_bundled_claude_acp() {
+                rjlog!("[ACP] Using bundled claude-agent-acp: {:?}", bundled_entry);
+                let bundled_pkg_dir = bundled_entry
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf();
+                return Ok((
+                    node_bin.to_string_lossy().to_string(),
+                    vec![bundled_entry.to_string_lossy().to_string()],
+                    bundled_pkg_dir.to_string_lossy().to_string(),
+                ));
+            }
+
+            // 2) Fall back to installing into the RunJam data dir.
+            rjlog!("[ACP] Bundled claude-agent-acp not found, falling back to npm install");
             let install_dir = acp_dir.join("claude-agent-acp");
             std::fs::create_dir_all(&install_dir).ok();
 

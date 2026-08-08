@@ -828,7 +828,7 @@ const userAddedModels = computed(() => {
 
     <div v-if="(llamaServerAvailable && recommendedLocalModels.length > 0) || llamaModels.length > 0" class="border-t border-gray-200 my-8"></div>
 
-    <div v-if="commercialModels.length > 0" class="space-y-2">
+    <div v-if="commercialModels.length > 0 || (llamaServerAvailable && recommendedLocalModels.length > 0) || llamaModels.length > 0" class="space-y-2">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2">
           <span class="text-[15px] font-semibold text-gray-900">Commercial Models</span>

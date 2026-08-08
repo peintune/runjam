@@ -23,6 +23,12 @@ src-tauri/target/
 # Bundled Node.js runtime (downloaded at build time)
 src-tauri/nodejs/
 
+# Pre-installed Claude ACP (node_modules built at package time;
+# package.json is tracked, lock + marker are not)
+src-tauri/acp/claude-agent-acp/node_modules/
+src-tauri/acp/claude-agent-acp/.preinstalled-platform
+src-tauri/acp/claude-agent-acp/package-lock.json
+
 # Tauri generated schemas
 src-tauri/gen/schemas
 
