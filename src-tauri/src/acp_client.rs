@@ -247,6 +247,39 @@ fn get_codex_platform() -> &'static str {
     }
 }
 
+/// Search all Node.js installation directories for an agent binary,
+/// checking the bundled Node.js dir first, then the data-dir Node.js.
+/// Returns the absolute path to the binary if found.
+fn find_agent_binary(app: &AppHandle, candidates: &[&str]) -> Option<String> {
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Some(bin_dir) = node_util::get_bundled_node_bin_dir(app) {
+        dirs.push(bin_dir);
+    }
+
+    let data_dir = node_util::get_runjam_data_dir();
+    let node_dir = data_dir.join("nodejs").join("node-v22.12.0");
+    let bin_dir = if cfg!(target_os = "windows") {
+        node_dir
+    } else {
+        node_dir.join("bin")
+    };
+    if bin_dir.exists() {
+        dirs.push(bin_dir);
+    }
+
+    for dir in &dirs {
+        for name in candidates {
+            let p = dir.join(name);
+            if p.exists() {
+                rjlog!("[ACP] Found agent binary: {:?}", p);
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Resolve the command path, args, and working directory for an agent,
 /// using RunJam's bundled Node.js and installing ACP packages to the
 /// RunJam data dir as needed.
@@ -340,23 +373,35 @@ fn resolve_agent_paths(
             ))
         }
         "gemini" | "gemini-cli" => {
-            // The gemini binary is installed alongside node.exe via npm install -g
-            let node_dir = node_bin.parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
             let bin_candidates: &[&str] = if cfg!(target_os = "windows") {
                 &["gemini.cmd", "gemini-cli.cmd", "gemini.exe", "gemini-cli.exe"]
             } else {
                 &["gemini", "gemini-cli"]
             };
             let mut gemini_path = String::new();
-            for name in bin_candidates.iter() {
-                let candidate = node_dir.join(name);
-                rjlog!("[ACP DEBUG] Gemini: checking candidate: {:?}", candidate);
-                if candidate.exists() {
-                    gemini_path = candidate.to_string_lossy().to_string();
-                    rjlog!("[ACP DEBUG] Gemini: found at {:?}", candidate);
-                    break;
+
+            // 1) Search all Node.js installation directories (bundled + data-dir).
+            //    `resolve_node_bin()` may return the bundled Node.js while
+            //    `ensure_nodejs()` installed gemini to the data-dir Node.js.
+            if let Some(found) = find_agent_binary(app, bin_candidates) {
+                gemini_path = found;
+                rjlog!("[ACP DEBUG] Gemini: found via find_agent_binary: {}", gemini_path);
+            }
+
+            // 2) Also check the parent directory of the resolved node binary
+            //    (handles the case where node_bin is a system node not in the above dirs).
+            if gemini_path.is_empty() {
+                let node_dir = node_bin.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                for name in bin_candidates.iter() {
+                    let candidate = node_dir.join(name);
+                    rjlog!("[ACP DEBUG] Gemini: checking node_bin parent: {:?}", candidate);
+                    if candidate.exists() {
+                        gemini_path = candidate.to_string_lossy().to_string();
+                        rjlog!("[ACP DEBUG] Gemini: found at {:?}", candidate);
+                        break;
+                    }
                 }
             }
             if gemini_path.is_empty() {
@@ -396,7 +441,7 @@ fn resolve_agent_paths(
                 }
             }
             if gemini_path.is_empty() {
-                rjlog!("[ACP DEBUG] Gemini: not found in node_dir {:?}, npm prefix, or common locations, falling back to PATH", node_dir);
+                rjlog!("[ACP DEBUG] Gemini: not found in any location, falling back to PATH");
                 gemini_path = "gemini".to_string();
             }
             Ok((
@@ -429,7 +474,9 @@ fn resolve_agent_paths(
 ///
 /// Returns the first existing candidate, or an empty string if none found.
 fn search_gemini_in_common_locations(bin_candidates: &[&str]) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
 
     // 1. nvm: ~/.nvm/versions/node/<version>/bin/{name}
     let nvm_versions = std::path::PathBuf::from(&home).join(".nvm").join("versions").join("node");
@@ -509,7 +556,9 @@ impl AcpClient {
 
         // Default to user's home directory instead of the package dir so that
         // tool calls (mkdir, write_file, etc.) use a sensible location.
-        let default_dir = std::env::var("HOME").unwrap_or_else(|_| package_dir.to_string());
+        let default_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| package_dir.to_string());
         let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
 
@@ -531,26 +580,42 @@ impl AcpClient {
         }
 
         // Tell claude-agent-acp where to find the native claude binary.
-        // On Windows, both set CLAUDE_CODE_EXECUTABLE and add node bin dir to PATH.
+        // Search both bundled and data-dir Node.js so the ACP agent can
+        // find the CLI even when the two directories differ.
         if agent_type == "claude" {
-            let node_dir = std::path::Path::new(&cmd_path).parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-            let claude_bin = if cfg!(target_os = "windows") {
-                ["claude.exe", "claude.cmd"].iter()
-                    .find_map(|c| {
-                        let p = node_dir.join(c);
-                        if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
-                    })
+            let claude_candidates: &[&str] = if cfg!(target_os = "windows") {
+                &["claude.cmd", "claude.exe"]
             } else {
-                let p = node_dir.join("claude");
-                if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+                &["claude"]
             };
+            let claude_bin = find_agent_binary(app, claude_candidates);
+            // Also check in the same directory as node_bin (used by the ACP
+            // launcher) in case the binary was installed there.
+            let claude_bin = claude_bin.or_else(|| {
+                let node_dir = std::path::Path::new(&cmd_path).parent()?;
+                for c in claude_candidates {
+                    let p = node_dir.join(c);
+                    if p.exists() { return Some(p.to_string_lossy().to_string()); }
+                }
+                None
+            });
             if let Some(ref bin) = claude_bin {
                 rjlog!("[ACP] Setting CLAUDE_CODE_EXECUTABLE={}", bin);
                 cmd.env("CLAUDE_CODE_EXECUTABLE", bin);
             }
-            // Ensure node bin dir is in PATH so ACP wrapper can find node/npm
+            // Ensure the directory containing the claude binary is on PATH
+            if let Some(ref bin) = claude_bin {
+                if let Some(parent) = std::path::Path::new(bin).parent() {
+                    let dir_str = parent.to_string_lossy();
+                    let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                    let current_path = std::env::var("PATH").unwrap_or_default();
+                    cmd.env("PATH", format!("{}{}{}", dir_str, sep, current_path));
+                }
+            }
+            // Also ensure the node bin dir is on PATH
+            let node_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
             if !node_dir.as_os_str().is_empty() {
                 let node_dir_str = node_dir.to_string_lossy();
                 let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
@@ -578,8 +643,23 @@ impl AcpClient {
         }
 
         if agent_type == "codex" {
+            // The codex-acp .cmd wrapper needs node on PATH (the wrapper
+            // falls back to `node` on PATH when node.exe isn't in .bin/).
+            let node_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            if !node_dir.as_os_str().is_empty() {
+                let node_dir_str = node_dir.to_string_lossy();
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}{}{}", node_dir_str, sep, current_path));
+            }
+
             // Read API key and base_url from model_providers.custom (native codex config)
-            if let Ok(home) = std::env::var("HOME") {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            if !home.is_empty() {
                 let config_path = std::path::PathBuf::from(&home).join(".codex").join("config.toml");
                 rjlog!("[CODEX ENV] Reading config from: {}", config_path.display());
                 match std::fs::read_to_string(&config_path) {
@@ -661,7 +741,10 @@ impl AcpClient {
         } else if agent_type == "gemini" {
 
             // Pass API keys from gemini settings.json
-            if let Ok(home) = std::env::var("HOME") {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            if !home.is_empty() {
                 let settings_path = std::path::PathBuf::from(&home).join(".gemini").join("settings.json");
                 if let Ok(content) = std::fs::read_to_string(&settings_path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -1599,7 +1682,10 @@ impl AcpClient {
             }
         } else if agent_id == "gemini-cli" || agent_id == "gemini" {
             // Pass API keys from gemini settings.json
-            if let Ok(home) = std::env::var("HOME") {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_default();
+            if !home.is_empty() {
                 let settings_path = std::path::PathBuf::from(&home).join(".gemini").join("settings.json");
                 if let Ok(content) = std::fs::read_to_string(&settings_path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
