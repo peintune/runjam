@@ -118,11 +118,17 @@ if (!existsSync(targetSdkDir)) {
     const version = sdkPkg.optionalDependencies?.[targetSdkPkg];
     if (version) {
       console.log(`[preinstall-claude-acp] Cross-compile: installing ${targetSdkPkg}@${version}...`);
-      execSync(`${npmBin} install ${targetSdkPkg}@${version} --no-save`, {
-        cwd: acpDir,
-        env: npmEnv,
-        stdio: 'inherit',
-      });
+      // `--force` bypasses npm's EBADPLATFORM check. When cross-compiling
+      // (e.g. building for darwin-x64 on a darwin-arm64 runner), the target
+      // SDK package's `os`/`cpu` fields don't match the host, so npm refuses
+      // it. `npm_config_target_os/arch` env vars only affect optionalDeps
+      // resolution, not direct-install validation, and `--os`/`--cpu` flags
+      // are ignored for explicit installs — `--force` is the only way to
+      // install a foreign-platform package directly.
+      execSync(
+        `${npmBin} install ${targetSdkPkg}@${version} --no-save --force`,
+        { cwd: acpDir, env: npmEnv, stdio: 'inherit' }
+      );
     }
   }
 }
