@@ -7,7 +7,7 @@ import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput, startSession as apiStartSession } from "../api/sessions";
+import { sendInput, startSession as apiStartSession, listSkills, type SkillInfo } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
@@ -156,6 +156,12 @@ const inputText = ref("");
 const dirPath = ref("");
 const showDirMenu = ref(false);
 const showMoreAgents = ref(false);
+
+// Skills: loaded from builtin-skills, user can toggle which ones to deploy
+const availableSkills = ref<SkillInfo[]>([]);
+const selectedSkills = ref<Set<string>>(new Set());
+const showSkillsPopover = ref(false);
+const selectedSkillNames = computed(() => Array.from(selectedSkills.value));
 
 const otherAgents = [
   { id: "openclaw", name: "OpenClaw" },
@@ -943,11 +949,12 @@ function formatDuration(ms: number): string {
 
 function closeDropdowns(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector') && !target.closest('.message-list-dropdown')) {
+  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector') && !target.closest('.message-list-dropdown') && !target.closest('.skills-selector')) {
     showPermissionDropdown.value = false;
     showModelDropdown.value = false;
     showDirMenu.value = false;
     showMoreAgents.value = false;
+    showSkillsPopover.value = false;
     closeMessageList();
   }
 }
@@ -959,9 +966,14 @@ watch(() => agentStore.agents, (newAgents) => {
   }
 });
 
-onMounted(() => { 
+onMounted(() => {
   startTyping();
   getLastAgent().then(id => { if(id) selectedAgentId.value = id; }).catch(()=>{});
+  // Load built-in skills — none selected by default, user opts in per session
+  listSkills().then(skills => {
+    availableSkills.value = skills;
+    selectedSkills.value = new Set();
+  }).catch(() => {});
   if (agents.value.length === 0) {
     getAgentStatuses().then(list => { 
       if(list) { 
@@ -1047,7 +1059,7 @@ async function handleSend() {
   if(!store.activeSession) {
     const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
     const title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
-    await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value);
+    await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
   } else if (store.activeSession.status === 'stopped' || store.activeSession.status === 'error') {
     // Restart backend only if process is truly dead
     const s = store.activeSession;
@@ -1055,7 +1067,7 @@ async function handleSend() {
       const dirPathForRestart = s.directoryId
         ? store.directories.find(d => d.id === s.directoryId)?.path
         : undefined;
-      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value);
+      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
       s.status = 'running';
       s.freshAgentProcess = true;
       store.sessions = [...store.sessions];
@@ -1120,10 +1132,20 @@ async function handleSend() {
 function handleModelSelect(model: ModelEntry) {
   selectedModel.value = model.id;
   showModelDropdown.value = false;
-  
+
   saveSessionModel(selectedAgentId.value, model.id);
   // Immediately update agent config so the agent uses the right model name
   setAgentModel(selectedAgentId.value, model.id).catch(() => {});
+}
+
+function toggleSkill(name: string) {
+  const next = new Set(selectedSkills.value);
+  if (next.has(name)) {
+    next.delete(name);
+  } else {
+    next.add(name);
+  }
+  selectedSkills.value = next;
 }
 
 async function handleStop() {
@@ -1249,8 +1271,8 @@ watch(messages, (msgs) => {
       
       <div class="flex-shrink-0">
         <div class="max-w-4xl mx-auto px-4 py-3">
-          <div class="rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 shadow-[0_2px_12px_rgba(0,0,0,0.06)] focus-within:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-all duration-150">
-            <textarea v-model="inputText" placeholder="" rows="2" class="w-full px-4 pt-3 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" :disabled="isProcessing" />
+          <div class="relative rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 shadow-[0_2px_12px_rgba(0,0,0,0.06)] focus-within:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-all duration-150">
+            <textarea v-model="inputText" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-3 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" :disabled="isProcessing" />
             <div class="flex items-center justify-end px-3 pb-2 gap-2">
               <div class="flex items-center gap-2 flex-shrink-0">
                 <!-- Permission mode selector -->
@@ -1421,8 +1443,69 @@ watch(messages, (msgs) => {
         </div>
 
         <div v-else class="rounded-t-2xl border border-gray-200 bg-white focus-within:border-gray-300 focus-within:shadow-sm transition-all duration-150 relative">
-          <textarea ref="newSessionTextarea" v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-4 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" />
-          <div v-if="!inputText" class="absolute left-4 top-4 pointer-events-none text-[15px] text-gray-400 leading-relaxed">
+          <!-- Skills tags row: single-line with horizontal scroll; wand button always visible -->
+          <div class="skills-selector flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 min-h-[34px]">
+            <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">
+              <!-- hide webkit scrollbar via inline class -->
+              <span
+                v-for="name in selectedSkillNames" :key="name"
+                @click="toggleSkill(name)"
+                class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] bg-gray-100 text-gray-700 cursor-pointer hover:bg-gray-200 transition-colors flex-shrink-0"
+              >
+                {{ name }}
+                <X :size="9" />
+              </span>
+            </div>
+            <button
+              @click.stop="showSkillsPopover = !showSkillsPopover"
+              :disabled="availableSkills.length === 0"
+              :class="[
+                'inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors cursor-pointer flex-shrink-0',
+                availableSkills.length > 0
+                  ? showSkillsPopover
+                    ? 'bg-gray-100 text-gray-700'
+                    : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                  : 'text-gray-200 cursor-not-allowed',
+              ]"
+              title="Skills"
+            >
+              <Wand2 :size="13" />
+            </button>
+          </div>
+
+          <!-- Skills popover: card grid, stays open for multi-select -->
+          <div
+            v-if="showSkillsPopover && availableSkills.length > 0"
+            class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
+          >
+            <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
+              <span class="text-[11px] font-medium text-gray-500">Skills ({{ selectedSkills.size }}/{{ availableSkills.length }})</span>
+              <button @click.stop="showSkillsPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
+                <X :size="12" />
+              </button>
+            </div>
+            <div class="p-2 grid grid-cols-2 gap-1.5 max-h-[260px] overflow-y-auto">
+              <div
+                v-for="skill in availableSkills" :key="skill.name"
+                @click="toggleSkill(skill.name)"
+                :title="skill.description"
+                :class="[
+                  'px-2.5 py-2 rounded-lg cursor-pointer transition-all border',
+                  selectedSkills.has(skill.name)
+                    ? 'bg-gray-900 border-gray-900 text-white'
+                    : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50 text-gray-700',
+                ]"
+              >
+                <div class="text-[13px] font-medium leading-tight mb-0.5 truncate">{{ skill.name }}</div>
+                <div :class="['text-[10px] leading-snug line-clamp-3', selectedSkills.has(skill.name) ? 'text-gray-300' : 'text-gray-400']">{{ skill.description }}</div>
+              </div>
+            </div>
+          </div>
+
+          <textarea ref="newSessionTextarea" v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" />
+          <div v-if="!inputText" class="absolute left-4 top-4 pointer-events-none text-[15px] text-gray-400 leading-relaxed"
+            :style="{ transform: 'translateY(28px)' }"
+          >
             {{ typingPlaceholder }}<span class="animate-pulse">|</span>
           </div>
           <div class="flex items-center justify-end px-3 pb-2 gap-2">
@@ -1594,3 +1677,10 @@ watch(messages, (msgs) => {
     </div>
   </main>
 </template>
+
+<style scoped>
+/* Hide scrollbar on the skills tags row while keeping it scrollable */
+.skills-selector ::-webkit-scrollbar {
+  display: none;
+}
+</style>

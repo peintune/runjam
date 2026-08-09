@@ -28,8 +28,9 @@ pub struct SessionRecord {
 }
 
 fn db_path() -> PathBuf {
-    let base = directories::ProjectDirs::from("com", "runjam", "RunJam")
-        .map(|d| d.data_local_dir().to_path_buf())
+    // Database lives in ~/.runjam/runjam.db (unified user data dir).
+    let base = directories::UserDirs::new()
+        .map(|d| d.home_dir().join(".runjam"))
         .unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&base).ok();
     base.join("runjam.db")

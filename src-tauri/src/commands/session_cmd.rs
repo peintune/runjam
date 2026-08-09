@@ -1,6 +1,7 @@
 use crate::models::session::Session;
 use crate::session::runner::SessionManager;
 use crate::search;
+use crate::skill;
 use tauri::State;
 use std::sync::Mutex;
 use std::path::PathBuf;
@@ -23,6 +24,11 @@ pub async fn start_session(
     model: Option<String>,
     mode: Option<String>,
     permission_mode: Option<String>,
+    // Skill names to deploy into the session's working directory before the
+    // agent starts. Each agent discovers skills from its own per-session
+    // directory (.claude/skills/, .codex/skills/, .gemini/skills/).
+    // Empty list = deploy all built-in skills.
+    skills: Option<Vec<String>>,
 ) -> Result<Session, String> {
     let id = session_id.unwrap_or_else(|| format!(
         "{}-{}",
@@ -38,6 +44,23 @@ pub async fn start_session(
     // pass a path that hasn't been created yet, and Command::current_dir fails
     // with ENOENT if the directory is missing.
     std::fs::create_dir_all(&dir).ok();
+
+    // Deploy built-in skills into the session's per-agent skills directory.
+    // This happens BEFORE the agent process starts so the agent picks them up
+    // natively via its own skill discovery mechanism — no ACP protocol changes.
+    let agent_type = match cli.as_str() {
+        "claude-code" => "claude",
+        "codex-cli" => "codex",
+        "gemini-cli" => "gemini",
+        _ => "",
+    };
+    if !agent_type.is_empty() {
+        let skill_names = skills.unwrap_or_default();
+        if let Err(e) = skill::deploy_skills_to_session(&app, &dir, agent_type, &skill_names) {
+            crate::rjlog!("[SESSION] Warning: skill deployment failed: {}", e);
+            // Non-fatal — session should still start without skills.
+        }
+    }
 
     let session = {
         let mut mgr = manager.lock().map_err(|e| e.to_string())?;

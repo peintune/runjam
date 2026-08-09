@@ -29,7 +29,8 @@
     "resources": {
       "./nodejs/": "./nodejs/",
       "./binaries/llama-server/macos-x86_64/": "./binaries/llama-server/macos-x86_64/",
-      "./acp/": "./acp/"
+      "./acp/": "./acp/",
+      "./builtin-skills/": "./builtin-skills/"
     },
     "icon": [
       "icons/32x32.png",

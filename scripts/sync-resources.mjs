@@ -74,10 +74,14 @@ const confRaw = readFileSync(confPath, 'utf-8');
 const conf = JSON.parse(confRaw);
 
 const resources = conf.bundle?.resources ?? {};
-// Drop any prior llama-server and acp entries, keep the rest (nodejs/, etc.).
-// This makes the script idempotent across re-runs.
+// Drop any prior llama-server, acp, and builtin-skills entries, keep the rest
+// (nodejs/, etc.). This makes the script idempotent across re-runs.
 for (const key of [...Object.keys(resources)]) {
-  if (key.startsWith('./binaries/') || key.startsWith('./acp/')) {
+  if (
+    key.startsWith('./binaries/') ||
+    key.startsWith('./acp/') ||
+    key.startsWith('./builtin-skills/')
+  ) {
     delete resources[key];
   }
 }
@@ -87,6 +91,9 @@ resources[platformResourceKey] = platformResourceKey;
 // Bundle the pre-installed Claude ACP package (single-platform, slimmed by
 // preinstall-claude-acp.mjs which runs right after this script).
 resources['./acp/'] = './acp/';
+// Bundle the built-in skills directory so they ship inside the app and can
+// be copied into each session's .claude/skills/, .codex/skills/, etc.
+resources['./builtin-skills/'] = './builtin-skills/';
 
 conf.bundle.resources = resources;
 
@@ -94,5 +101,9 @@ conf.bundle.resources = resources;
 writeFileSync(confPath, JSON.stringify(conf, null, 2) + '\n', 'utf-8');
 console.log(`[sync-resources] Updated bundle.resources in tauri.conf.json`);
 console.log(
-  `[sync-resources]   ${JSON.stringify({ [platformResourceKey]: platformResourceKey, './acp/': './acp/' })}`
+  `[sync-resources]   ${JSON.stringify({
+    [platformResourceKey]: platformResourceKey,
+    './acp/': './acp/',
+    './builtin-skills/': './builtin-skills/',
+  })}`
 );

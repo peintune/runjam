@@ -10,6 +10,15 @@ export interface SessionInfo {
   created_at: string;
 }
 
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+
+export async function listSkills(): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("list_skills");
+}
+
 export async function startSession(
   cli: string,
   cliDisplayName: string,
@@ -18,6 +27,7 @@ export async function startSession(
   model?: string,
   mode?: string,
   permissionMode?: string,
+  skills?: string[],
 ): Promise<SessionInfo> {
   return invoke<SessionInfo>("start_session", {
     cli,
@@ -27,6 +37,7 @@ export async function startSession(
     model: model ?? null,
     mode: mode ?? "assistant",
     permissionMode: permissionMode ?? null,
+    skills: skills ?? null,
   });
 }
 

@@ -12,6 +12,7 @@ mod search;
 mod acp_client;
 mod proxy;
 mod node_util;
+mod skill;
 pub mod log_util;
 mod util;
 
@@ -23,20 +24,50 @@ use proxy::ProxyState;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+/// Copy the database from the legacy platform app-data dir (e.g.
+/// ~/Library/Application Support/RunJam/runjam.db on macOS) into ~/.runjam/
+/// so existing users don't lose their session history after the migration.
+/// Only runs once — once the file exists in the new location it's left alone.
+fn migrate_legacy_db(new_dir: &std::path::Path) {
+    let new_db = new_dir.join("runjam.db");
+    if new_db.exists() {
+        return; // already migrated (or fresh install)
+    }
+    let legacy_dir = directories::ProjectDirs::from("com", "runjam", "RunJam")
+        .map(|d| d.data_local_dir().to_path_buf());
+    if let Some(legacy) = legacy_dir {
+        let legacy_db = legacy.join("runjam.db");
+        if legacy_db.exists() {
+            if let Err(e) = std::fs::copy(&legacy_db, &new_db) {
+                eprintln!("[migrate] Failed to copy legacy db: {}", e);
+            } else {
+                println!("[migrate] Database migrated from {:?} to {:?}", legacy_db, new_db);
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    search::init_db();
-    let app_dir = directories::ProjectDirs::from("com", "runjam", "RunJam")
-        .map(|d| d.data_local_dir().to_path_buf())
+    // RunJam stores all user data (db, logs, sessions, ACP packages) under
+    // ~/.runjam/ — a single, predictable, user-visible location instead of the
+    // platform-specific app-data dir (~/Library/Application Support/RunJam on
+    // macOS, %LOCALAPPDATA%/RunJam on Windows). This keeps everything in one
+    // place: easy to back up, inspect, and clean up.
+    let app_dir = directories::UserDirs::new()
+        .map(|d| d.home_dir().join(".runjam"))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    
+    std::fs::create_dir_all(&app_dir).ok();
+
+    // Migrate database from the legacy platform app-data dir if present.
+    migrate_legacy_db(&app_dir);
+
+    search::init_db();
     let db = Database::new(&app_dir).expect("Failed to create database");
     db::migrations::run_migrations(&db.conn.lock().unwrap());
-    
+
     // Ensure default session working directory exists
-    if let Some(home) = directories::UserDirs::new() {
-        std::fs::create_dir_all(home.home_dir().join(".runjam").join("session")).ok();
-    }
+    std::fs::create_dir_all(app_dir.join("session")).ok();
 
     let proxy_state = Arc::new(Mutex::new(ProxyState::new()));
     // Load agent→model mapping so the proxy can resolve same-named models by id
@@ -69,6 +100,7 @@ pub fn run() {
             commands::agent_cmd::detect_agents,
             commands::agent_cmd::check_agent,
             commands::agent_cmd::install_agent,
+            commands::skill_cmd::list_skills,
             commands::agent_cmd::uninstall_agent,
             commands::agent_cmd::set_agent_enabled,
             commands::agent_cmd::check_nodejs,

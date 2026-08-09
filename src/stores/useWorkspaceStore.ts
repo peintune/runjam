@@ -111,7 +111,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return id;
   }
 
-  async function createSession(cli: Session["cli"], cliDisplayName: string, dirPath?: string, title?: string, model?: string, mode?: string, permissionMode?: string) {
+  async function createSession(cli: Session["cli"], cliDisplayName: string, dirPath?: string, title?: string, model?: string, mode?: string, permissionMode?: string, skills?: string[]) {
     const directoryId = dirPath ? ensureDirectory(dirPath) : null;
     const sessionId = generateId();
     const now = new Date().toISOString();
@@ -129,7 +129,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       console.error("saveSession failed:", err);
     }
 
-    tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode).then(info => {
+    tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode, skills).then(info => {
       const s = sessions.value.find(s => s.id === sessionId);
       if (s) {
         s.status = info.status as Session["status"];
