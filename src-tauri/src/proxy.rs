@@ -734,6 +734,9 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         }
     }
 
+    // Safety net: ensure every tool_calls message has a paired tool response.
+    let openai_messages = ensure_tool_calls_paired(openai_messages);
+
     let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
 
     // Convert Anthropic tools format → OpenAI tools format
@@ -990,6 +993,85 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
     }
 }
 
+/// Safety net: normalise tool_calls ↔ tool message pairing so the upstream
+/// Chat Completions API doesn't reject the request. Handles two failure modes:
+///
+/// 1. "insufficient tool messages following tool_calls message"
+///    — an assistant message carries `tool_calls` but some `tool_call_id`
+///    has no following `tool` response. A placeholder `tool` message is
+///    inserted before the next non-tool message (or at the end).
+///
+/// 2. "Messages with role 'tool' must be a response to a preceding message
+///    with 'tool_calls'"
+///    — a `tool` message exists whose `tool_call_id` doesn't match any
+///    pending `tool_calls` from a preceding assistant message (e.g. the
+///    assistant turn was dropped during conversion, or the history is
+///    malformed). The orphaned `tool` message is dropped.
+fn ensure_tool_calls_paired(messages: Vec<Value>) -> Vec<Value> {
+    let mut result: Vec<Value> = Vec::with_capacity(messages.len() + 4);
+    // tool_call_ids emitted by an assistant message but not yet answered.
+    let mut pending: Vec<String> = Vec::new();
+
+    for msg in messages.iter() {
+        let role = msg["role"].as_str().unwrap_or("");
+
+        // Before any non-tool message, flush placeholders for tool_calls
+        // that were never answered — tool responses must come before the
+        // next user/assistant turn.
+        if role != "tool" && !pending.is_empty() {
+            for call_id in &pending {
+                rjlog!("[PROXY] Inserting placeholder tool result for unanswered tool_call_id: {}", call_id);
+                result.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": ""
+                }));
+            }
+            pending.clear();
+        }
+
+        match role {
+            "assistant" => {
+                result.push(msg.clone());
+                if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tc in tool_calls {
+                        if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
+                            pending.push(id.to_string());
+                        }
+                    }
+                }
+            }
+            "tool" => {
+                let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
+                if tool_call_id.is_empty() || !pending.iter().any(|id| id == tool_call_id) {
+                    rjlog!("[PROXY] Dropping orphaned tool message (no preceding tool_calls for id: {:?})", tool_call_id);
+                    continue;
+                }
+                // Remove only the first match so duplicate ids are handled correctly.
+                if let Some(pos) = pending.iter().position(|id| id == tool_call_id) {
+                    pending.remove(pos);
+                }
+                result.push(msg.clone());
+            }
+            _ => {
+                result.push(msg.clone());
+            }
+        }
+    }
+
+    // Flush any tool_calls still unanswered at the end of the conversation.
+    for call_id in &pending {
+        rjlog!("[PROXY] Inserting placeholder tool result for unanswered tool_call_id: {}", call_id);
+        result.push(serde_json::json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": ""
+        }));
+    }
+
+    result
+}
+
 /// Translate OpenAI Responses API → OpenAI Chat Completions.
 /// Codex uses the Responses API (/responses), but most providers (DeepSeek, etc.)
 /// only support Chat Completions (/v1/chat/completions).
@@ -1002,6 +1084,15 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     // Convert Responses API `input` → Chat Completions `messages`
     let messages = if let Some(input) = req.get("input") {
         if let Some(arr) = input.as_array() {
+            // Pre-collect call_ids that have a corresponding function_call_output.
+            // A function_call without a matching output produces an assistant
+            // message with tool_calls but no following tool message — the
+            // upstream API rejects this ("insufficient tool messages following
+            // tool_calls message"). Skip orphaned function_calls to prevent this.
+            let output_call_ids: std::collections::HashSet<&str> = arr.iter()
+                .filter(|item| item["type"].as_str() == Some("function_call_output"))
+                .filter_map(|item| item["call_id"].as_str())
+                .collect();
             let mut msgs: Vec<Value> = vec![];
             for item in arr {
                 let item_type = item["type"].as_str().unwrap_or("");
@@ -1009,6 +1100,12 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                 match item_type {
                     "function_call" => {
                         let call_id = item["call_id"].as_str().unwrap_or("");
+                        // Skip function_calls whose output is missing — sending
+                        // them would violate the API's tool_calls pairing rule.
+                        if !call_id.is_empty() && !output_call_ids.contains(call_id) {
+                            rjlog!("[PROXY] Responses→Chat: skipping orphaned function_call {} (no output)", call_id);
+                            continue;
+                        }
                         let name = item["name"].as_str().unwrap_or("");
                         let arguments = item["arguments"].as_str().unwrap_or("");
                         msgs.push(serde_json::json!({
@@ -1081,6 +1178,9 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     } else {
         vec![]
     };
+    // Safety net: ensure every tool_calls message has a paired tool response,
+    // in case the targeted skip above missed an edge case.
+    let messages = ensure_tool_calls_paired(messages);
 
     if model_name.is_empty() || messages.is_empty() {
         return ProxyResponse::Sync(StatusCode(400), r#"{"error":"Missing model or input"}"#.into());
