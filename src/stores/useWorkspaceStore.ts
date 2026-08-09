@@ -15,6 +15,10 @@ export interface Session {
   cliDisplayName: string;
   title: string;
   directoryId: string | null;
+  /** Actual working-directory path of this session (the cwd the agent runs in).
+   *  Captured from the backend's start_session response so default-directory
+   *  sessions (~/.runjam/session/{id}) are tracked correctly. */
+  directory: string | null;
   model: string | null;
   status: "running" | "idle" | "waiting" | "stopped" | "error";
   pid: number | null;
@@ -42,6 +46,7 @@ function recordToSession(record: SessionRecord): Session {
     title: record.title || record.cli_display_name,
     model: record.model || null,
     directoryId: record.directory || null,
+    directory: record.directory || null,
     // After a page reload, no session is truly running/waiting — backend process is gone
     status: (record.status === 'running' || record.status === 'waiting' || record.status === 'idle') ? 'stopped' : record.status as Session["status"],
     pid: record.pid || null,
@@ -117,33 +122,47 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const now = new Date().toISOString();
     const session: Session = {
       id: sessionId, cli, cliDisplayName,
-      title: title || cliDisplayName, directoryId, model: model || null, pinned: false, archived: false,
+      title: title || cliDisplayName, directoryId, directory: dirPath || null, model: model || null, pinned: false, archived: false,
       status: "running", pid: null, createdAt: now, lastActiveAt: now, unread: false, acpSessionId: "", newlyCompleted: false, freshAgentProcess: true,
     };
     sessions.value.push(session);
     activeSessionId.value = session.id;
 
     try {
-      await saveSession(sessionId, cli, cliDisplayName, session.title, dirPath || "", "running", null, 0, 0, "");
+      await saveSession(sessionId, cli, cliDisplayName, session.title, session.directory || "", "running", null, 0, 0, "");
     } catch (err) {
       console.error("saveSession failed:", err);
     }
 
-    tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode, skills).then(info => {
+    try {
+      const info = await tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode, skills);
+      console.log("[STORE] createSession info.directory =", info.directory, "for session", sessionId);
       const s = sessions.value.find(s => s.id === sessionId);
       if (s) {
         s.status = info.status as Session["status"];
         s.pid = info.pid;
         s.createdAt = info.created_at;
         s.lastActiveAt = new Date().toISOString();
+        // Capture the real working directory returned by the backend — for
+        // default-directory sessions this is ~/.runjam/session/{id}, which the
+        // frontend never knew before. Used by per-session skill management.
+        if (info.directory) {
+          s.directory = info.directory;
+        }
         if (info.status === 'stopped') {
           s.newlyCompleted = true;
         }
-        saveSession(sessionId, cli, cliDisplayName, s.title, dirPath || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
+        saveSession(sessionId, cli, cliDisplayName, s.title, s.directory || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
       }
-    }).catch(err => {
+    } catch (err) {
       console.error("Failed to start session:", err);
-    });
+      // Remove the placeholder session so the UI doesn't hang in "running" state.
+      sessions.value = sessions.value.filter(s => s.id !== sessionId);
+      if (activeSessionId.value === sessionId) {
+        activeSessionId.value = null;
+      }
+      throw err; // Re-throw so callers (handleSend) can handle the failure.
+    }
   }
 
   async function setSessionTitle(id: string, title: string) { 
@@ -154,11 +173,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     }
   }
 
-  async function togglePin(id: string) { 
-    const s = sessions.value.find(s => s.id === id); 
+  async function togglePin(id: string) {
+    const s = sessions.value.find(s => s.id === id);
     if (s) {
       s.pinned = !s.pinned;
-      saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
+      saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directory || "", s.status, s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     }
   }
 
@@ -217,7 +236,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     });
     ids.forEach(id => {
       const s = sessions.value.find(s => s.id === id);
-      if (s) saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", s.status, s.pid, 1, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
+      if (s) saveSession(s.id, s.cli, s.cliDisplayName, s.title, s.directory || "", s.status, s.pid, 1, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     });
   }
 
@@ -231,7 +250,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     if (s) {
       s.status = "stopped";
       s.newlyCompleted = true;
-      saveSession(id, s.cli, s.cliDisplayName, s.title, s.directoryId ? directories.value.find(d => d.id === s.directoryId)?.path || "" : "", "stopped", s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
+      saveSession(id, s.cli, s.cliDisplayName, s.title, s.directory || "", "stopped", s.pid, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
     }
   }
 

@@ -7,12 +7,13 @@ import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput, startSession as apiStartSession, listSkills, type SkillInfo } from "../api/sessions";
+import { sendInput, startSession as apiStartSession, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
@@ -151,6 +152,24 @@ const activeDirectory = computed(() => {
   if (!session?.directoryId) return null;
   return store.directories.find(d => d.id === session.directoryId)?.path ?? null;
 });
+// Cached home directory for computing default session paths. The backend uses
+// ~/.runjam/session/{id} for sessions without a user-chosen directory; the
+// frontend needs to know this path to manage per-session skills for those
+// sessions (especially old sessions whose directory wasn't persisted).
+const cachedHomeDir = ref("");
+
+// The active session's actual working directory (cwd). For active sessions
+// this comes from the backend's start_session response (session.directory).
+// As a fallback for sessions where directory is null (e.g. old sessions),
+// compute the default path ~/.runjam/session/{id} so skills still work.
+const activeSessionCwd = computed(() => {
+  const session = store.activeSession;
+  if (session?.directory) return session.directory;
+  if (session && cachedHomeDir.value) {
+    return `${cachedHomeDir.value}/.runjam/session/${session.id}`;
+  }
+  return null;
+});
 
 const inputText = ref("");
 const dirPath = ref("");
@@ -162,6 +181,11 @@ const availableSkills = ref<SkillInfo[]>([]);
 const selectedSkills = ref<Set<string>>(new Set());
 const showSkillsPopover = ref(false);
 const selectedSkillNames = computed(() => Array.from(selectedSkills.value));
+// While a new session is being created, the activeSessionCwd watcher would
+// otherwise fire before the backend has deployed the selected skills to disk
+// and clear the in-memory selection. Suppress the sync during createSession —
+// the in-memory picks are authoritative at that moment.
+let suppressSkillSync = false;
 
 const otherAgents = [
   { id: "openclaw", name: "OpenClaw" },
@@ -969,10 +993,13 @@ watch(() => agentStore.agents, (newAgents) => {
 onMounted(() => {
   startTyping();
   getLastAgent().then(id => { if(id) selectedAgentId.value = id; }).catch(()=>{});
-  // Load built-in skills — none selected by default, user opts in per session
+  // Cache home dir so we can compute default session paths (~/.runjam/session/{id})
+  // for per-session skill management on sessions without an explicit directory.
+  homeDir().then(h => { cachedHomeDir.value = h; }).catch(() => {});
+  // Load built-in skills catalog. Per-session selection is synced separately
+  // by the activeSessionCwd watcher (so it reflects the active session's disk).
   listSkills().then(skills => {
     availableSkills.value = skills;
-    selectedSkills.value = new Set();
   }).catch(() => {});
   if (agents.value.length === 0) {
     getAgentStatuses().then(list => { 
@@ -1034,6 +1061,37 @@ watch(selectedAgentId, async (id) => {
   }
 }, { immediate: true });
 
+// Sync selectedSkills with the active session's deployed skills on disk.
+// Each session stores its skills in its own working directory, so switching
+// sessions must re-read from that session's skills folder — otherwise skill
+// selections would leak across sessions (one session's picks showing in others).
+watch(activeSessionCwd, async (cwd) => {
+  if (suppressSkillSync) { console.log("[SKILL-SYNC] suppressed during createSession"); return; }
+  const session = store.activeSession;
+  console.log("[SKILL-SYNC] watcher fired", { cwd, sessionId: session?.id, cli: session?.cli, hasDir: !!session?.directory });
+  if (cwd && session) {
+    try {
+      const names = await listSessionSkills(cwd, session.cli);
+      console.log("[SKILL-SYNC] listSessionSkills returned", { sessionId: session.id, cwd, cli: session.cli, names });
+      // Guard against a stale async result if the user switched away meanwhile.
+      if (store.activeSession?.id === session.id) {
+        selectedSkills.value = new Set(names);
+      } else {
+        console.log("[SKILL-SYNC] stale result, user switched away");
+      }
+    } catch (err) {
+      console.error("[SKILL-SYNC] Failed to load session skills:", err);
+    }
+  } else {
+    // Either no active session (new-session page) or an active session whose
+    // cwd is still unknown (homeDir not yet cached). Clear to prevent the
+    // previous session's skills from leaking in; skills will reload once the
+    // cwd becomes available.
+    console.log("[SKILL-SYNC] clearing selectedSkills (no cwd or no session)");
+    selectedSkills.value = new Set();
+  }
+}, { immediate: true });
+
 watch(messages, async () => {
   // 仅当用户还停留在底部附近时才跟随滚动——上翻查看历史时不打扰。
   // 每次更新都整体替换数组（handleAcpEvent/loadSessionMessages 均
@@ -1059,15 +1117,26 @@ async function handleSend() {
   if(!store.activeSession) {
     const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
     const title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
-    await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+    // Suppress the activeSessionCwd watcher during creation: it would fire
+    // before the backend deploys skills to disk and clear the in-memory picks.
+    suppressSkillSync = true;
+    try {
+      await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+    } catch (err) {
+      // Session failed to start — show error and abort send.
+      showWarning(`Failed to start session: ${err}`);
+      // Restore the input text so the user can retry.
+      inputText.value = text;
+      return;
+    } finally {
+      suppressSkillSync = false;
+    }
   } else if (store.activeSession.status === 'stopped' || store.activeSession.status === 'error') {
     // Restart backend only if process is truly dead
     const s = store.activeSession;
     try {
-      const dirPathForRestart = s.directoryId
-        ? store.directories.find(d => d.id === s.directoryId)?.path
-        : undefined;
-      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+      const dirPathForRestart = s.directory || dirPath.value || undefined;
+      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
       s.status = 'running';
       s.freshAgentProcess = true;
       store.sessions = [...store.sessions];
@@ -1138,14 +1207,34 @@ function handleModelSelect(model: ModelEntry) {
   setAgentModel(selectedAgentId.value, model.id).catch(() => {});
 }
 
-function toggleSkill(name: string) {
-  const next = new Set(selectedSkills.value);
-  if (next.has(name)) {
-    next.delete(name);
+async function toggleSkill(name: string) {
+  const session = store.activeSession;
+  const cwd = session ? activeSessionCwd.value : null;
+  console.log("[SKILL-TOGGLE]", { name, sessionId: session?.id, cwd, cli: session?.cli, sessionDir: session?.directory });
+  if (session && cwd) {
+    // Active session: persist the change to this session's own skills
+    // directory so it is isolated per session and survives reloads.
+    const isOn = selectedSkills.value.has(name);
+    try {
+      if (isOn) {
+        await removeSessionSkill(cwd, session.cli, name);
+      } else {
+        await deploySessionSkill(cwd, session.cli, name);
+      }
+    } catch (err) {
+      // Keep the UI in sync with the disk — don't toggle on failure.
+      showWarning(`Failed to update skill: ${err}`);
+      return;
+    }
+    const next = new Set(selectedSkills.value);
+    if (isOn) next.delete(name); else next.add(name);
+    selectedSkills.value = next;
   } else {
-    next.add(name);
+    // New-session page: in-memory only; deployed when the session starts.
+    const next = new Set(selectedSkills.value);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    selectedSkills.value = next;
   }
-  selectedSkills.value = next;
 }
 
 async function handleStop() {
@@ -1272,7 +1361,65 @@ watch(messages, (msgs) => {
       <div class="flex-shrink-0">
         <div class="max-w-4xl mx-auto px-4 py-3">
           <div class="relative rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 shadow-[0_2px_12px_rgba(0,0,0,0.06)] focus-within:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-all duration-150">
-            <textarea v-model="inputText" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-3 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" :disabled="isProcessing" />
+            <!-- Skills tags row: same UI as new-session page -->
+            <div class="skills-selector flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 min-h-[34px]">
+              <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">
+                <span
+                  v-for="name in selectedSkillNames" :key="name"
+                  @click="toggleSkill(name)"
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] bg-gray-100 text-gray-700 cursor-pointer hover:bg-gray-200 transition-colors flex-shrink-0"
+                >
+                  {{ name }}
+                  <X :size="9" />
+                </span>
+              </div>
+              <button
+                @click.stop="showSkillsPopover = !showSkillsPopover"
+                :disabled="availableSkills.length === 0"
+                :class="[
+                  'inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors cursor-pointer flex-shrink-0',
+                  availableSkills.length > 0
+                    ? showSkillsPopover
+                      ? 'bg-gray-100 text-gray-700'
+                      : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                    : 'text-gray-200 cursor-not-allowed',
+                ]"
+                title="Skills"
+              >
+                <Wand2 :size="13" />
+              </button>
+            </div>
+
+            <!-- Skills popover: card grid, stays open for multi-select -->
+            <div
+              v-if="showSkillsPopover && availableSkills.length > 0"
+              class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
+            >
+              <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
+                <span class="text-[11px] font-medium text-gray-500">Skills ({{ selectedSkills.size }}/{{ availableSkills.length }})</span>
+                <button @click.stop="showSkillsPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
+                  <X :size="12" />
+                </button>
+              </div>
+              <div class="p-2 grid grid-cols-2 gap-1.5 max-h-[260px] overflow-y-auto">
+                <div
+                  v-for="skill in availableSkills" :key="skill.name"
+                  @click="toggleSkill(skill.name)"
+                  :title="skill.description"
+                  :class="[
+                    'px-2.5 py-2 rounded-lg cursor-pointer transition-all border',
+                    selectedSkills.has(skill.name)
+                      ? 'bg-gray-900 border-gray-900 text-white'
+                      : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50 text-gray-700',
+                  ]"
+                >
+                  <div class="text-[13px] font-medium leading-tight mb-0.5 truncate">{{ skill.name }}</div>
+                  <div :class="['text-[10px] leading-snug line-clamp-3', selectedSkills.has(skill.name) ? 'text-gray-300' : 'text-gray-400']">{{ skill.description }}</div>
+                </div>
+              </div>
+            </div>
+
+            <textarea v-model="inputText" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" :disabled="isProcessing" />
             <div class="flex items-center justify-end px-3 pb-2 gap-2">
               <div class="flex items-center gap-2 flex-shrink-0">
                 <!-- Permission mode selector -->

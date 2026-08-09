@@ -19,6 +19,21 @@ export async function listSkills(): Promise<SkillInfo[]> {
   return invoke<SkillInfo[]>("list_skills");
 }
 
+/** List the skill names already deployed in a session's per-agent skills directory. */
+export async function listSessionSkills(cwd: string, cli: string): Promise<string[]> {
+  return invoke<string[]>("list_session_skills", { cwd, cli });
+}
+
+/** Deploy a single builtin skill to a session's per-agent skills directory. */
+export async function deploySessionSkill(cwd: string, cli: string, skillName: string): Promise<string> {
+  return invoke<string>("deploy_session_skill", { cwd, cli, skillName });
+}
+
+/** Remove a single skill from a session's per-agent skills directory. */
+export async function removeSessionSkill(cwd: string, cli: string, skillName: string): Promise<void> {
+  return invoke("remove_session_skill", { cwd, cli, skillName });
+}
+
 export async function startSession(
   cli: string,
   cliDisplayName: string,

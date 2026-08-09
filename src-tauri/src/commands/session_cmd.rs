@@ -27,7 +27,7 @@ pub async fn start_session(
     // Skill names to deploy into the session's working directory before the
     // agent starts. Each agent discovers skills from its own per-session
     // directory (.claude/skills/, .codex/skills/, .gemini/skills/).
-    // Empty list = deploy all built-in skills.
+    // None / empty list = deploy nothing (user opted out of skills).
     skills: Option<Vec<String>>,
 ) -> Result<Session, String> {
     let id = session_id.unwrap_or_else(|| format!(

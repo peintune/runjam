@@ -151,7 +151,7 @@ fn agent_skills_subdir(agent_type: &str) -> Option<PathBuf> {
 ///
 /// - `cwd`: the session's working directory
 /// - `agent_type`: "claude" | "codex" | "gemini"
-/// - `skill_names`: skill names to copy; empty = copy all builtin skills
+/// - `skill_names`: skill names to copy; empty = deploy nothing (user opted out)
 ///
 /// Existing skill directories are overwritten so updates take effect on the
 /// next session. This is called BEFORE the agent process starts.
@@ -161,6 +161,12 @@ pub fn deploy_skills_to_session(
     agent_type: &str,
     skill_names: &[String],
 ) -> Result<usize, String> {
+    // Fast path: user selected nothing → do not deploy any skills.
+    if skill_names.is_empty() {
+        rjlog!("[SKILL] No skills selected, skipping deployment for {}", agent_type);
+        return Ok(0);
+    }
+
     let Some(skills_subdir) = agent_skills_subdir(agent_type) else {
         rjlog!("[SKILL] Agent {} has no skills directory, skipping", agent_type);
         return Ok(0);
@@ -170,14 +176,10 @@ pub fn deploy_skills_to_session(
         .map_err(|e| format!("Failed to create skills dir {}: {}", dest_dir.display(), e))?;
 
     let all_skills = list_builtin_skills(app);
-    let to_deploy: Vec<&Skill> = if skill_names.is_empty() {
-        all_skills.iter().collect()
-    } else {
-        all_skills
-            .iter()
-            .filter(|s| skill_names.iter().any(|n| n == &s.name))
-            .collect()
-    };
+    let to_deploy: Vec<&Skill> = all_skills
+        .iter()
+        .filter(|s| skill_names.iter().any(|n| n == &s.name))
+        .collect();
 
     let mut count = 0;
     for skill in &to_deploy {
@@ -210,6 +212,87 @@ pub fn deploy_skills_to_session(
         agent_type
     );
     Ok(count)
+}
+
+/// List the skill names already deployed in a session's per-agent skills
+/// directory (e.g. `{cwd}/.claude/skills/*/`).
+///
+/// Returns a list of skill directory names that contain a SKILL.md.
+pub fn list_session_skills(cwd: &str, agent_type: &str) -> Vec<String> {
+    let Some(subdir) = agent_skills_subdir(agent_type) else {
+        rjlog!("[SKILL] list_session_skills: unknown agent_type '{}', cwd='{}'", agent_type, cwd);
+        return Vec::new();
+    };
+    let skills_dir = Path::new(cwd).join(&subdir);
+    rjlog!("[SKILL] list_session_skills: reading {:?} (agent={}, cwd={})", skills_dir, agent_type, cwd);
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("SKILL.md").exists() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
+/// Deploy a single builtin skill to a session's per-agent skills directory.
+/// Returns the skill name on success.
+pub fn deploy_single_skill(
+    app: &AppHandle,
+    cwd: &str,
+    agent_type: &str,
+    skill_name: &str,
+) -> Result<String, String> {
+    let Some(subdir) = agent_skills_subdir(agent_type) else {
+        return Err(format!("Agent {} has no skills directory", agent_type));
+    };
+    let dest_dir = Path::new(cwd).join(&subdir);
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("Failed to create skills dir: {}", e))?;
+
+    // Find the skill in builtin-skills.
+    let all_skills = list_builtin_skills(app);
+    let skill = all_skills
+        .iter()
+        .find(|s| s.name == skill_name)
+        .ok_or_else(|| format!("Skill '{}' not found in builtin-skills", skill_name))?;
+
+    let dest = dest_dir.join(skill_name);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).ok();
+    }
+    copy_dir_recursive(&skill.source_dir, &dest)
+        .map_err(|e| format!("Failed to copy skill '{}': {}", skill_name, e))?;
+
+    rjlog!(
+        "[SKILL] Deployed single skill '{}' to {}",
+        skill_name,
+        dest.display()
+    );
+    Ok(skill_name.to_string())
+}
+
+/// Remove a single skill from a session's per-agent skills directory.
+pub fn remove_single_skill(
+    cwd: &str,
+    agent_type: &str,
+    skill_name: &str,
+) -> Result<(), String> {
+    let Some(subdir) = agent_skills_subdir(agent_type) else {
+        return Err(format!("Agent {} has no skills directory", agent_type));
+    };
+    let skill_dir = Path::new(cwd).join(&subdir).join(skill_name);
+    if skill_dir.exists() {
+        std::fs::remove_dir_all(&skill_dir)
+            .map_err(|e| format!("Failed to remove skill '{}': {}", skill_name, e))?;
+        rjlog!("[SKILL] Removed skill '{}' from {}", skill_name, skill_dir.display());
+    }
+    Ok(())
 }
 
 /// Recursively copy a directory tree (files + subdirs).

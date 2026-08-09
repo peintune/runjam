@@ -15,3 +15,24 @@ use tauri::AppHandle;
 pub fn list_skills(app: AppHandle) -> Vec<Skill> {
     skill::list_builtin_skills(&app)
 }
+
+/// List the skill names already deployed in a session's per-agent skills
+/// directory (e.g. `{cwd}/.claude/skills/`).
+#[tauri::command]
+pub fn list_session_skills(cwd: String, cli: String) -> Vec<String> {
+    skill::list_session_skills(&cwd, &cli)
+}
+
+/// Deploy a single builtin skill to a session's per-agent skills directory.
+/// Called when the user toggles a skill on in an active session.
+#[tauri::command]
+pub fn deploy_session_skill(app: AppHandle, cwd: String, cli: String, skill_name: String) -> Result<String, String> {
+    skill::deploy_single_skill(&app, &cwd, &cli, &skill_name)
+}
+
+/// Remove a single skill from a session's per-agent skills directory.
+/// Called when the user toggles a skill off in an active session.
+#[tauri::command]
+pub fn remove_session_skill(cwd: String, cli: String, skill_name: String) -> Result<(), String> {
+    skill::remove_single_skill(&cwd, &cli, &skill_name)
+}
