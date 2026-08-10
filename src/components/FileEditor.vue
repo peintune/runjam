@@ -229,20 +229,26 @@ onBeforeUnmount(() => {
 <template>
   <div class="h-full flex flex-col bg-white">
     <!-- editor -->
-    <div class="flex-1 min-h-0">
-      <div v-if="loading" class="flex items-center justify-center h-full">
+    <div class="flex-1 min-h-0 relative">
+      <!-- Loading overlay (above editor, doesn't remove editorContainer from DOM) -->
+      <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white z-10">
         <div class="flex items-center gap-2 text-gray-400">
           <Loader :size="16" class="animate-spin" />
           <span class="text-[13px]">Loading file...</span>
         </div>
       </div>
-      <div v-else-if="error" class="flex items-center justify-center h-full">
+      <!-- Error overlay -->
+      <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-white z-10">
         <div class="text-center">
           <p class="text-[13px] text-red-500 mb-2">{{ error }}</p>
           <p class="text-[12px] text-gray-400">This file might be binary or too large to open in the editor.</p>
         </div>
       </div>
-      <div v-else ref="editorContainer" class="h-full w-full" />
+      <!-- Editor container — always in the DOM so Monaco keeps its element
+           even when loading/error overlays are shown. Previously v-if/v-else
+           removed this element during loading, causing Monaco to lose its
+           container and show no content after switching files. -->
+      <div ref="editorContainer" class="h-full w-full" />
     </div>
   </div>
 </template>

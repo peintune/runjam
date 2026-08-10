@@ -37,3 +37,16 @@ export async function readFileBytes(path: string): Promise<number[]> {
 export async function searchFiles(rootPath: string, query: string, limit?: number): Promise<FileSearchResult[]> {
   return invoke<FileSearchResult[]>("search_files", { rootPath, query, limit });
 }
+
+export interface MentionEntries {
+  recent: FileEntry[];
+  root: FileEntry[];
+}
+
+export async function listMentionEntries(rootPath: string, recentLimit?: number): Promise<MentionEntries> {
+  return invoke<MentionEntries>("list_mention_entries", { rootPath, recentLimit });
+}
+
+export async function searchMentionFiles(rootPath: string, query: string, limit?: number): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>("search_mention_files", { rootPath, query, limit });
+}

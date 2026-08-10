@@ -16,6 +16,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
+import MentionPicker from "./MentionPicker.vue";
+import { type FileEntry } from "../api/fs";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 
@@ -175,6 +177,18 @@ const activeSessionCwd = computed(() => {
     return `${cachedHomeDir.value}/.runjam/session/${session.id}`;
   }
   return null;
+});
+
+// Cwd used by the @ mention picker. For project sessions, use session.directory.
+// For plain sessions (no directory), prefer the user-selected project dir
+// (dirPath via "work in a project") so @ mentions search the real project tree
+// — only fall back to the session dir (agent-generated files) if nothing is
+// selected. Without this, activeSessionCwd returns ~/.runjam/session/{id} for
+// plain sessions, shadowing dirPath and making project files unsearchable.
+const mentionCwd = computed(() => {
+  const session = store.activeSession;
+  if (session?.directory) return session.directory;
+  return dirPath.value || activeSessionCwd.value || "";
 });
 
 const inputText = ref("");
@@ -373,7 +387,19 @@ const isProcessing = ref(false);
 
 const messageContainer = ref<HTMLElement | null>(null);
 const newSessionTextarea = ref<HTMLTextAreaElement | null>(null);
+const activeSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const showModelDropdown = ref(false);
+
+// ── @ Mention picker state ──────────────────────────────────
+const showMentionPicker = ref(false);
+const mentionAnchorIndex = ref(-1);
+const mentionAnchorRect = ref<DOMRect | null>(null);
+const mentionsMap = ref<Map<string, string>>(new Map()); // relativePath → absolutePath
+const mentionPickerRef = ref<InstanceType<typeof MentionPicker> | null>(null);
+// Search query synced from the textarea text after @. This lets the user
+// type the search directly in the textarea (no focus-jump to the popup
+// input needed) — the picker filters in real-time.
+const mentionQuery = ref("");
 const runningServerPort = ref(0);
 const runningServerModel = ref<string | null>(null);
 const { showWarning } = useToast();
@@ -468,6 +494,8 @@ function scrollToBottom() {
 watch(() => store.activeSessionId, async (newId) => {
   activeThinking.value = ""; activeContent.value = ""; thoughtDuration.value = "";
   inputText.value = "";
+  mentionsMap.value = new Map();
+  closeMentionPicker();
   if (newId) {
     const state = getSessionState(newId);
     messages.value = [...state.messages];
@@ -1118,14 +1146,118 @@ watch(messages, async () => {
   }
 });
 
+// ── @ Mention picker functions ──────────────────────────────
+
+function currentTextarea(): HTMLTextAreaElement | null {
+  return store.activeSession ? activeSessionTextarea.value : newSessionTextarea.value;
+}
+
+function onTextareaInput(e: Event) {
+  const ta = e.target as HTMLTextAreaElement;
+  const pos = ta.selectionStart;
+  const val = ta.value;
+  // Detect @ just typed
+  if (pos > 0 && val[pos - 1] === "@") {
+    const prev = pos >= 2 ? val[pos - 2] : "";
+    // Only trigger at start of line or after whitespace (not mid-word/email)
+    if (prev === "" || prev === "\n" || /\s/.test(prev)) {
+      mentionAnchorIndex.value = pos - 1;
+      mentionAnchorRect.value = ta.getBoundingClientRect();
+      showMentionPicker.value = true;
+      mentionQuery.value = "";
+      return;
+    }
+  }
+  // Sync search query & close popup when appropriate
+  if (showMentionPicker.value) {
+    if (pos <= mentionAnchorIndex.value) {
+      closeMentionPicker();
+      return;
+    }
+    const segment = val.slice(mentionAnchorIndex.value + 1, pos);
+    if (/\s/.test(segment)) {
+      closeMentionPicker();
+    } else {
+      // Sync the text after @ as the live search query
+      mentionQuery.value = segment;
+    }
+  }
+}
+
+function onTextareaKeydown(e: KeyboardEvent) {
+  if (!showMentionPicker.value) {
+    // Popup closed: handle Enter as send (original behavior)
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    return;
+  }
+  // Popup open: intercept navigation keys and forward to MentionPicker
+  if (["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab"].includes(e.key)) {
+    e.preventDefault();
+    e.stopPropagation();
+    mentionPickerRef.value?.handleKeydown(e);
+  }
+}
+
+function onMentionSelect(entry: FileEntry) {
+  const cwd = mentionCwd.value;
+  if (!cwd) {
+    closeMentionPicker();
+    return;
+  }
+  // Compute relative path for display
+  let rel = entry.path;
+  if (entry.path.startsWith(cwd)) {
+    rel = entry.path.slice(cwd.length).replace(/^\/+/, "");
+  } else {
+    // Fallback: just the filename
+    rel = entry.name;
+  }
+  const displayToken = `@${rel}`;
+  const start = mentionAnchorIndex.value;
+  // Replace only the "@query" portion (from @ through the search text typed
+  // in the textarea), preserving any text that followed the cursor.
+  const queryLen = mentionQuery.value.length;
+  const end = start + 1 + queryLen;
+  inputText.value =
+    inputText.value.slice(0, start) + displayToken + inputText.value.slice(end);
+  // Store mapping: relativePath → absolutePath
+  mentionsMap.value.set(rel, entry.path);
+  closeMentionPicker();
+  // Focus textarea and move caret after the token
+  nextTick(() => {
+    const ta = currentTextarea();
+    if (ta) {
+      const caret = start + displayToken.length;
+      ta.focus();
+      ta.setSelectionRange(caret, caret);
+    }
+  });
+}
+
+function closeMentionPicker() {
+  showMentionPicker.value = false;
+  mentionAnchorIndex.value = -1;
+  mentionAnchorRect.value = null;
+  mentionQuery.value = "";
+}
+
 async function handleSend() {
-  const text = inputText.value.trim(); if(!text)return;
-  
+  let text = inputText.value.trim(); if(!text)return;
+
+  // Expand @relativePath mentions to @absolutePath for the LLM
+  for (const [rel, abs] of mentionsMap.value) {
+    text = text.split(`@${rel}`).join(`@${abs}`);
+  }
+  mentionsMap.value = new Map();
+
   if (!selectedModel.value) {
     showWarning("Please select a model before sending.");
     return;
   }
-  
+
   inputText.value = "";
 
   if(!store.activeSession) {
@@ -1433,7 +1565,7 @@ watch(messages, (msgs) => {
               </div>
             </div>
 
-            <textarea v-model="inputText" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" :disabled="isProcessing" />
+            <textarea v-model="inputText" ref="activeSessionTextarea" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @input="onTextareaInput" @keydown="onTextareaKeydown" :disabled="isProcessing" />
             <div class="flex items-center justify-end px-3 pb-2 gap-2">
               <div class="flex items-center gap-2 flex-shrink-0">
                 <!-- Permission mode selector -->
@@ -1663,7 +1795,7 @@ watch(messages, (msgs) => {
             </div>
           </div>
 
-          <textarea ref="newSessionTextarea" v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @keydown.enter.exact.prevent="handleSend" />
+          <textarea ref="newSessionTextarea" v-model="inputText" placeholder="" rows="4" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[15px] text-gray-900 leading-relaxed" @input="onTextareaInput" @keydown="onTextareaKeydown" />
           <div v-if="!inputText" class="absolute left-4 top-4 pointer-events-none text-[15px] text-gray-400 leading-relaxed"
             :style="{ transform: 'translateY(28px)' }"
           >
@@ -1837,6 +1969,17 @@ watch(messages, (msgs) => {
       </div>
     </div>
   </main>
+
+  <!-- @ Mention file picker popup (Teleported to body) -->
+  <MentionPicker
+    v-if="showMentionPicker"
+    ref="mentionPickerRef"
+    :cwd="mentionCwd"
+    :anchor-rect="mentionAnchorRect"
+    :external-query="mentionQuery"
+    @select="onMentionSelect"
+    @close="closeMentionPicker"
+  />
 </template>
 
 <style scoped>

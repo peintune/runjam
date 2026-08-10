@@ -162,6 +162,8 @@ pub fn run() {
             commands::fs_cmd::write_file,
             commands::fs_cmd::read_file_bytes,
             commands::fs_cmd::search_files,
+            commands::fs_cmd::list_mention_entries,
+            commands::fs_cmd::search_mention_files,
             commands::cost_cmd::get_cost_summary,
             commands::cost_cmd::get_cost_by_agent,
             commands::cost_cmd::get_cost_by_day,
