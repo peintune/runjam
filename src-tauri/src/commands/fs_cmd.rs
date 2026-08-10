@@ -1,6 +1,10 @@
 use serde::Serialize;
+use calamine::Reader;
+use quick_xml::events::Event;
+use quick_xml::Reader as XmlReader;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Debug, Serialize, Clone)]
@@ -336,6 +340,13 @@ pub fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))
 }
 
+#[tauri::command]
+pub fn get_file_size(path: String) -> Result<u64, String> {
+    let metadata =
+        fs::metadata(&path).map_err(|e| format!("Failed to read file metadata: {}", e))?;
+    Ok(metadata.len())
+}
+
 // ── Mention picker ──────────────────────────────────────────
 
 /// Combined response for the @ mention picker: recent files + root-level entries.
@@ -531,4 +542,329 @@ pub fn search_mention_files(
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(results)
+}
+
+// ── File Attachment Parser ──────────────────────────────────────
+
+/// Max file size for parsing (10 MB).
+const MAX_PARSE_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Max parsed text length (50,000 chars).
+const MAX_PARSE_TEXT_LEN: usize = 50_000;
+
+/// Result of parsing an attached file for the LLM.
+#[derive(Debug, Serialize, Clone)]
+pub struct ParsedFile {
+    pub name: String,
+    pub path: String,
+    pub content: String,
+    pub size: u64,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+/// Parse a file into plain text for LLM context.
+/// Supports: txt, md, json, csv, log, yaml, yml, xml, py, js, ts, java, rs, go,
+///           html, css, sh, toml, docx, xlsx, xls, pptx, pdf
+#[tauri::command]
+pub fn parse_file(path: String) -> Result<ParsedFile, String> {
+    let file_path = Path::new(&path);
+    if !file_path.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+    if !file_path.is_file() {
+        return Err("Path is not a file".to_string());
+    }
+
+    let name = file_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    let metadata = fs::metadata(&path).map_err(|e| format!("Failed to read metadata: {}", e))?;
+    let size = metadata.len();
+
+    let ext = file_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // Reject oversized binary formats outright (they'd blow up memory).
+    // Plain text is capped below; docx/xlsx/pptx/pdf > 10MB are not worth parsing.
+    if size > MAX_PARSE_FILE_SIZE {
+        return Ok(ParsedFile {
+            name,
+            path,
+            content: String::new(),
+            size,
+            truncated: false,
+            error: Some(format!(
+                "File too large ({:.1} MB, max {} MB) — attach a smaller file",
+                size as f64 / (1024.0 * 1024.0),
+                MAX_PARSE_FILE_SIZE / (1024 * 1024)
+            )),
+        });
+    }
+
+    let result = match ext.as_str() {
+        // ── Plain text files ──────────────────────────────
+        "txt" | "md" | "json" | "csv" | "log" | "yaml" | "yml" | "xml"
+        | "py" | "js" | "jsx" | "ts" | "tsx" | "java" | "rs" | "go"
+        | "html" | "css" | "scss" | "less" | "sh" | "bash" | "toml"
+        | "ini" | "cfg" | "conf" | "sql" | "vue" | "rb" | "php"
+        | "swift" | "kt" | "scala" | "c" | "cpp" | "h" | "hpp" => {
+            parse_plain_text(&path, size)
+        }
+
+        // ── Office documents ─────────────────────────────
+        "docx" => parse_docx(&path, size),
+        "xlsx" | "xls" => parse_xlsx(&path, size),
+        "pptx" => parse_pptx(&path, size),
+
+        // ── PDF ──────────────────────────────────────────
+        "pdf" => parse_pdf(&path, size),
+
+        // ── Unsupported ──────────────────────────────────
+        _ => Err(format!("Unsupported file type: .{}", ext)),
+    };
+
+    match result {
+        Ok((content, truncated)) => Ok(ParsedFile {
+            name,
+            path,
+            content,
+            size,
+            truncated,
+            error: None,
+        }),
+        Err(err) => Ok(ParsedFile {
+            name,
+            path,
+            content: String::new(),
+            size,
+            truncated: false,
+            error: Some(err),
+        }),
+    }
+}
+
+/// Truncate text to MAX_PARSE_TEXT_LEN with a note.
+fn truncate_text(text: &str) -> (String, bool) {
+    if text.chars().count() > MAX_PARSE_TEXT_LEN {
+        let truncated: String = text.chars().take(MAX_PARSE_TEXT_LEN).collect();
+        (format!("{}\n\n[Content truncated — showing first {} characters]", truncated, MAX_PARSE_TEXT_LEN), true)
+    } else {
+        (text.to_string(), false)
+    }
+}
+
+/// Parse plain text files (UTF-8).
+fn parse_plain_text(path: &str, _size: u64) -> Result<(String, bool), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
+    Ok(truncate_text(&text))
+}
+
+/// Parse .docx (Office Open XML) — extract text from word/document.xml.
+fn parse_docx(path: &str, _size: u64) -> Result<(String, bool), String> {
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read docx: {}", e))?;
+
+    let mut doc = archive
+        .by_name("word/document.xml")
+        .map_err(|_| "Not a valid .docx file (missing word/document.xml)".to_string())?;
+
+    let mut xml = String::new();
+    doc.read_to_string(&mut xml).map_err(|e| format!("Failed to read document.xml: {}", e))?;
+
+    let text = extract_xml_text(&xml);
+    Ok(truncate_text(&text))
+}
+
+/// Parse .xlsx / .xls using calamine.
+fn parse_xlsx(path: &str, _size: u64) -> Result<(String, bool), String> {
+    let mut workbook = calamine::open_workbook_auto(path)
+        .map_err(|e| format!("Failed to open spreadsheet: {}", e))?;
+
+    let mut output = String::new();
+    let sheet_names = workbook.sheet_names().to_vec();
+
+    for sheet_name in &sheet_names {
+        if let Ok(range) = workbook.worksheet_range(sheet_name) {
+            output.push_str(&format!("--- Sheet: {} ---\n", sheet_name));
+            let mut rows_iter = range.rows();
+            let max_rows = 500;
+            let mut row_count = 0;
+
+            for row in rows_iter.by_ref() {
+                if row_count >= max_rows {
+                    output.push_str(&format!("\n[Truncated — showing first {} rows per sheet]\n", max_rows));
+                    break;
+                }
+                let cells: Vec<String> = row.iter().map(|c| c.to_string()).collect();
+                output.push_str(&cells.join("\t"));
+                output.push('\n');
+                row_count += 1;
+            }
+            output.push('\n');
+        }
+    }
+
+    if output.is_empty() {
+        output = "[Empty spreadsheet]".to_string();
+    }
+
+    Ok(truncate_text(&output))
+}
+
+/// Parse .pptx — extract text from all slides.
+fn parse_pptx(path: &str, _size: u64) -> Result<(String, bool), String> {
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open: {}", e))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Failed to read pptx: {}", e))?;
+
+    let mut output = String::new();
+    let mut slide_num = 1;
+
+    loop {
+        let slide_path = format!("ppt/slides/slide{}.xml", slide_num);
+        match archive.by_name(&slide_path) {
+            Ok(mut slide) => {
+                let mut xml = String::new();
+                slide.read_to_string(&mut xml).map_err(|e| format!("Failed to read slide {}: {}", slide_num, e))?;
+                let text = extract_xml_text(&xml);
+                if !text.trim().is_empty() {
+                    output.push_str(&format!("--- Slide {} ---\n{}\n\n", slide_num, text.trim()));
+                }
+                slide_num += 1;
+            }
+            Err(_) => break, // No more slides
+        }
+    }
+
+    if output.is_empty() {
+        output = "[No text content found in slides]".to_string();
+    }
+
+    Ok(truncate_text(&output))
+}
+
+/// Parse PDF using pdf-extract.
+fn parse_pdf(path: &str, _size: u64) -> Result<(String, bool), String> {
+    let bytes = fs::read(path).map_err(|e| format!("Failed to read PDF: {}", e))?;
+    let text = pdf_extract::extract_text_from_mem(&bytes)
+        .map_err(|e| format!("Failed to extract PDF text: {}", e))?;
+
+    if text.trim().is_empty() {
+        return Ok(("[No extractable text in PDF — may be scanned/image-based]".to_string(), false));
+    }
+
+    Ok(truncate_text(&text))
+}
+
+/// Extract visible text from Office Open XML (docx/pptx) using quick-xml.
+/// Collects only the text inside <w:t>/<a:t> elements (local name "t"),
+/// inserts a newline at paragraph (<w:p>/<a:p>) and break (<w:br/>/<a:br/>)
+/// boundaries so paragraphs stay readable.
+fn extract_xml_text(xml: &str) -> String {
+    let mut reader = XmlReader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut text = String::new();
+    let mut in_text = false;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                b"t" => in_text = true,
+                b"p" => {
+                    if !text.is_empty() && !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() == b"br" {
+                    text.push('\n');
+                }
+            }
+            Ok(Event::End(_)) => in_text = false,
+            Ok(Event::Text(e)) => {
+                if in_text {
+                    if let Ok(unescaped) = e.unescape() {
+                        text.push_str(&unescaped);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break, // malformed XML → return whatever was gathered
+            _ => {}
+        }
+    }
+
+    // Collapse runs of spaces/tabs (keep newlines), then trim.
+    let mut result = String::new();
+    let mut last_was_space = false;
+    for ch in text.chars() {
+        if (ch == ' ' || ch == '\t' || ch == '\r') && ch != '\n' {
+            if !last_was_space {
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push(ch);
+            last_was_space = ch == ' ';
+        }
+    }
+
+    result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_xml_text_docx() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Hello, World!</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second &amp; paragraph with </w:t></w:r><w:r><w:t>two runs</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">Trailing </w:t></w:r><w:r><w:br/><w:t>line break</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let text = extract_xml_text(xml);
+        assert!(text.contains("Hello, World!"), "missing first paragraph: {text}");
+        assert!(text.contains("Second & paragraph with two runs"), "entity/run concat failed: {text}");
+        assert!(text.contains('\n'), "no newlines inserted: {text}");
+    }
+
+    #[test]
+    fn test_extract_xml_text_pptx() {
+        let xml = r#"<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+<p:cSld><p:spTree>
+  <p:sp><p:txBody>
+    <a:p><a:r><a:t>Slide Title</a:t></a:r></a:p>
+    <a:p><a:r><a:t>Bullet 1</a:t></a:r><a:br/><a:r><a:t>Bullet 2</a:t></a:r></a:p>
+  </p:txBody></p:sp>
+</p:spTree></p:cSld></p:sld>"#;
+        let text = extract_xml_text(xml);
+        assert!(text.contains("Slide Title"), "missing slide title: {text}");
+        assert!(text.contains("Bullet 1"), "missing bullet: {text}");
+        assert!(text.contains('\n'), "no newlines inserted: {text}");
+    }
+
+    #[test]
+    fn test_parse_pptx_real_file() {
+        let path = "/Users/guizhan/.runjam/session/msmzr14dbcxvp8/outputs/project-management-best-practices.pptx";
+        if !std::path::Path::new(path).exists() {
+            return; // skip if file unavailable on this machine
+        }
+        let result = parse_pptx(path, 0);
+        assert!(result.is_ok(), "parse_pptx failed: {:?}", result.err());
+        let (text, _truncated) = result.unwrap();
+        assert!(!text.trim().is_empty(), "extracted text is empty");
+        let preview: String = text.chars().take(2000).collect();
+        println!("=== PPTX EXTRACTED TEXT ===\n{}", preview);
+    }
 }

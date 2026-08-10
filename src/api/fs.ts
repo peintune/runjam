@@ -50,3 +50,18 @@ export async function listMentionEntries(rootPath: string, recentLimit?: number)
 export async function searchMentionFiles(rootPath: string, query: string, limit?: number): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("search_mention_files", { rootPath, query, limit });
 }
+
+// ── File Attachment Parser ──────────────────────────────────────────
+
+export interface ParsedFile {
+  name: string;
+  path: string;
+  content: string;
+  size: number;
+  truncated: boolean;
+  error: string | null;
+}
+
+export async function parseFile(path: string): Promise<ParsedFile> {
+  return invoke<ParsedFile>("parse_file", { path });
+}

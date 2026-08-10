@@ -17,8 +17,8 @@ import { homeDir } from "@tauri-apps/api/path";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MentionPicker from "./MentionPicker.vue";
-import { type FileEntry } from "../api/fs";
-import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2 } from "lucide-vue-next";
+import { type FileEntry, parseFile } from "../api/fs";
+import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
@@ -195,6 +195,118 @@ const inputText = ref("");
 const dirPath = ref("");
 const showDirMenu = ref(false);
 const showMoreAgents = ref(false);
+
+// ── Attached files ─────────────────────────────────────────────
+// Files selected via the + button; parsed to text right before send.
+const attachedFiles = ref<AttachedFile[]>([]);
+const showAttachList = ref(false);
+
+interface AttachedFile {
+  path: string;
+  name: string;
+  size: number;
+  ext: string;
+  parsedContent: string;
+  truncated: boolean;
+  error: string;
+}
+
+// File extensions accepted by the + file picker (mirrors backend parse_file).
+const ATTACH_ACCEPTED_EXTS = [
+  "txt", "md", "json", "csv", "log", "yaml", "yml", "xml",
+  "py", "js", "jsx", "ts", "tsx", "java", "rs", "go",
+  "html", "css", "scss", "less", "sh", "bash", "toml", "ini", "cfg", "conf",
+  "sql", "vue", "rb", "php", "swift", "kt", "scala", "c", "cpp", "h", "hpp",
+  "docx", "xlsx", "xls", "pptx", "pdf",
+];
+
+// Max total attached text sent to the LLM (100k chars) to protect context.
+const MAX_ATTACH_TOTAL_CHARS = 100_000;
+
+async function handleAttachFiles() {
+  try {
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: "Supported Files", extensions: ATTACH_ACCEPTED_EXTS }],
+    });
+    if (!selected) return;
+    const list = Array.isArray(selected) ? selected : [selected];
+    const existing = new Set(attachedFiles.value.map(f => f.path));
+    for (const file of list) {
+      if (existing.has(file)) continue;
+      const name = file.split("/").pop() || file;
+      const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+      let size = 0;
+      try {
+        size = await invoke<number>("get_file_size", { path: file });
+      } catch { /* ignore */ }
+      attachedFiles.value.push({
+        path: file,
+        name,
+        size,
+        ext,
+        parsedContent: "",
+        truncated: false,
+        error: "",
+      });
+    }
+  } catch (err) {
+    console.error("Failed to open file picker:", err);
+  }
+}
+
+function removeAttachedFile(path: string) {
+  attachedFiles.value = attachedFiles.value.filter(f => f.path !== path);
+  if (attachedFiles.value.length === 0) showAttachList.value = false;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Parse each attached file into plain text and build the final message.
+// Failed files are skipped (with a warning); total length is capped so the
+// LLM context isn't blown up by huge attachments.
+async function buildAttachmentMessage(userText: string): Promise<string> {
+  const parts: string[] = [];
+  let failures: string[] = [];
+
+  for (const f of attachedFiles.value) {
+    try {
+      const parsed = await parseFile(f.path);
+      if (parsed.error) {
+        f.error = parsed.error;
+        failures.push(`${f.name}: ${parsed.error}`);
+        continue;
+      }
+      f.parsedContent = parsed.content;
+      f.truncated = parsed.truncated;
+      parts.push(`[Attached File: ${f.name}]\n${parsed.content}`);
+    } catch (err) {
+      f.error = String(err);
+      failures.push(`${f.name}: ${err}`);
+    }
+  }
+
+  // Enforce a hard cap on the total attachment text sent to the LLM.
+  let attachText = parts.join("\n\n");
+  if (attachText.length > MAX_ATTACH_TOTAL_CHARS) {
+    attachText = attachText.slice(0, MAX_ATTACH_TOTAL_CHARS)
+      + `\n\n[Attachments truncated: content exceeds ${(MAX_ATTACH_TOTAL_CHARS / 1000).toFixed(0)}k characters]`;
+  }
+
+  attachedFiles.value = [];
+  showAttachList.value = false;
+
+  if (failures.length > 0) {
+    showWarning(`Failed to parse: ${failures.join("; ")}`);
+  }
+
+  if (!attachText) return userText;
+  return userText ? `${userText}\n\n${attachText}` : attachText;
+}
 
 // Skills: loaded from builtin-skills, user can toggle which ones to deploy
 const availableSkills = ref<SkillInfo[]>([]);
@@ -1260,6 +1372,18 @@ async function handleSend() {
 
   inputText.value = "";
 
+  // 发送给 LLM 的文本：含附件解析出的完整内容
+  let sendText = text;
+  let attachNames: string[] = [];
+  if (attachedFiles.value.length > 0) {
+    attachNames = attachedFiles.value.map(f => f.name);
+    sendText = await buildAttachmentMessage(text);
+  }
+  // 用户消息显示：原文 + 附件文件名列表（不暴露文件内容）
+  const userDisplay = attachNames.length > 0
+    ? `${text}\n\n${attachNames.map(n => `📎 ${n}`).join("\n")}`
+    : text;
+
   if(!store.activeSession) {
     const a=agents.value.find(a=>a.id===selectedAgentId.value)!;
     const title = text.substring(0, 30) + (text.length > 30 ? '...' : '');
@@ -1292,21 +1416,21 @@ async function handleSend() {
       console.error("Failed to restart session:", err);
       // Show error in chat instead of calling sendInput (which would fail with "No client for session")
       const state = getSessionState(s.id);
-      state.messages.push({role:"user",content:text});
+      state.messages.push({role:"user",content:userDisplay});
       state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
       messages.value = [...state.messages];
       msgStore.setMessages(s.id, [...state.messages]);
-      saveConversationMessage(s.id, "user", text).catch(()=>{});
+      saveConversationMessage(s.id, "user", userDisplay).catch(()=>{});
       return;
     }
   }
 
   if (store.activeSession?.id) {
     const state = getSessionState(store.activeSession.id);
-    state.messages.push({role:"user",content:text});
+    state.messages.push({role:"user",content:userDisplay});
     messages.value = [...state.messages];
     msgStore.setMessages(store.activeSession.id, [...state.messages]);
-    saveConversationMessage(store.activeSession.id, "user", text).catch(()=>{});
+    saveConversationMessage(store.activeSession.id, "user", userDisplay).catch(()=>{});
   }
 
   if(store.activeSession) {
@@ -1331,7 +1455,7 @@ async function handleSend() {
       store.sessions = [...store.sessions];
     }
     invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
-    sendInput(sessionId, text, history).catch(err=>{
+    sendInput(sessionId, sendText, history).catch(err=>{
       const state = getSessionState(sessionId);
       state.messages.push({role:"agent",content:`Error:${err}`});
       state.isProcessing = false;
@@ -1566,7 +1690,55 @@ watch(messages, (msgs) => {
             </div>
 
             <textarea v-model="inputText" ref="activeSessionTextarea" :placeholder="typingPlaceholder" rows="2" class="w-full px-4 pt-2 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 leading-relaxed" @input="onTextareaInput" @keydown="onTextareaKeydown" :disabled="isProcessing" />
-            <div class="flex items-center justify-end px-3 pb-2 gap-2">
+            <div class="flex items-center justify-between px-3 pb-2 gap-2">
+              <div class="relative flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  @click="handleAttachFiles"
+                  :disabled="isProcessing"
+                  class="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors duration-150 cursor-pointer flex-shrink-0"
+                  :class="isProcessing && 'opacity-50 cursor-not-allowed'"
+                  title="Attach files"
+                >
+                  <Paperclip :size="14" />
+                </button>
+                <!-- Attachment count badge → opens attachment list popover -->
+                <button
+                  v-if="attachedFiles.length > 0"
+                  @click.stop="showAttachList = !showAttachList"
+                  class="min-w-[18px] h-[18px] px-1 rounded-full bg-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center cursor-pointer hover:bg-gray-300 transition-colors flex-shrink-0"
+                  title="View attached files"
+                >{{ attachedFiles.length }}</button>
+
+                <!-- Attachment list popover -->
+                <div
+                  v-if="showAttachList && attachedFiles.length > 0"
+                  class="absolute bottom-full left-0 mb-1 w-72 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50"
+                  @click.stop
+                >
+                  <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
+                    <span class="text-[11px] font-medium text-gray-500">Attached Files ({{ attachedFiles.length }})</span>
+                    <button @click.stop="showAttachList = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
+                      <X :size="12" />
+                    </button>
+                  </div>
+                  <div class="max-h-[240px] overflow-y-auto py-1">
+                    <div
+                      v-for="f in attachedFiles" :key="f.path"
+                      class="group flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50"
+                    >
+                      <Paperclip :size="12" class="text-gray-400 flex-shrink-0" />
+                      <div class="flex-1 min-w-0">
+                        <div class="text-[12px] text-gray-800 truncate">{{ f.name }}</div>
+                        <div class="text-[10px] text-gray-400 truncate">{{ f.path }}</div>
+                      </div>
+                      <span class="text-[10px] text-gray-400 flex-shrink-0">{{ formatFileSize(f.size) }}</span>
+                      <button @click="removeAttachedFile(f.path)" class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 cursor-pointer" title="Remove">
+                        <X :size="11" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div class="flex items-center gap-2 flex-shrink-0">
                 <!-- Permission mode selector -->
                 <div class="relative permission-selector">
@@ -1801,7 +1973,50 @@ watch(messages, (msgs) => {
           >
             {{ typingPlaceholder }}<span class="animate-pulse">|</span>
           </div>
-          <div class="flex items-center justify-end px-3 pb-2 gap-2">
+          <div class="flex items-center justify-between px-3 pb-2 gap-2">
+            <div class="relative flex items-center gap-1.5 flex-shrink-0">
+              <button
+                @click="handleAttachFiles"
+                class="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors duration-150 cursor-pointer flex-shrink-0"
+                title="Attach files"
+              >
+                <Paperclip :size="14" />
+              </button>
+              <!-- Attachment count badge → opens attachment list popover -->
+              <button
+                v-if="attachedFiles.length > 0"
+                @click.stop="showAttachList = !showAttachList"
+                class="min-w-[18px] h-[18px] px-1 rounded-full bg-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center cursor-pointer hover:bg-gray-300 transition-colors flex-shrink-0"
+                title="View attached files"
+              >{{ attachedFiles.length }}</button>
+
+              <!-- Attachment list popover -->
+              <div
+                v-if="showAttachList && attachedFiles.length > 0"
+                class="absolute bottom-full left-0 mb-1 w-72 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50"
+                @click.stop
+              >
+                <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
+                  <span class="text-[11px] font-medium text-gray-500">Attached Files ({{ attachedFiles.length }})</span>
+                  <button @click.stop="showAttachList = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
+                    <X :size="12" />
+                  </button>
+                </div>
+                <div class="max-h-[240px] overflow-y-auto py-1">
+                  <div
+                    v-for="f in attachedFiles" :key="f.path"
+                    class="group flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50"
+                  >
+                    <Paperclip :size="12" class="text-gray-400 flex-shrink-0" />
+                    <div class="flex-1 min-w-0 text-[12px] text-gray-800 truncate">{{ f.name }}</div>
+                    <span class="text-[10px] text-gray-400 flex-shrink-0">{{ formatFileSize(f.size) }}</span>
+                    <button @click="removeAttachedFile(f.path)" class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 cursor-pointer" title="Remove">
+                      <X :size="11" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="flex items-center gap-2 flex-shrink-0">
               <!-- Permission mode selector -->
               <div class="relative permission-selector">
