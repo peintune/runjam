@@ -13,7 +13,7 @@ import { useSessionLayout } from "../composables/useSessionLayout";
 import { homeDir } from "@tauri-apps/api/path";
 import {
   PanelLeftOpen, PanelLeftClose,
-  Files, Terminal,
+  FolderTree, Terminal,
 } from "lucide-vue-next";
 
 // ── State ────────────────────────────────────────
@@ -173,7 +173,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         style="-webkit-app-region: no-drag"
         :title="isWorkspaceMode ? 'Close explorer' : 'Open explorer'"
       >
-        <Files :size="18" />
+        <FolderTree :size="18" />
       </button>
 
       <!-- Terminal toggle -->
@@ -253,7 +253,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
             : {}"
           :class="!isWorkspaceMode || !activeDirectory ? 'flex-1' : ''"
         >
-          <SessionView />
+          <SessionView :compact="isWorkspaceMode && !!activeDirectory" />
         </div>
       </div>
     </div>

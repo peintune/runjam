@@ -35,6 +35,12 @@ interface AcpPayload {
   cached_tokens?: number;
 }
 
+const props = defineProps<{
+  /** Compact mode: hide text labels in permission/model selectors to save
+   *  horizontal space when the chat panel is narrowed by the file tree. */
+  compact?: boolean;
+}>();
+
 const store = useWorkspaceStore();
 const router = useRouter();
 const msgStore = useMessageStore();
@@ -1435,8 +1441,8 @@ watch(messages, (msgs) => {
                   <button @click.stop="showPermissionDropdown = !showPermissionDropdown"
                     class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                     <Shield :size="11" />
-                    <span class="hidden md:inline">{{ permissionModeLabel }}</span>
-                    <ChevronDown :size="10" />
+                    <span :class="props.compact ? 'hidden' : 'hidden md:inline'">{{ permissionModeLabel }}</span>
+                    <ChevronDown :size="10" :class="props.compact ? 'hidden' : ''" />
                   </button>
                   <div v-if="showPermissionDropdown" class="absolute bottom-full right-0 mb-1 w-48 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50">
                     <div v-for="o in permissionDisplayLabels" :key="o.id"
@@ -1460,12 +1466,12 @@ watch(messages, (msgs) => {
                     class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium text-gray-600 hover:bg-gray-50 transition-all duration-150 cursor-pointer">
                     <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                     <Sparkles v-else :size="11" />
-                    <span class="text-left hidden md:inline">
+                    <span class="text-left" :class="props.compact ? 'hidden' : 'hidden md:inline'">
                       <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || 'Select Model' }}</span>
-                      <span v-if="selectedModelInfo && selectedModelInfo.alias" 
+                      <span v-if="selectedModelInfo && selectedModelInfo.alias"
                             class="text-[10px] text-gray-400 ml-1">{{ selectedModelInfo.name }}</span>
                     </span>
-                    <ChevronDown :size="10" />
+                    <ChevronDown :size="10" :class="props.compact ? 'hidden' : ''" />
                   </button>
                   <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
                     <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Commercial Models</div>
@@ -1500,14 +1506,14 @@ watch(messages, (msgs) => {
                   </div>
                 </div>
 
-                <button v-if="!isProcessing" @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" title="Toggle reasoning mode">
+                <button @click="noThinking = !noThinking" :disabled="isProcessing" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" title="Toggle reasoning mode">
                   <Sparkles :size="14" />
                 </button>
-                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 relative" :class="(inputText.trim() && selectedModel)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
-                  <Send :size="14" />
+                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                  <Send :size="12" />Send
                   <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
                 </button>
-                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm"><Square :size="12" />Stop</button>
+                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0"><Square :size="12" />Stop</button>
               </div>
             </div>
           </div>
@@ -1749,8 +1755,8 @@ watch(messages, (msgs) => {
                 <Sparkles :size="14" />
               </button>
               <!-- Send button -->
-              <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
-                <Send :size="14" />
+              <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                <Send :size="12" />Send
                 <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
               </button>
             </div>
