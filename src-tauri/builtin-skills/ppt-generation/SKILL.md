@@ -1,12 +1,16 @@
 ---
 name: ppt-generation
-description: Use this skill when the user requests to generate, create, or make presentations (PPT/PPTX). Creates visually rich slides by generating images for each slide and composing them into a PowerPoint file.
+description: Use this skill when the user requests to generate, create, or make presentations (PPT/PPTX). Has TWO workflows: (1) Primary — AI-generated full-slide images composed via `scripts/generate.py`; (2) Fallback — `python-pptx` programmatic slides (all text editable, better for reports/project management). The fallback auto-activates when image-generation or the compose script is missing. Final PPTX always goes to `./outputs/`.
 ---
-> **Note:** This skill depends on the `image-generation` skill for slide image generation. If it's not available, use any available image generation tool. The `scripts/generate.py` composes slide images into a PPTX file using python-pptx.
+> **⚠️ This skill has TWO workflows. Always run the Dependency Check first and pick the right one — do NOT assume the image-based path works.**
+> 1. **Primary (image-based):** Requires `image-generation` skill + `scripts/generate.py`. Generates full-slide images and composes them into PPTX.
+> 2. **Fallback (python-pptx):** Use when image-generation or the compose script is missing. Creates slides programmatically with `python-pptx` — all text is editable, copyable, searchable. This is the BETTER choice for project management, reports, and data-heavy presentations.
+>
+> **Output path rule (from `runjam-defaults`):** The final `.pptx` file MUST be placed in `./outputs/`. Before starting: `mkdir -p ./outputs`. Never output to arbitrary directories.
 
 # PPT Generation Skill
 ## Overview
-This skill generates professional PowerPoint presentations by creating AI-generated images for each slide and composing them into a PPTX file. The workflow includes planning the presentation structure with a consistent visual style, generating slide images sequentially (using the previous slide as a reference for style consistency), and assembling them into a final presentation.
+This skill generates professional PowerPoint presentations. The primary workflow uses AI-generated images for each slide (composed via `scripts/generate.py`). When those dependencies are unavailable, the **fallback** workflow builds slides natively with `python-pptx` — all text remains editable, which is usually the preferred delivery for project-management decks, reports, and any content the user's team needs to modify.
 ## Core Capabilities
 - Plan and structure multi-slide presentations with unified visual style
 - Support multiple presentation styles: Business, Academic, Minimal, Apple Keynote, Creative
@@ -25,6 +29,26 @@ Choose one of the following styles when creating the presentation plan:
 | **editorial** | Magazine-quality layouts, sophisticated typography hierarchy, dramatic photography, Vogue/Bloomberg aesthetic | Annual reports, luxury brands, thought leadership |
 | **minimal-swiss** | Grid-based precision, Helvetica-inspired typography, bold use of negative space, timeless modernism | Architecture, design firms, premium consulting |
 | **keynote** | Apple-inspired aesthetic with bold typography, dramatic imagery, high contrast, cinematic feel | Keynotes, product reveals, inspirational talks |
+
+## Dependency Check (MUST RUN FIRST)
+
+Before starting any workflow, check what's actually available:
+
+1. Check if `../image-generation/SKILL.md` exists → image-based primary workflow possible?
+2. Check if `./scripts/generate.py` exists → compose script available?
+3. Check `python-pptx`: `python -c "import pptx" 2>&1` (needed for both compose and fallback)
+
+**Decision matrix:**
+
+| image-generation skill | scripts/generate.py | python-pptx | Workflow |
+|---|---|---|---|
+| ✅ present | ✅ present | ✅ installed | **Primary (image-based)** |
+| ❌ missing | ❌ missing | ✅ installed | **Fallback (python-pptx)** — tell the user you switched and why |
+| ❌ missing | ❌ missing | ❌ missing | Install `python-pptx` first: `pip install python-pptx`, then use Fallback |
+| ⚠️ any mix | ⚠️ any mix | ✅ installed | Use **Fallback** — avoid partial image workflow; the compose chain breaks without ALL pieces |
+
+**Note:** In most RunJam installations today, neither `image-generation` nor `scripts/generate.py` ship with the app. Assume Fallback unless you explicitly see both present.
+
 ## Workflow
 ### Step 1: Understand Requirements
 When a user requests presentation generation, identify:
@@ -130,6 +154,219 @@ Parameters:
 - `--output-file`: Absolute path to output PPTX file (required)
 [!NOTE]
 Do NOT read the python file, just call it with the parameters.
+
+## Fallback Workflow: python-pptx (programmatic slide creation)
+
+Use this workflow when the `image-generation` skill OR `scripts/generate.py` is not available. This approach creates slides natively using `python-pptx`, resulting in real PowerPoint files where all text is editable, copyable, and searchable. For project management decks, status reports, training material, and data-heavy content this is usually the **better** deliverable — your user's team can edit slides directly.
+
+### Fallback Step 0: Ensure dependencies + output dir
+
+**⚠️ Run these from the SESSION WORKING DIRECTORY (session root), NOT from inside the skill folder.** If `pwd` contains `skills/`, `cd` up to the session root first.
+
+```bash
+pwd                          # MUST show session root, NOT .../skills/ppt-generation
+mkdir -p ./outputs ./workspace
+# Check python-pptx
+python -c "import pptx" 2>&1
+# If the above fails → install:
+#   pip install python-pptx
+```
+
+**Do NOT create `outputs/` or `workspace/` inside `.claude/skills/ppt-generation/`.** That is the #1 mistake — skill folders are read-only. See `runjam-defaults` §0.
+
+### Fallback Step 1: Write the build script
+
+Create a Python script at `./workspace/build_<deck-name>_pptx.py` (in the **session root's** workspace, NOT the skill folder). Use this pattern:
+
+```python
+import os
+from pptx import Presentation
+from pptx.util import Inches, Pt, Emu
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
+
+# --- Path safety guard (from runjam-defaults §0) ---
+# Ensure outputs land in the session working directory, NOT inside a skill folder.
+# If cwd contains '.claude/skills' or '.codex/skills' or '.gemini/skills',
+# walk up to the session root (parent of the .claude/.codex/.gemini dir).
+_cwd = os.getcwd()
+for _marker in ('.claude', '.codex', '.gemini'):
+    _idx = _cwd.find(os.sep + _marker + os.sep + 'skills')
+    if _idx != -1:
+        os.chdir(_cwd[:_idx])
+        break
+SESSION_ROOT  = os.getcwd()
+OUTPUTS_DIR   = os.path.join(SESSION_ROOT, 'outputs')
+WORKSPACE_DIR = os.path.join(SESSION_ROOT, 'workspace')
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+# --- Configuration ---
+OUTPUT_PATH = os.path.join(OUTPUTS_DIR, "project-management-best-practices.pptx")
+ASPECT_W, ASPECT_H = Inches(13.333), Inches(7.5)  # 16:9
+
+# Color palette (pick one consistent theme; see presets below)
+BG          = RGBColor(0x0F, 0x17, 0x2A)  # deep navy bg
+ACCENT      = RGBColor(0x3B, 0x82, 0xF6)  # primary blue
+ACCENT_2    = RGBColor(0x10, 0xB9, 0x81)  # secondary green
+TITLE_COLOR = RGBColor(0xFF, 0xFF, 0xFF)
+BODY_COLOR  = RGBColor(0xCB, 0xD5, 0xE1)
+CARD_BG     = RGBColor(0x1E, 0x29, 0x3B)
+
+# Palette presets (swap BG/ACCENT*/TITLE*/BODY*/CARD_BG as needed):
+#   Navy executive:  BG=0F172A  ACCENT=3B82F6  ACCENT2=10B981  TITLE=FFFFFF  BODY=CBD5E1  CARD=1E293B
+#   Forest & moss:   BG=0E1F12  ACCENT=22C55E  ACCENT2=F59E0B  TITLE=FFFFFF  BODY=D1FAE5  CARD=18351C
+#   Warm terracotta: BG=1F120B  ACCENT=EA580C  ACCENT2=DC2626  TITLE=FFF7ED  BODY=FED7AA  CARD=2E1C12
+#   Charcoal minimal: BG=1C1C1E ACCENT=0A84FF  ACCENT2=8E8E93  TITLE=FFFFFF  BODY=E5E5EA  CARD=2C2C2E
+#   Light corporate:  BG=FFFFFF  ACCENT=1D4ED8  ACCENT2=047857  TITLE=0F172A  BODY=475569  CARD=F1F5F9
+
+# --- Setup presentation ---
+prs = Presentation()
+prs.slide_width  = ASPECT_W
+prs.slide_height = ASPECT_H
+SLIDE_LAYOUT_BLANK = prs.slide_layouts[6]  # 6 = blank
+
+def add_slide(bg_color=BG):
+    s = prs.slides.add_slide(SLIDE_LAYOUT_BLANK)
+    b = s.background.fill
+    b.solid()
+    b.fore_color.rgb = bg_color
+    return s
+
+def add_text(slide, x_in, y_in, w_in, h_in, text, *,
+             font_size=18, bold=False, color=BODY_COLOR,
+             align=PP_ALIGN.LEFT, word_wrap=True):
+    tb = slide.shapes.add_textbox(Inches(x_in), Inches(y_in),
+                                  Inches(w_in), Inches(h_in))
+    tf = tb.text_frame
+    tf.word_wrap = word_wrap
+    p = tf.paragraphs[0]
+    p.text = text
+    p.font.size = Pt(font_size)
+    p.font.bold = bold
+    p.font.color.rgb = color
+    p.alignment = align
+    return tb
+
+def add_rect(slide, x_in, y_in, w_in, h_in, *, fill_color=CARD_BG, line_color=None):
+    shp = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
+                                 Inches(x_in), Inches(y_in),
+                                 Inches(w_in), Inches(h_in))
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = fill_color
+    if line_color is None:
+        shp.line.fill.background()
+    else:
+        shp.line.color.rgb = line_color
+    shp.shadow.inherit = False
+    return shp
+
+def add_accent_bar(slide, x_in, y_in, w_in=0.08, h_in=0.5, *, color=ACCENT):
+    shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE,
+                                 Inches(x_in), Inches(y_in),
+                                 Inches(w_in), Inches(h_in))
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = color
+    shp.line.fill.background()
+    shp.shadow.inherit = False
+    return shp
+
+# --- Style tier sizes (HARD RULES from runjam-defaults) ---
+# Title ≥ 36pt bold, body ≥ 18pt, title ≥ 2x body size.
+# Edges: ≥ 0.5in (≈1.27cm) margin. Negative space ≥ 20%.
+
+# =========================================================
+# SLIDE 1 — Title / Cover
+# =========================================================
+s = add_slide()
+# Left accent band
+add_accent_bar(s, 0.8, 2.6, w_in=0.10, h_in=2.4, color=ACCENT)
+# Title
+add_text(s, 1.2, 2.6, 11.0, 1.4,
+         "Project Management Best Practices",
+         font_size=44, bold=True, color=TITLE_COLOR)
+# Subtitle
+add_text(s, 1.2, 4.1, 11.0, 0.8,
+         "Deliver on Time, on Scope, on Budget — Every Time",
+         font_size=22, color=ACCENT)
+# Footer meta row
+add_text(s, 1.2, 6.3, 8.0, 0.4,
+         "Internal Playbook  •  Q3 2026",
+         font_size=12, color=BODY_COLOR)
+
+# =========================================================
+# SLIDE 2 — Agenda / Contents
+# =========================================================
+s = add_slide()
+add_accent_bar(s, 0.8, 0.9, w_in=0.10, h_in=0.55, color=ACCENT)
+add_text(s, 1.2, 0.8, 11.0, 0.8,
+         "Agenda", font_size=40, bold=True, color=TITLE_COLOR)
+
+items = [
+    ("01", "Foundations — Goals, Scope, Stakeholders"),
+    ("02", "Planning — WBS, Schedules, Risks, Estimates"),
+    ("03", "Execution — Standups, Tracking, Communication"),
+    ("04", "Controlling — Variance, Change Control, Quality"),
+    ("05", "Closing — Handover, Retrospectives, Lessons"),
+    ("06", "Common Failures and How to Avoid Them"),
+]
+y = 2.2
+for num, label in items:
+    add_rect(s, 1.0, y, 11.3, 0.62, fill_color=CARD_BG)
+    add_text(s, 1.2, y+0.08, 0.8, 0.5,
+             num, font_size=20, bold=True, color=ACCENT)
+    add_text(s, 2.2, y+0.12, 9.9, 0.5,
+             label, font_size=18, color=BODY_COLOR)
+    y += 0.74
+
+# =========================================================
+# SLIDE 3+ — Build the rest iteratively
+# =========================================================
+# Pattern for a content slide:
+#   s = add_slide()
+#   add_accent_bar(s, 0.8, 0.9, w_in=0.10, h_in=0.55)
+#   add_text(s, 1.2, 0.8, 11.0, 0.8, "Section Title", font_size=40, bold=True, color=TITLE_COLOR)
+#   # Add cards / bullets / KPI numbers using add_rect + add_text
+#
+# Pattern for a bullet card (3 cards across):
+#   col_w, card_h = 3.84, 3.6
+#   gap, left0, top0 = 0.3, 1.0, 2.0
+#   cards = [("Title A", ["p1","p2","p3"]), ("Title B", ["..."]), ("Title C", ["..."])]
+#   for i, (t, bullets) in enumerate(cards):
+#       x = left0 + i*(col_w + gap)
+#       add_rect(s, x, top0, col_w, card_h)
+#       add_text(s, x+0.25, top0+0.2, col_w-0.5, 0.6, t, font_size=22, bold=True, color=TITLE_COLOR)
+#       by = top0 + 1.0
+#       for b in bullets:
+#           add_text(s, x+0.25, by, col_w-0.5, 0.45, "•  " + b, font_size=16, color=BODY_COLOR)
+#           by += 0.5
+
+# --- Save (ALWAYS under ./outputs/) ---
+prs.save(OUTPUT_PATH)
+print(f"✅ Saved: {OUTPUT_PATH}")
+print(f"   Slides: {len(prs.slides)}")
+```
+
+### Fallback Step 2: Execute and verify
+
+```bash
+python ./workspace/build_<deck-name>_pptx.py
+# Verify output exists with non-zero size
+ls -la ./outputs/*.pptx
+```
+
+### Fallback Step 3: Hard rules (from `runjam-defaults`)
+
+Every deck produced via Fallback MUST satisfy:
+
+- **One idea per slide.** If a slide needs a second title to explain its scope → split.
+- **Type hierarchy set explicitly** (no theme-default drift): slide title **≥ 36pt bold**, body text **≥ 18pt**, title size ≥ 2× body size. Left-align body; center only titles and hero KPI numbers.
+- **Contrast floor.** Light text on dark background (or dark text on light) — never dark-on-dark or light-on-light. When in doubt, use the palette presets above; they are vetted.
+- **Each content slide carries a non-text visual that informs.** A card layout, a KPI rectangle with an accent bar, a bullet card grid, or an icon-like shape — not just a wall of bullets.
+- **Margins + negative space.** Edge margin ≥ 0.5in (≈1.27cm) on all sides. Inter-block gap ≥ 0.3in (≈0.76cm). ~20% negative space; don't pack until it bursts.
+- **Speaker notes** on every non-cover slide. Add via the plan JSON (carry narration) and write them as a text paragraph in the build script, or add them with `python-pptx` slide notes API after creating the slide.
+
 ## Complete Example: Glassmorphism Style (最现代前卫)
 User request: "Create a presentation about AI product launch"
 ### Step 1: Create presentation plan

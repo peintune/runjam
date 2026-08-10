@@ -55,7 +55,14 @@ pub async fn start_session(
         _ => "",
     };
     if !agent_type.is_empty() {
-        let skill_names = skills.unwrap_or_default();
+        let mut skill_names = skills.unwrap_or_default();
+        // Always inject the default constraints skill so every session has
+        // guardrails: output path conventions, dependency checks, fallback
+        // strategies, and file management discipline. Users cannot opt out
+        // of this via the UI — it is added server-side.
+        if !skill_names.iter().any(|n| n == "runjam-defaults") {
+            skill_names.push("runjam-defaults".to_string());
+        }
         if let Err(e) = skill::deploy_skills_to_session(&app, &dir, agent_type, &skill_names) {
             crate::rjlog!("[SESSION] Warning: skill deployment failed: {}", e);
             // Non-fatal — session should still start without skills.
