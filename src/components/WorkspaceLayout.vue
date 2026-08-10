@@ -10,6 +10,7 @@ import WindowControls from "./WindowControls.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
+import { homeDir } from "@tauri-apps/api/path";
 import {
   PanelLeftOpen, PanelLeftClose,
   Files, Terminal,
@@ -22,6 +23,12 @@ const isWorkspaceMode = ref(false);
 
 const store = useWorkspaceStore();
 const { layout, switchDirectory, saveLayout } = useSessionLayout();
+
+// Cached home directory for computing default session paths. The backend
+// uses ~/.runjam/session/{id} for sessions without a user-chosen directory;
+// we need this path so the file explorer and terminal work for those
+// sessions too (not just for sessions bound to a project directory).
+const cachedHomeDir = ref("");
 
 /** macOS keeps native traffic lights (titleBarStyle: Overlay); other platforms
  *  use decorations:false + our custom title bar, so no traffic-light spacer. */
@@ -39,9 +46,22 @@ function currentDirectoryId(): string | null {
 const showTerminal = ref(false);
 
 const activeDirectory = computed(() => {
-  if (!store.activeSession?.directoryId) return "";
-  const dir = store.directories.find((d) => d.id === store.activeSession!.directoryId);
-  return dir?.path || "";
+  const session = store.activeSession;
+  if (!session) return "";
+  // 1. Bound project directory (user-selected folder)
+  if (session.directoryId) {
+    const dir = store.directories.find((d) => d.id === session.directoryId);
+    if (dir?.path) return dir.path;
+  }
+  // 2. Actual working directory captured from the backend's start_session
+  //    response (includes default-directory sessions: ~/.runjam/session/{id})
+  if (session.directory) return session.directory;
+  // 3. Fallback for old sessions whose directory wasn't persisted — compute
+  //    the default path so the explorer/terminal still work.
+  if (cachedHomeDir.value) {
+    return `${cachedHomeDir.value}/.runjam/session/${session.id}`;
+  }
+  return "";
 });
 
 // Enable workspace mode only when there's a bound directory
@@ -75,6 +95,7 @@ watch(() => store.activeSessionId, (newId) => {
 });
 
 onMounted(async () => {
+  homeDir().then(h => { cachedHomeDir.value = h; }).catch(() => {});
   await store.loadSessions();
   if (store.activeSessionId) {
     const dirId = currentDirectoryId();
@@ -212,6 +233,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         <WorkspacePanel
           v-if="isWorkspaceMode && activeDirectory"
           :show-terminal="showTerminal"
+          :root-path="activeDirectory"
           @update:show-terminal="(val: boolean) => { showTerminal = val; layout.showTerminal = val; saveLayout(); }"
         />
 

@@ -667,8 +667,11 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         // Claude/Codex send incremental deltas instead. Heuristic that works
         // for both: if the new chunk starts with the already-accumulated text,
         // treat it as a snapshot and REPLACE; otherwise APPEND (delta).
+        // Use trimEnd() to tolerate trailing whitespace differences between
+        // snapshots (same fix as the text handler above).
         const prev = state.activeThinking;
-        if (prev && p.content.length > prev.length && p.content.startsWith(prev)) {
+        const prevTrimmed = prev.trimEnd();
+        if (prevTrimmed && p.content.length > prevTrimmed.length && p.content.startsWith(prevTrimmed)) {
           state.activeThinking = p.content; // snapshot — replace
         } else {
           state.activeThinking += p.content; // delta — append
@@ -716,11 +719,16 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         lt2.thoughtDuration = state.thoughtDuration;
       }
       // Gemini agent_message_chunk sends the FULL message text each time
-      // (snapshot), not incremental deltas. If we blindly append, the same
-      // text gets duplicated. Use the same heuristic as thinking: if the
-      // new chunk starts with the accumulated text, replace; else append.
+      // (snapshot), not incremental deltas. Claude also sends snapshots but
+      // with inconsistent trailing whitespace between chunks (e.g. "properly. "
+      // then "properly.I'll"), which would break a naive startsWith check and
+      // cause cumulative duplication. Trim trailing whitespace from the
+      // accumulated text before comparing so snapshot detection is robust.
+      // Claude/Codex deltas don't start with the accumulated text, so they
+      // still take the append branch correctly.
       const prev = state.activeContent;
-      if (prev && p.content && p.content.length > prev.length && p.content.startsWith(prev)) {
+      const prevTrimmed = prev.trimEnd();
+      if (prevTrimmed && p.content && p.content.length > prevTrimmed.length && p.content.startsWith(prevTrimmed)) {
         state.activeContent = p.content;
       } else {
         state.activeContent += (p.content||"");

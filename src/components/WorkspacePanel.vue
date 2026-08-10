@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, watch } from "vue";
-import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
 import FileTree from "./FileTree.vue";
@@ -9,23 +8,22 @@ import FilePreview from "./FilePreview.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import { FileText, X } from "lucide-vue-next";
 
-defineProps<{
+const props = defineProps<{
   showTerminal: boolean;
+  rootPath: string;
 }>();
 
 const emit = defineEmits<{
   (e: "update:showTerminal", value: boolean): void;
 }>();
 
-const store = useWorkspaceStore();
 const { layout, saveLayout } = useSessionLayout();
 
-const activeDirectory = computed(() => {
-  const session = store.activeSession;
-  if (!session?.directoryId) return "";
-  const dir = store.directories.find((d) => d.id === session.directoryId);
-  return dir?.path || "";
-});
+// The working-directory root is now passed from the parent (WorkspaceLayout),
+// which computes it with full fallback logic (bound directory → session.directory
+// → default ~/.runjam/session/{id}). This ensures the file tree and terminal
+// work for regular sessions too, not just project-bound ones.
+const activeDirectory = computed(() => props.rootPath);
 
 // ---- Multi-file tabs ----
 const openFiles = computed({
