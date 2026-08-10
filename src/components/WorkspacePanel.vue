@@ -7,6 +7,7 @@ import FileEditor from "./FileEditor.vue";
 import FilePreview from "./FilePreview.vue";
 import TerminalPanel from "./TerminalPanel.vue";
 import { FileText, X } from "lucide-vue-next";
+import { openInFinder } from "../api/app";
 
 const props = defineProps<{
   showTerminal: boolean;
@@ -40,7 +41,16 @@ const activeFile = computed(() => {
   return openFiles.value[activeFileIndex.value];
 });
 
+function isOfficeFile(ext: string) {
+  return ["pptx", "ppt", "docx", "doc", "xlsx", "xls", "odt", "odp", "ods", "csv"].includes(ext);
+}
+
 function handleSelectFile(path: string) {
+  const ext = path.split(".").pop()?.toLowerCase() || "";
+  if (isOfficeFile(ext)) {
+    openInFinder(path).catch((err) => console.error("Failed to open file:", err));
+    return;
+  }
   const idx = openFiles.value.indexOf(path);
   if (idx >= 0) {
     activeFileIndex.value = idx;

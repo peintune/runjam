@@ -42,6 +42,7 @@ const contentResults = computed(() =>
 
 function getIconClass(ext: string) {
   const map: Record<string, string> = {
+    // Code
     ts: "text-blue-500",
     tsx: "text-cyan-500",
     js: "text-yellow-500",
@@ -50,14 +51,54 @@ function getIconClass(ext: string) {
     rs: "text-orange-500",
     py: "text-blue-400",
     go: "text-cyan-400",
-    json: "text-yellow-400",
-    md: "text-gray-500",
+    java: "text-red-500",
+    c: "text-blue-600",
+    cpp: "text-blue-600",
+    rb: "text-red-500",
+    php: "text-indigo-500",
+    swift: "text-orange-500",
+    kt: "text-purple-500",
+    scala: "text-red-500",
+    sh: "text-green-600",
+    bash: "text-green-600",
+    zsh: "text-green-600",
     css: "text-pink-500",
+    scss: "text-pink-500",
+    less: "text-pink-500",
     html: "text-orange-400",
-    svg: "text-purple-500",
+    sql: "text-blue-400",
+    // Data / config
+    json: "text-yellow-400",
     yaml: "text-red-400",
     yml: "text-red-400",
     toml: "text-gray-400",
+    xml: "text-green-500",
+    ini: "text-gray-500",
+    // Text / docs
+    md: "text-blue-400",
+    txt: "text-gray-500",
+    log: "text-gray-400",
+    env: "text-yellow-600",
+    // Office
+    docx: "text-blue-600",
+    doc: "text-blue-600",
+    xlsx: "text-green-600",
+    xls: "text-green-600",
+    csv: "text-green-600",
+    pptx: "text-orange-600",
+    ppt: "text-orange-600",
+    // Images
+    svg: "text-purple-500",
+    png: "text-pink-400",
+    jpg: "text-pink-400",
+    jpeg: "text-pink-400",
+    gif: "text-pink-400",
+    webp: "text-pink-400",
+    ico: "text-pink-400",
+    // Archives
+    zip: "text-amber-500",
+    tar: "text-amber-500",
+    gz: "text-amber-500",
   };
   return map[ext] || "text-gray-400";
 }

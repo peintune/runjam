@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import { Folder, FolderOpen, File, ChevronRight, Loader } from "lucide-vue-next";
+import { ref, watch, type Component } from "vue";
+import {
+  Folder, FolderOpen, File, FileText, FileCode, FileJson,
+  FileSpreadsheet, FileImage, FileType, FileArchive,
+  ChevronRight, Loader,
+} from "lucide-vue-next";
 import type { FileEntry } from "../api/fs";
 
 const props = defineProps<{
@@ -62,6 +66,40 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+// ── File-type → icon mapping ──────────────────────────────────────
+const FILE_ICON_MAP: Record<string, Component> = {
+  // Text / docs
+  txt: FileText, md: FileText, log: FileText, env: FileText,
+  rtf: FileText,
+  // Code
+  ts: FileCode, tsx: FileCode, js: FileCode, jsx: FileCode,
+  vue: FileCode, rs: FileCode, py: FileCode, go: FileCode,
+  java: FileCode, c: FileCode, cpp: FileCode, h: FileCode, hpp: FileCode,
+  rb: FileCode, php: FileCode, swift: FileCode, kt: FileCode, scala: FileCode,
+  sh: FileCode, bash: FileCode, zsh: FileCode,
+  sql: FileCode, graphql: FileCode, prisma: FileCode, proto: FileCode,
+  css: FileCode, scss: FileCode, less: FileCode, html: FileCode,
+  dockerfile: FileCode, gitignore: FileCode, makefile: FileCode,
+  // Data / config
+  json: FileJson,
+  yaml: FileText, yml: FileText, toml: FileText, xml: FileText, ini: FileText,
+  // Office
+  docx: FileType, doc: FileType, odt: FileType,
+  xlsx: FileSpreadsheet, xls: FileSpreadsheet, ods: FileSpreadsheet,
+  pptx: File, ppt: File, odp: File,
+  csv: FileSpreadsheet,
+  // Images
+  png: FileImage, jpg: FileImage, jpeg: FileImage, gif: FileImage,
+  svg: FileImage, webp: FileImage, ico: FileImage, bmp: FileImage,
+  // Archives
+  zip: FileArchive, tar: FileArchive, gz: FileArchive, bz2: FileArchive,
+  xz: FileArchive, "7z": FileArchive, rar: FileArchive,
+};
+
+function getFileIcon(ext: string): Component {
+  return FILE_ICON_MAP[ext.toLowerCase()] || File;
+}
 </script>
 
 <template>
@@ -96,7 +134,7 @@ function formatSize(bytes: number): string {
         <Folder :size="14" class="text-gray-600 flex-shrink-0" />
       </span>
       <span v-else>
-        <File :size="14" :class="['flex-shrink-0', getIconClass(entry.extension)]" />
+        <component :is="getFileIcon(entry.extension)" :size="14" :class="['flex-shrink-0', getIconClass(entry.extension)]" />
       </span>
 
       <!-- name -->
