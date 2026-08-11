@@ -662,13 +662,33 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
         .map(|d| d.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
 
+    let config_path = match agent_id {
+        "claude-code" => home.join(".claude").join("settings.json"),
+        "codex-cli" => home.join(".codex").join("config.toml"),
+        "gemini-cli" => home.join(".gemini").join("settings.json"),
+        _ => return Ok(()),
+    };
+
+    // Try to restore from the latest backup first.
+    let restored = try_restore_from_backup(&config_path);
+
+    if restored {
+        // Also clean up ancillary files RunJam created.
+        if agent_id == "codex-cli" {
+            let env_path = home.join(".codex").join(".env");
+            if env_path.exists() { std::fs::remove_file(&env_path).ok(); }
+            let auth_path = home.join(".codex").join("auth.json");
+            if auth_path.exists() { std::fs::remove_file(&auth_path).ok(); }
+        }
+        return Ok(());
+    }
+
+    // No backup found — fall back to removing RunJam-specific fields in-place.
     match agent_id {
         "claude-code" => {
-            let path = home.join(".claude").join("settings.json");
-            if path.exists() {
-                let s = std::fs::read_to_string(&path).unwrap_or_default();
+            if config_path.exists() {
+                let s = std::fs::read_to_string(&config_path).unwrap_or_default();
                 let mut settings: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
-
                 if let Some(obj) = settings.as_object_mut() {
                     obj.remove("runjam_models");
                     obj.remove("models");
@@ -685,30 +705,24 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
                         env_obj.remove("ANTHROPIC_DEFAULT_OPUS_MODEL_NAME");
                     }
                 }
-
-                std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap_or_default())
+                std::fs::write(&config_path, serde_json::to_string_pretty(&settings).unwrap_or_default())
                     .map_err(|e| format!("Failed to restore claude config: {}", e))?;
             }
         }
         "codex-cli" => {
-            let path = home.join(".codex").join("config.toml");
-            if path.exists() {
-                let content = std::fs::read_to_string(&path).unwrap_or_default();
+            if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path).unwrap_or_default();
                 let mut doc: toml::Value = toml::from_str(&content).unwrap_or(toml::Value::Table(toml::value::Table::new()));
-                
                 if let toml::Value::Table(ref mut table) = doc {
                     table.remove("runjam");
                     table.remove("model_provider");
                     table.remove("model");
                     table.remove("disable_response_storage");
-                    
-                    // Clean up fields we wrote in model_providers.custom
                     if let Some(providers) = table.get_mut("model_providers").and_then(|v| v.as_table_mut()) {
                         if let Some(custom) = providers.get_mut("custom").and_then(|v| v.as_table_mut()) {
                             custom.remove("api_key");
                             custom.remove("requires_openai_auth");
                             custom.remove("wire_api");
-                            // Remove base_url if it's a proxy URL
                             if let Some(url) = custom.get("base_url").and_then(|v| v.as_str()) {
                                 if url.starts_with("http://127.0.0.1:") {
                                     custom.remove("base_url");
@@ -717,28 +731,19 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
                         }
                     }
                 }
-                
                 let cleaned = toml::to_string_pretty(&doc).unwrap_or_default();
-                std::fs::write(&path, cleaned.trim_end())
+                std::fs::write(&config_path, cleaned.trim_end())
                     .map_err(|e| format!("Failed to restore codex config: {}", e))?;
-
-                // Also clean up .env and auth.json files
                 let env_path = home.join(".codex").join(".env");
-                if env_path.exists() {
-                    std::fs::remove_file(&env_path).ok();
-                }
+                if env_path.exists() { std::fs::remove_file(&env_path).ok(); }
                 let auth_path = home.join(".codex").join("auth.json");
-                if auth_path.exists() {
-                    std::fs::remove_file(&auth_path).ok();
-                }
+                if auth_path.exists() { std::fs::remove_file(&auth_path).ok(); }
             }
         }
         "gemini-cli" => {
-            let path = home.join(".gemini").join("settings.json");
-            if path.exists() {
-                let s = std::fs::read_to_string(&path).unwrap_or_default();
+            if config_path.exists() {
+                let s = std::fs::read_to_string(&config_path).unwrap_or_default();
                 let mut settings: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::json!({}));
-
                 if let Some(obj) = settings.as_object_mut() {
                     obj.remove("runjam_models");
                     if let Some(env_obj) = obj.get_mut("env").and_then(|v| v.as_object_mut()) {
@@ -747,8 +752,7 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
                         env_obj.remove("GEMINI_MODEL");
                     }
                 }
-
-                std::fs::write(&path, serde_json::to_string_pretty(&settings).unwrap_or_default())
+                std::fs::write(&config_path, serde_json::to_string_pretty(&settings).unwrap_or_default())
                     .map_err(|e| format!("Failed to restore gemini config: {}", e))?;
             }
         }
@@ -758,7 +762,54 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Try to restore config from the latest backup file.
+/// Returns true if a backup was found and restored.
+fn try_restore_from_backup(config_path: &std::path::Path) -> bool {
+    let dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let file_stem = config_path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = config_path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
+
+    // Find all backup files matching "filename.*.backup-*"
+    let mut backups: Vec<std::path::PathBuf> = Vec::new();
+    let backup_prefix = format!("{}.{}", file_stem, ext);
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(&backup_prefix) && name_str.contains(".backup-") {
+                backups.push(entry.path());
+            }
+        }
+    }
+
+    if backups.is_empty() {
+        return false;
+    }
+
+    // Sort by modification time (newest first) and pick the latest
+    backups.sort_by(|a, b| {
+        let ta = std::fs::metadata(a).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let tb = std::fs::metadata(b).and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        tb.cmp(&ta)
+    });
+
+    let latest = &backups[0];
+    rjlog!("[RESTORE] Restoring from backup: {}", latest.display());
+    match std::fs::copy(latest, config_path) {
+        Ok(_) => {
+            rjlog!("[RESTORE] Successfully restored config from backup (backup kept: {})", latest.display());
+            true
+        }
+        Err(e) => {
+            rjlog!("[RESTORE] Failed to restore from backup {}: {}", latest.display(), e);
+            false
+        }
+    }
+}
+
 /// Backup the current agent config file before syncing.
+/// Creates a timestamped backup (e.g. config.toml.backup-2026-08-10).
+/// Never overwrites existing backups — each sync gets its own file.
 pub fn backup_agent_config(agent_id: &str) -> Result<(), String> {
     let home = directories::UserDirs::new()
         .map(|d| d.home_dir().to_path_buf())
@@ -772,9 +823,18 @@ pub fn backup_agent_config(agent_id: &str) -> Result<(), String> {
     };
 
     if config_path.exists() {
-        let bak_path = format!("{}.bak", config_path.display());
-        std::fs::copy(&config_path, &bak_path)
-            .map_err(|e| format!("Failed to backup {} config: {}", agent_id, e))?;
+        let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let bak_path = format!("{}.backup-{}", config_path.display(), date_str);
+        // Don't overwrite — if today's backup already exists, add a suffix
+        let mut final_bak = bak_path.clone();
+        let mut counter = 1;
+        while std::path::Path::new(&final_bak).exists() {
+            final_bak = format!("{}.backup-{}-v{}", config_path.display(), date_str, counter);
+            counter += 1;
+        }
+        std::fs::copy(&config_path, &final_bak)
+            .map_err(|e| format!("Failed to backup {} config to {}: {}", agent_id, final_bak, e))?;
+        rjlog!("[BACKUP] Created backup: {}", final_bak);
     }
 
     Ok(())

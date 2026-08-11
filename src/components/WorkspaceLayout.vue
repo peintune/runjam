@@ -230,8 +230,13 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
       <!-- Main content area -->
       <div class="flex-1 flex min-w-0 gap-[3px]">
         <!-- Workspace Panel -->
+        <!-- v-show (not v-if): mounting/unmounting the whole workspace on every
+             explorer toggle is what made opening/closing it freeze for seconds —
+             it re-spawned the terminal shell, re-imported Monaco, and re-scanned
+             the file tree each time. Keeping it mounted means those expensive
+             resources persist across toggles. -->
         <WorkspacePanel
-          v-if="isWorkspaceMode && activeDirectory"
+          v-show="isWorkspaceMode && activeDirectory"
           :show-terminal="showTerminal"
           :root-path="activeDirectory"
           @update:show-terminal="(val: boolean) => { showTerminal = val; layout.showTerminal = val; saveLayout(); }"

@@ -370,7 +370,7 @@ const selectedPermissionMode = ref("ask_approval");
 const showPermissionDropdown = ref(false);
 const noThinking = ref(false);
 
-const placeholderText = "Ask anything — write code, debug, refactor, run parallel agents, orchestrate multi-agent workflows, or explore your entire codebase. What do you want to build?";
+const placeholderText = "Ask anything — any question, any file, any code. Type @ to pick a file";
 const typingPlaceholder = ref("");
 let typingIndex = 0;
 let typingInterval: ReturnType<typeof setInterval> | null = null;
@@ -1477,6 +1477,17 @@ function handleModelSelect(model: ModelEntry) {
   setAgentModel(selectedAgentId.value, model.id).catch(() => {});
 }
 
+// Clicking anywhere in the input box container (except buttons / interactive
+// elements) focuses the textarea, so the user doesn't have to hit the field
+// itself. Interactive targets (buttons, the skills popover, mention picker,
+// dropdowns, links) are ignored so their own click handlers win.
+function focusInputOnContainerClick(e: MouseEvent) {
+  const target = e.target as HTMLElement;
+  if (target.closest("button, a, [data-copy], .skills-selector, .mention-picker, input, select")) return;
+  const ta = store.activeSession ? activeSessionTextarea.value : newSessionTextarea.value;
+  if (ta) ta.focus();
+}
+
 async function toggleSkill(name: string) {
   const session = store.activeSession;
   const cwd = session ? activeSessionCwd.value : null;
@@ -1630,7 +1641,7 @@ watch(messages, (msgs) => {
       
       <div class="flex-shrink-0">
         <div class="max-w-4xl mx-auto px-4 py-3">
-          <div class="relative rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 shadow-[0_2px_12px_rgba(0,0,0,0.06)] focus-within:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-all duration-150">
+          <div @click="focusInputOnContainerClick" class="relative rounded-2xl border border-gray-200 bg-white focus-within:border-gray-300 shadow-[0_2px_12px_rgba(0,0,0,0.06)] focus-within:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-all duration-150">
             <!-- Skills tags row: same UI as new-session page -->
             <div class="skills-selector flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 min-h-[34px]">
               <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">
@@ -1907,7 +1918,7 @@ watch(messages, (msgs) => {
           </button>
         </div>
 
-        <div v-else class="rounded-t-2xl border border-gray-200 bg-white focus-within:border-gray-300 focus-within:shadow-sm transition-all duration-150 relative">
+        <div v-else @click="focusInputOnContainerClick" class="rounded-t-2xl border border-gray-200 bg-white focus-within:border-gray-300 focus-within:shadow-sm transition-all duration-150 relative">
           <!-- Skills tags row: single-line with horizontal scroll; wand button always visible -->
           <div class="skills-selector flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 min-h-[34px]">
             <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">

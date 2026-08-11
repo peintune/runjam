@@ -121,14 +121,53 @@ const displayMap = reactive<Record<number, { thinking: string; content: string }
 const startTimes = reactive<Record<number, { thinking: number; content: number }>>({});
 const frozenDurations = reactive<Record<number, { thinking: number; content: number }>>({});
 const now = ref(Date.now());
-const tickTimer = setInterval(() => {
-  now.value = Date.now();
-}, 500);
 const timers: ReturnType<typeof setInterval>[] = [];
 /** Track one timer per message index so we can avoid duplicate typewriters on streaming updates. */
 const timerMap = new Map<number, { thinking?: ReturnType<typeof setInterval>; content?: ReturnType<typeof setInterval> }>();
+const thinkingRefs = ref<Record<number, HTMLElement>>({});
+
+// ── now tick: only run while something is live ──
+// `now` is read in the template (running-tool durations, "working Xs", live
+// thinking label). A naive `setInterval` that bumps `now` every 500ms forces the
+// WHOLE message list to re-render on every tick — every message's
+// renderContent() re-runs even when nothing changed. That is the dominant cost
+// when viewing a long, already-finished conversation: the list re-renders twice
+// a second for no reason. So we only tick while there is genuinely live content
+// (a streaming message, a running tool call, an in-progress thinking block).
+const hasLiveActivity = computed(() => {
+  const msgs = props.messages;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    // Message is actively being generated / processed
+    if (m.isProcessing === true) return true;
+    // Typewriter still revealing content or thinking
+    const d = displayMap[i];
+    if (d) {
+      if (m.content && d.content.length < m.content.length) return true;
+      if (m.thinking && d.thinking.length < m.thinking.length) return true;
+    }
+    // Thinking in progress (no content yet → live "Thinking • Xs" label)
+    if (m.thinking && !m.content) return true;
+    // A tool call is currently executing (running duration shown)
+    if (m.toolCalls && m.toolCalls.some((tc) => tc.status === "started" || tc.status === "running")) return true;
+  }
+  return false;
+});
+
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+function stopTick() {
+  if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+}
+function startTick() {
+  if (tickTimer) return;
+  tickTimer = setInterval(() => { now.value = Date.now(); }, 500);
+}
+watch(hasLiveActivity, (active) => {
+  if (active) startTick(); else stopTick();
+}, { immediate: true });
+
 onBeforeUnmount(() => {
-  clearInterval(tickTimer);
+  stopTick();
   timers.forEach(clearInterval);
   timerMap.forEach((t) => {
     if (t.thinking) clearInterval(t.thinking);
@@ -136,7 +175,6 @@ onBeforeUnmount(() => {
   });
   timerMap.clear();
 });
-const thinkingRefs = ref<Record<number, HTMLElement>>({});
 
 function startTypewriter(
   idx: number,

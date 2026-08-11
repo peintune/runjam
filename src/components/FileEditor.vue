@@ -18,6 +18,15 @@ const editorContainer = ref<HTMLElement>();
 let monacoEditor: any = null;
 let monacoModule: any = null;
 
+// Preload Monaco in the background as soon as this module loads (i.e. when the
+// workspace panel mounts). Dynamically importing a ~4MB editor on first file
+// open is what made opening a file freeze for seconds. Starting the download
+// early means it's almost always ready by the time the user clicks a file.
+const monacoPromise: Promise<any> = import("monaco-editor").catch((e) => {
+  console.error("Failed to preload monaco-editor:", e);
+  return null;
+});
+
 /** File extensions that are binary / not editable as text */
 const BINARY_EXTENSIONS = new Set([
   "jpg", "jpeg", "png", "gif", "bmp", "ico", "webp", "svg",
@@ -102,8 +111,10 @@ function handleOpenExternally() {
 }
 
 async function initEditor() {
-  // Dynamic import to avoid issues with SSR/build
-  const monaco = await import("monaco-editor");
+  // Reuse the preloaded module (see monacoPromise above) — avoids re-downloading
+  // Monaco on every editor mount.
+  const monaco = await monacoPromise;
+  if (!monaco) return;
   monacoModule = monaco;
 
   // Configure workers

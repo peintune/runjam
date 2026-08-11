@@ -191,8 +191,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       const prev = sessions.value.find(s => s.id === prevId);
       if (prev && prev.status === 'running') prev.unread = true;
     }
-    // New array reference triggers computed chain re-evaluation
-    sessions.value = [...sessions.value];
+    // NOTE: intentionally do NOT reassign `sessions.value = [...sessions.value]`
+    // here. That shallow-copy invalidates every computed/watch that depends on
+    // the array (Sidebar's grouped/activeSessions/archivedSessions), forcing a
+    // full re-render of the whole session list on every click even though the
+    // changes above are already reactive via activeSessionId + in-place property
+    // mutation. With many sessions that made clicking a conversation stutter.
   }
 
   function touchSession(id: string) {

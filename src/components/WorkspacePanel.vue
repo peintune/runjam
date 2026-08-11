@@ -212,6 +212,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
       >
         <TerminalPanel
           :cwd="activeDirectory"
+          :active="showTerminal"
           @close="emit('update:showTerminal', false)"
         />
       </div>

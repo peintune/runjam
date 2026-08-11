@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
+import { ref, onBeforeUnmount, nextTick, watch } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -9,6 +9,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const props = defineProps<{
   cwd?: string;
+  /** Whether the terminal panel is currently visible. When false, the panel is
+   *  kept mounted (v-show) but does NOT spawn a backend shell — spawning is
+   *  deferred until the terminal is first shown. This avoids auto-launching an
+   *  interactive shell for every session on app start. */
+  active?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -281,6 +286,35 @@ function mountTerminal(tab: TabState) {
 // Directory-switch logic — persist per-directory
 // ═══════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════
+// Lazy initialization — spawn/restore only when visible
+// ═══════════════════════════════════════════════════
+
+// Directories that have had a shell spawned (via addTab). Used to avoid
+// re-spawning a fresh interactive shell every time the panel is toggled open —
+// spawning is one of the expensive steps that made toggling the terminal freeze.
+// A directory's saved state (directoryStates) is restored first whenever we
+// re-show it, so an already-spawned process is reused, not duplicated.
+const spawnedCwds = new Set<string>();
+
+async function initForCwd(cwd: string) {
+  const restored = await restoreDirectoryState(cwd);
+  if (restored) {
+    // State was saved (backend process still alive) — restore it, no new spawn.
+    tabs.value = restored.restoredTabs;
+    activeTabIndex.value = restored.restoredIndex;
+    tabCounter = restored.restoredCounter;
+    await nextTick();
+    const tab = tabs.value[activeTabIndex.value];
+    if (tab) mountTerminal(tab);
+  } else if (!spawnedCwds.has(cwd)) {
+    // Never spawned a shell for this directory — create one.
+    spawnedCwds.add(cwd);
+    await nextTick();
+    await addTab();
+  }
+}
+
 watch(
   () => props.cwd,
   async (newCwd, oldCwd) => {
@@ -293,45 +327,28 @@ watch(
     tabs.value = [];
     activeTabIndex.value = -1;
 
-    if (newCwd) {
-      const restored = await restoreDirectoryState(newCwd);
-      if (restored) {
-        tabs.value = restored.restoredTabs;
-        activeTabIndex.value = restored.restoredIndex;
-        tabCounter = restored.restoredCounter;
-        await nextTick();
-        const tab = tabs.value[activeTabIndex.value];
-        if (tab) mountTerminal(tab);
-      } else {
-        await nextTick();
-        await addTab();
-      }
+    if (newCwd && props.active) {
+      await initForCwd(newCwd);
     }
   }
 );
 
-// ═══════════════════════════════════════════════════
-// Lifecycle
-// ═══════════════════════════════════════════════════
-
-onMounted(async () => {
-  await nextTick();
-  if (props.cwd) {
-    const restored = await restoreDirectoryState(props.cwd);
-    if (restored) {
-      tabs.value = restored.restoredTabs;
-      activeTabIndex.value = restored.restoredIndex;
-      tabCounter = restored.restoredCounter;
-      await nextTick();
-      const tab = tabs.value[activeTabIndex.value];
-      if (tab) mountTerminal(tab);
+// Lazy init: only spawn/restore terminals when the panel is actually visible.
+// With the workspace kept mounted via v-show, this prevents auto-launching an
+// interactive shell for every session on app start.
+watch(
+  () => props.active,
+  async (active) => {
+    if (active) {
+      if (props.cwd) await initForCwd(props.cwd);
     } else {
-      await addTab();
+      // Panel hidden — persist tab metadata so re-opening restores it.
+      // (Backend processes stay alive; only the DOM/listeners are torn down.)
+      if (props.cwd) saveDirectoryState(props.cwd);
     }
-  } else {
-    await addTab();
-  }
-});
+  },
+  { immediate: true }
+);
 
 onBeforeUnmount(() => {
   // Save state (keep backend processes alive)
