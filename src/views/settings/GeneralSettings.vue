@@ -2,14 +2,22 @@
 import { ref, onMounted } from "vue";
 import { FolderOpen } from "lucide-vue-next";
 import { getDataDir, openDataDir } from "@/api/app";
+import { getTelemetryStatus, setTelemetryEnabled } from "@/api/telemetry";
 
 const dataDir = ref("~/.runjam");
+const telemetryEnabled = ref(true);
 
 onMounted(async () => {
   try {
     dataDir.value = await getDataDir();
   } catch {
     // keep default
+  }
+  try {
+    const status = await getTelemetryStatus();
+    telemetryEnabled.value = status.enabled;
+  } catch {
+    // backend without telemetry support
   }
 });
 
@@ -18,6 +26,17 @@ async function handleOpen() {
     await openDataDir();
   } catch (e) {
     console.error("Failed to open data directory:", e);
+  }
+}
+
+async function toggleTelemetry() {
+  const next = !telemetryEnabled.value;
+  telemetryEnabled.value = next;
+  try {
+    await setTelemetryEnabled(next);
+  } catch (e) {
+    console.error("Failed to update telemetry setting:", e);
+    telemetryEnabled.value = !next;
   }
 }
 </script>
@@ -51,6 +70,28 @@ async function handleOpen() {
               Open
             </button>
           </div>
+        </div>
+
+        <div class="flex items-center justify-between px-5 py-4">
+          <div class="pr-4">
+            <p class="text-[14px] font-medium text-gray-900">Anonymous Usage Data</p>
+            <p class="text-[12px] text-gray-400 mt-0.5">
+              Help improve RunJam: app version, feature usage and sanitized error logs.
+              No code, conversations or IP addresses.
+            </p>
+          </div>
+          <button
+            role="switch"
+            :aria-checked="telemetryEnabled"
+            class="relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50"
+            :class="telemetryEnabled ? 'bg-blue-600' : 'bg-gray-300'"
+            @click="toggleTelemetry"
+          >
+            <span
+              class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all"
+              :class="telemetryEnabled ? 'left-[22px]' : 'left-0.5'"
+            />
+          </button>
         </div>
 
         <div class="flex items-center justify-between px-5 py-4">

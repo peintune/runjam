@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, computed } from "vue";
+import { ref, watch, computed } from "vue";
 import { listDir, searchFiles, type FileEntry, type FileSearchResult } from "../api/fs";
 import FileTreeNode from "./FileTreeNode.vue";
 import {
@@ -24,6 +24,33 @@ const entries = ref<FileEntry[]>([]);
 const expanded = ref<Set<string>>(new Set());
 const loading = ref(false);
 const selectedPath = ref<string | null>(null);
+
+// Per-directory tree state cache. Without this, switching sessions remounts the
+// whole FileTree (via :key) and re-scans the directory from disk, collapsing
+// every expanded folder. Caching lets us restore a previously-viewed directory
+// instantly — folders stay expanded and already-loaded children are reused.
+interface DirTreeState {
+  entries: FileEntry[];
+  expanded: Set<string>;
+  selectedPath: string | null;
+}
+const dirCache = new Map<string, DirTreeState>();
+
+// Cache of loaded subdirectory contents, keyed by directory path. FileTreeNode
+// instances are recreated when switching directories (different :key paths), so
+// their local `children` refs would otherwise be lost. This module-level cache
+// lets a recreated expanded folder restore its already-loaded children instantly
+// instead of re-scanning the subdirectory from disk.
+const childrenCache = new Map<string, FileEntry[]>();
+
+/** Return cached children for a directory, or load + cache them from disk. */
+async function resolveChildren(dirPath: string): Promise<FileEntry[]> {
+  const cached = childrenCache.get(dirPath);
+  if (cached) return cached;
+  const loaded = await listDir(dirPath);
+  childrenCache.set(dirPath, loaded);
+  return loaded;
+}
 
 // Search state
 const searchQuery = ref("");
@@ -138,6 +165,17 @@ async function loadEntries() {
   }
 }
 
+/** Manual refresh: drop the cached tree for the current directory and reload
+ *  from disk so newly added/removed files show up. */
+function refreshTree() {
+  if (!props.rootPath) return;
+  dirCache.delete(props.rootPath);
+  childrenCache.clear();
+  expanded.value = new Set();
+  selectedPath.value = null;
+  loadEntries();
+}
+
 function toggleExpand(path: string) {
   if (expanded.value.has(path)) {
     expanded.value.delete(path);
@@ -207,16 +245,32 @@ function highlightMatch(text: string, query: string): { before: string; match: s
   };
 }
 
-watch(() => props.rootPath, () => {
-  expanded.value.clear();
-  selectedPath.value = null;
+watch(() => props.rootPath, (newPath, oldPath) => {
+  // Save current state to cache before switching away
+  if (oldPath) {
+    dirCache.set(oldPath, {
+      entries: entries.value,
+      expanded: expanded.value,
+      selectedPath: selectedPath.value,
+    });
+  }
+  // Search results belong to the previous directory — always clear on switch.
   clearSearch();
-  loadEntries();
+  // Restore cached state if we've seen this dir before — instant, folders stay
+  // expanded and already-loaded children are reused (no re-scan).
+  const cached = newPath ? dirCache.get(newPath) : undefined;
+  if (cached) {
+    entries.value = cached.entries;
+    expanded.value = cached.expanded;
+    selectedPath.value = cached.selectedPath;
+    loading.value = false;
+  } else {
+    entries.value = [];
+    expanded.value = new Set();
+    selectedPath.value = null;
+    loadEntries();
+  }
 }, { immediate: true });
-
-onMounted(() => {
-  if (props.rootPath) loadEntries();
-});
 </script>
 
 <template>
@@ -238,7 +292,7 @@ onMounted(() => {
           <ExternalLink :size="13" />
         </button>
         <button
-          @click="loadEntries"
+          @click="refreshTree"
           class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
           title="Refresh"
         >
@@ -348,6 +402,7 @@ onMounted(() => {
             :selected-path="selectedPath"
             :is-previewable="isPreviewable"
             :get-icon-class="getIconClass"
+            :resolve-children="resolveChildren"
             @toggle="toggleExpand"
             @select="handleFileClick"
           />

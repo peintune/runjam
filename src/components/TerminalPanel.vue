@@ -186,6 +186,23 @@ async function addTab() {
   mountTerminal(tab);
 }
 
+/** Kill every backend terminal process and clear all local state for the
+ *  current directory. Used when the user confirms closing the whole terminal
+ *  panel (top-right toggle) — the processes are actually terminated, and the
+ *  saved state is dropped so the next open spawns a fresh shell. */
+async function killAll() {
+  for (const tab of tabs.value) {
+    invoke("kill_terminal", { terminalId: tab.id }).catch(() => {});
+    disposeTabFull(tab);
+  }
+  tabs.value = [];
+  activeTabIndex.value = -1;
+  if (props.cwd) {
+    directoryStates.delete(props.cwd);
+    spawnedCwds.delete(props.cwd);
+  }
+}
+
 function closeTab(index: number) {
   const tab = tabs.value[index];
   if (!tab) return;
@@ -276,8 +293,13 @@ function mountTerminal(tab: TabState) {
 
   setTimeout(() => fitAddon.fit(), 150);
 
+  let fitTimer: ReturnType<typeof setTimeout> | null = null;
   tab.resizeObserver = new ResizeObserver(() => {
-    fitAddon.fit();
+    // Debounce: xterm.fit() is synchronous and expensive.
+    // During sidebar/panel resize animations, the observer fires on every
+    // frame — calling fit() each time blocks the main thread and causes jank.
+    if (fitTimer) clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => { fitAddon.fit(); fitTimer = null; }, 80);
   });
   tab.resizeObserver.observe(el);
 }
@@ -297,20 +319,34 @@ function mountTerminal(tab: TabState) {
 // re-show it, so an already-spawned process is reused, not duplicated.
 const spawnedCwds = new Set<string>();
 
+// Generation token for async init. initForCwd awaits restoreDirectoryState
+// (which awaits listen() per tab) and addTab (which awaits spawn_terminal).
+// Under rapid session switching these in-flight awaits can complete out of
+// order, letting a stale directory's restore overwrite the current directory's
+// tabs. Bumping the token on every switch lets each init check whether it's
+// still the latest before applying its result — stale inits abandon themselves.
+let initGeneration = 0;
+
 async function initForCwd(cwd: string) {
+  const myGen = ++initGeneration;
   const restored = await restoreDirectoryState(cwd);
+  if (myGen !== initGeneration) return; // superseded by a newer switch
   if (restored) {
     // State was saved (backend process still alive) — restore it, no new spawn.
     tabs.value = restored.restoredTabs;
     activeTabIndex.value = restored.restoredIndex;
     tabCounter = restored.restoredCounter;
     await nextTick();
+    if (myGen !== initGeneration) return;
     const tab = tabs.value[activeTabIndex.value];
     if (tab) mountTerminal(tab);
   } else if (!spawnedCwds.has(cwd)) {
-    // Never spawned a shell for this directory — create one.
-    spawnedCwds.add(cwd);
+    // Never spawned a shell for this directory — create one. The generation
+    // token guarantees this is the latest init (no concurrent double-spawn), so
+    // mark it as spawned right before addTab actually spawns the process.
     await nextTick();
+    if (myGen !== initGeneration) return;
+    spawnedCwds.add(cwd);
     await addTab();
   }
 }
@@ -318,6 +354,9 @@ async function initForCwd(cwd: string) {
 watch(
   () => props.cwd,
   async (newCwd, oldCwd) => {
+    // Invalidate any in-flight init from the previous directory so a stale
+    // async restore can't overwrite the new directory's tabs.
+    initGeneration++;
     // Save old directory's terminal state
     if (oldCwd) {
       saveDirectoryState(oldCwd);
@@ -340,7 +379,11 @@ watch(
   () => props.active,
   async (active) => {
     if (active) {
-      if (props.cwd) await initForCwd(props.cwd);
+      // Only init if not already initialized for the current cwd. A session
+      // switch that also toggles the panel fires both watch(cwd) and this
+      // watcher — without this guard, initForCwd would run twice for the same
+      // directory (and could double-spawn).
+      if (props.cwd && tabs.value.length === 0) await initForCwd(props.cwd);
     } else {
       // Panel hidden — persist tab metadata so re-opening restores it.
       // (Backend processes stay alive; only the DOM/listeners are torn down.)
@@ -360,6 +403,10 @@ onBeforeUnmount(() => {
   // Note: backend terminal processes are NOT killed here.
   // They persist until the user explicitly closes a tab or the app exits.
 });
+
+// Expose a way for the parent to terminate every terminal process (used by the
+// "close terminal" confirmation flow).
+defineExpose({ killAll });
 </script>
 
 <template>

@@ -14,6 +14,9 @@ const props = defineProps<{
   selectedPath: string | null;
   isPreviewable: (ext: string) => boolean;
   getIconClass: (ext: string) => string;
+  /** Loads (and caches) a directory's children — provided by FileTree so that
+   *  recreated nodes for already-expanded folders restore cached children. */
+  resolveChildren: (dirPath: string) => Promise<FileEntry[]>;
 }>();
 
 const emit = defineEmits<{
@@ -27,8 +30,7 @@ const loadingChildren = ref(false);
 async function loadChildren(dirPath: string) {
   loadingChildren.value = true;
   try {
-    const { listDir } = await import("../api/fs");
-    children.value = await listDir(dirPath);
+    children.value = await props.resolveChildren(dirPath);
   } catch (err) {
     console.error("Failed to load children:", err);
   } finally {
@@ -51,14 +53,17 @@ function handleClick() {
 
 const isExpanded = () => props.expanded.has(props.entry.path);
 
-// Load children when expanded
+// Load children when expanded. immediate:true so a recreated node for an
+// already-expanded folder (e.g. after switching directories) loads its children
+// right away — from the shared cache when available, avoiding a re-scan.
 watch(
   () => props.expanded.has(props.entry.path),
   (nowExpanded) => {
     if (nowExpanded && children.value.length === 0 && props.entry.is_dir) {
       loadChildren(props.entry.path);
     }
-  }
+  },
+  { immediate: true }
 );
 
 function formatSize(bytes: number): string {
@@ -157,6 +162,7 @@ function getFileIcon(ext: string): Component {
         :selected-path="selectedPath"
         :is-previewable="isPreviewable"
         :get-icon-class="getIconClass"
+        :resolve-children="resolveChildren"
         @toggle="emit('toggle', $event)"
         @select="emit('select', $event)"
       />

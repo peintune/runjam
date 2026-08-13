@@ -36,4 +36,5 @@ zip = "2"
 quick-xml = "0.36"
 calamine = "0.25"
 pdf-extract = "0.7"
+uuid = { version = "1", features = ["v4"] }
 

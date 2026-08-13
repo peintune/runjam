@@ -11,3 +11,4 @@ pub mod term_cmd;
 pub mod ollama_cmd;
 pub mod llama_cmd;
 pub mod skill_cmd;
+pub mod telemetry_cmd;

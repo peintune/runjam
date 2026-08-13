@@ -2,6 +2,7 @@ use crate::models::session::Session;
 use crate::session::runner::SessionManager;
 use crate::search;
 use crate::skill;
+use tauri::Manager;
 use tauri::State;
 use std::sync::Mutex;
 use std::path::PathBuf;
@@ -83,6 +84,15 @@ pub async fn start_session(
         )?
     }; // lock released here — before SQLite write
 
+    // Telemetry: record the feature usage (queued locally, sent in batch).
+    {
+        let db = app.state::<std::sync::Mutex<crate::db::connection::Database>>();
+        let guard = db.lock().ok();
+        if let Some(guard) = guard {
+            crate::telemetry::track(&guard, "session_started", serde_json::json!({ "cli": cli }));
+        }
+    }
+
     search::save_session(
         &id,
         &cli,
@@ -101,11 +111,19 @@ pub async fn start_session(
 
 #[tauri::command]
 pub async fn stop_session(
+    app: tauri::AppHandle,
     manager: State<'_, Mutex<SessionManager>>,
     id: String,
 ) -> Result<(), String> {
     let mut mgr = manager.lock().map_err(|e| e.to_string())?;
-    mgr.stop(&id)
+    let res = mgr.stop(&id);
+    // Telemetry: record session stop (non-fatal).
+    let db = app.state::<std::sync::Mutex<crate::db::connection::Database>>();
+    let guard = db.lock().ok();
+    if let Some(guard) = guard {
+        crate::telemetry::track(&guard, "session_stopped", serde_json::json!({ "session_id": id }));
+    }
+    res
 }
 
 #[tauri::command]

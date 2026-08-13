@@ -15,6 +15,7 @@ mod node_util;
 mod skill;
 pub mod log_util;
 mod util;
+mod telemetry;
 
 use commands::term_cmd::TerminalState;
 use db::connection::Database;
@@ -49,6 +50,9 @@ fn migrate_legacy_db(new_dir: &std::path::Path) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Report panics to the backend (sanitized) before the app dies.
+    telemetry::init_panic_hook();
+
     // RunJam stores all user data (db, logs, sessions, ACP packages) under
     // ~/.runjam/ — a single, predictable, user-visible location instead of the
     // platform-specific app-data dir (~/Library/Application Support/RunJam on
@@ -192,6 +196,11 @@ pub fn run() {
             commands::term_cmd::kill_terminal,
             commands::term_cmd::resize_terminal,
             commands::term_cmd::get_terminal_cwd,
+            commands::telemetry_cmd::get_telemetry_status,
+            commands::telemetry_cmd::set_telemetry_enabled,
+            commands::telemetry_cmd::track_event,
+            commands::telemetry_cmd::submit_feedback,
+            commands::telemetry_cmd::check_for_updates,
         ])
         .on_window_event(|_, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
@@ -199,6 +208,31 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            telemetry::set_app_handle(app.handle().clone());
+
+            // Register the device and record app start (enqueued locally,
+            // flushed in the background — never blocks startup).
+            {
+                let db = app.state::<Mutex<Database>>();
+                let guard = db.lock().unwrap();
+                let conn = guard.conn.lock().unwrap();
+                let enabled = telemetry::is_enabled(&conn);
+                if enabled {
+                    let version = app.package_info().version.to_string();
+                    let platform = commands::telemetry_cmd::platform_name();
+                    telemetry::register(&guard, &version, platform, std::env::consts::ARCH, "", true);
+                    telemetry::track(&guard, "app_started", serde_json::json!({ "version": version }));
+                }
+            }
+            telemetry::flush_async(app.handle());
+
+            // Background worker: drain the queue periodically.
+            let worker_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(600));
+                telemetry::flush_async(&worker_handle);
+            });
+
             // `titleBarStyle: Overlay` + `hiddenTitle` in tauri.conf.json are
             // macOS-only. On Windows they are ignored, so the app would show a
             // native title bar on top of our custom in-app nav bar (the h-8

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, watch, ref } from "vue";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
 import FileTree from "./FileTree.vue";
@@ -25,6 +25,16 @@ const { layout, saveLayout } = useSessionLayout();
 // → default ~/.runjam/session/{id}). This ensures the file tree and terminal
 // work for regular sessions too, not just project-bound ones.
 const activeDirectory = computed(() => props.rootPath);
+
+// Ref to the terminal panel so the parent can ask it to terminate every
+// backend process when the user confirms closing the terminal.
+const terminalPanelRef = ref<InstanceType<typeof TerminalPanel> | null>(null);
+
+defineExpose({
+  async killAllTerminals() {
+    await terminalPanelRef.value?.killAll();
+  },
+});
 
 // ---- Multi-file tabs ----
 const openFiles = computed({
@@ -128,7 +138,6 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
       :style="{ width: fileTreeResize.size.value + 'px' }"
     >
       <FileTree
-        :key="activeDirectory"
         :root-path="activeDirectory"
         @select-file="handleSelectFile"
       />
@@ -211,6 +220,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
         :style="{ height: terminalResize.size.value + 'px' }"
       >
         <TerminalPanel
+          ref="terminalPanelRef"
           :cwd="activeDirectory"
           :active="showTerminal"
           @close="emit('update:showTerminal', false)"

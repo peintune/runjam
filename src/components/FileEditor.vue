@@ -18,6 +18,15 @@ const editorContainer = ref<HTMLElement>();
 let monacoEditor: any = null;
 let monacoModule: any = null;
 
+// Debounced layout observer. Monaco's `automaticLayout: true` uses an internal
+// ResizeObserver that calls a synchronous layout() on the main thread on EVERY
+// resize frame. During the sidebar width animation the editor container resizes
+// every frame, so layout() runs ~12× in 200ms and freezes the whole UI for
+// large files. We disable automaticLayout and re-layout manually, debounced
+// (same pattern the terminal uses for xterm.fit()).
+let layoutTimer: ReturnType<typeof setTimeout> | null = null;
+let layoutObserver: ResizeObserver | null = null;
+
 // Preload Monaco in the background as soon as this module loads (i.e. when the
 // workspace panel mounts). Dynamically importing a ~4MB editor on first file
 // open is what made opening a file freeze for seconds. Starting the download
@@ -169,7 +178,7 @@ async function initEditor() {
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     wordWrap: "on",
-    automaticLayout: true,
+    automaticLayout: false, // we handle re-layout manually, debounced (see below)
     tabSize: 2,
     renderLineHighlight: "all",
     padding: { top: 12, bottom: 12 },
@@ -190,6 +199,18 @@ async function initEditor() {
       content.value = monacoEditor.getValue();
     }
   });
+
+  // Debounced manual layout. Debounce avoids running layout() synchronously on
+  // every resize frame (which is what froze the UI during the sidebar width
+  // animation); the trailing 80ms fires once after the resize settles.
+  layoutObserver = new ResizeObserver(() => {
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(() => {
+      monacoEditor?.layout();
+      layoutTimer = null;
+    }, 80);
+  });
+  layoutObserver.observe(editorContainer.value);
 }
 
 async function handleSave() {
@@ -237,6 +258,14 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener("keydown", handleKeydown);
+  if (layoutObserver) {
+    layoutObserver.disconnect();
+    layoutObserver = null;
+  }
+  if (layoutTimer) {
+    clearTimeout(layoutTimer);
+    layoutTimer = null;
+  }
   if (monacoEditor) {
     monacoEditor.dispose();
     monacoEditor = null;

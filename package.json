@@ -31,11 +31,8 @@
   ],
   "scripts": {
     "dev": "vite",
-    "dev:landing": "BUILD_TARGET=landing vite",
     "build": "node scripts/preinstall-claude-acp.mjs && vue-tsc --noEmit && vite build",
-    "build:landing": "BUILD_TARGET=landing vite build && cp dist-landing/landing.html dist-landing/index.html",
     "preview": "vite preview",
-    "preview:landing": "BUILD_TARGET=landing vite preview --outDir dist-landing",
     "pretauri": "node scripts/sync-resources.mjs",
     "tauri": "tauri"
   },

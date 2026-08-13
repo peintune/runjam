@@ -5,6 +5,7 @@ defineOptions({ name: "WorkspaceLayout" });
 import Sidebar from "./Sidebar.vue";
 import SessionView from "./SessionView.vue";
 import WorkspacePanel from "./WorkspacePanel.vue";
+import ConfirmDialog from "./ConfirmDialog.vue";
 import SearchButton from "./SearchButton.vue";
 import WindowControls from "./WindowControls.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
@@ -80,9 +81,44 @@ function toggleTerminal() {
     isWorkspaceMode.value = true;
     sidebarPinned.value = false;
   }
-  showTerminal.value = !showTerminal.value;
-  layout.showTerminal = showTerminal.value;
+  if (showTerminal.value) {
+    // Closing an open terminal actually terminates the processes — confirm first.
+    showTerminalCloseConfirm.value = true;
+  } else {
+    showTerminal.value = true;
+    layout.showTerminal = true;
+    saveLayout();
+  }
+}
+
+// ── Terminal close confirmation ────────────────────
+// Closing the terminal (via the top-right toggle or the panel's X button)
+// really kills the backend shell processes, so we ask for confirmation first.
+const showTerminalCloseConfirm = ref(false);
+const workspacePanelRef = ref<InstanceType<typeof WorkspacePanel> | null>(null);
+
+async function confirmCloseTerminal() {
+  showTerminalCloseConfirm.value = false;
+  await workspacePanelRef.value?.killAllTerminals();
+  showTerminal.value = false;
+  layout.showTerminal = false;
   saveLayout();
+}
+
+function cancelCloseTerminal() {
+  showTerminalCloseConfirm.value = false;
+}
+
+/** Shared handler for both the panel X button and programmatic show/hide. */
+function handleShowTerminalUpdate(val: boolean) {
+  if (val === false && showTerminal.value) {
+    // Closing — confirm before actually terminating the processes.
+    showTerminalCloseConfirm.value = true;
+  } else {
+    showTerminal.value = val;
+    layout.showTerminal = val;
+    saveLayout();
+  }
 }
 
 // ---- Session persistence (keyed by directoryId) ----
@@ -209,10 +245,13 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
     <!-- ═══ Body ═══ -->
     <div class="flex flex-1 min-h-0">
       <!-- Pinned Sidebar (with smooth width transition) -->
+      <!-- contain:layout isolates sidebar from main-content reflow during animation -->
       <div
-        class="transition-all duration-200 ease-out flex-shrink-0 flex flex-col py-0 px-[3px] pb-[3px]"
-        :class="sidebarPinned ? '' : 'w-0 overflow-hidden'"
-        :style="{ width: sidebarPinned ? (sidebarResize.size.value + 6) + 'px' : undefined }"
+        class="transition-[width] duration-200 ease-out flex-shrink-0 flex flex-col py-0 px-[3px] pb-[3px] will-change-[width]"
+        :class="sidebarPinned ? 'contain-layout' : 'w-0 overflow-hidden'"
+        :style="sidebarPinned
+          ? { width: (sidebarResize.size.value + 6) + 'px' }
+          : undefined"
       >
         <div class="flex-1 min-h-0">
           <Sidebar class="h-full" />
@@ -236,10 +275,11 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
              the file tree each time. Keeping it mounted means those expensive
              resources persist across toggles. -->
         <WorkspacePanel
+          ref="workspacePanelRef"
           v-show="isWorkspaceMode && activeDirectory"
           :show-terminal="showTerminal"
           :root-path="activeDirectory"
-          @update:show-terminal="(val: boolean) => { showTerminal = val; layout.showTerminal = val; saveLayout(); }"
+          @update:show-terminal="handleShowTerminalUpdate"
         />
 
         <!-- Resize handle between workspace and chat -->
@@ -262,6 +302,14 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         </div>
       </div>
     </div>
+
+    <ConfirmDialog
+      :show="showTerminalCloseConfirm"
+      title="Close Terminal"
+      message="Closing the terminal will terminate all running terminal processes. This cannot be undone."
+      @confirm="confirmCloseTerminal"
+      @cancel="cancelCloseTerminal"
+    />
   </div>
 </template>
 

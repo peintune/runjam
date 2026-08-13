@@ -11,11 +11,6 @@ const router = createRouter({
       component: WorkspaceLayout,
     },
     {
-      path: "/landing",
-      name: "landing",
-      component: () => import("../views/LandingPage.vue"),
-    },
-    {
       path: "/costs",
       name: "costs",
       component: () => import("../views/CostsView.vue"),
