@@ -212,17 +212,23 @@ pub fn run() {
 
             // Register the device and record app start (enqueued locally,
             // flushed in the background — never blocks startup).
-            {
+            // NOTE: the Mutex guard must be dropped before calling
+            // telemetry::register/track, because those functions lock
+            // Database.conn themselves (std::sync::Mutex is not reentrant —
+            // holding the lock here would deadlock and stall startup).
+            let enabled = {
                 let db = app.state::<Mutex<Database>>();
                 let guard = db.lock().unwrap();
                 let conn = guard.conn.lock().unwrap();
-                let enabled = telemetry::is_enabled(&conn);
-                if enabled {
-                    let version = app.package_info().version.to_string();
-                    let platform = commands::telemetry_cmd::platform_name();
-                    telemetry::register(&guard, &version, platform, std::env::consts::ARCH, "", true);
-                    telemetry::track(&guard, "app_started", serde_json::json!({ "version": version }));
-                }
+                telemetry::is_enabled(&conn)
+            };
+            if enabled {
+                let version = app.package_info().version.to_string();
+                let platform = commands::telemetry_cmd::platform_name();
+                let db = app.state::<Mutex<Database>>();
+                let guard = db.lock().unwrap();
+                telemetry::register(&guard, &version, platform, std::env::consts::ARCH, "", true);
+                telemetry::track(&guard, "app_started", serde_json::json!({ "version": version }));
             }
             telemetry::flush_async(app.handle());
 
