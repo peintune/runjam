@@ -35,6 +35,13 @@ jobs:
 
       - name: Build Tauri (Windows)
         uses: tauri-apps/tauri-action@v0
+        with:
+          # Do NOT let tauri-action create/publish a GitHub Release. Release
+          # creation is handled exclusively by the `create-release` job below,
+          # so all artifacts (exe + sig + dmg) land in ONE release. Otherwise
+          # tauri-action's default auto-release races the create-release job
+          # and the .sig can end up in a different (draft) release.
+          createRelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Explicit platform target so that `pretauri` sync-resources.mjs
@@ -91,6 +98,8 @@ jobs:
           TAURI_ENV_PLATFORM_TARGET: x86_64-apple-darwin
         with:
           args: --target x86_64-apple-darwin
+          # Single release source: see Windows job comment.
+          createRelease: false
 
       - name: Deep-sign embedded binaries (macOS x64)
         run: |
@@ -124,9 +133,10 @@ jobs:
           DMG_OUT="src-tauri/target/x86_64-apple-darwin/release/bundle/dmg"
           mkdir -p "$DMG_OUT"
           rm -f "$DMG_OUT"/*.dmg
+          VERSION=$(node -p "require('./package.json').version")
           if command -v hdiutil >/dev/null 2>&1; then
             hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
-              "$DMG_OUT/RunJam_0.1.0_x64.dmg"
+              "$DMG_OUT/RunJam_${VERSION}_x64.dmg"
           fi
 
       - name: Upload macOS Intel artifacts
@@ -159,6 +169,9 @@ jobs:
 
       - name: Build Tauri (macOS ARM)
         uses: tauri-apps/tauri-action@v0
+        with:
+          # Single release source: see Windows job comment.
+          createRelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Explicit target so `pretauri` and `beforeBuildCommand` scripts
@@ -201,9 +214,10 @@ jobs:
           DMG_OUT="src-tauri/target/release/bundle/dmg"
           mkdir -p "$DMG_OUT"
           rm -f "$DMG_OUT"/*.dmg
+          VERSION=$(node -p "require('./package.json').version")
           if command -v hdiutil >/dev/null 2>&1; then
             hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
-              "$DMG_OUT/RunJam_0.1.0_aarch64.dmg"
+              "$DMG_OUT/RunJam_${VERSION}_aarch64.dmg"
           fi
 
       # Optional — Developer ID + Notarization (removes the need for xattr workaround).
