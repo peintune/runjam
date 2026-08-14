@@ -58,6 +58,48 @@ impl UpdateCheckResult {
     }
 }
 
+use rusqlite::Connection;
+use serde::Deserialize;
+
+pub const KEY_ANNOUNCEMENT_READ_PREFIX: &str = "announcement_read:";
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Announcement {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub level: String, // "info" | "important"
+    pub created_at: Option<String>,
+}
+
+pub fn is_announcement_read(conn: &Connection, id: &str) -> bool {
+    let key = format!("{}{}", KEY_ANNOUNCEMENT_READ_PREFIX, id);
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        [&key],
+        |r| r.get::<_, String>(0),
+    )
+    .map(|v| v == "1")
+    .unwrap_or(false)
+}
+
+pub fn mark_announcement_read(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    let key = format!("{}{}", KEY_ANNOUNCEMENT_READ_PREFIX, id);
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, '1', CURRENT_TIMESTAMP)",
+        [&key],
+    )
+    .map(|_| ())
+}
+
+pub fn filter_unread(conn: &Connection, items: Vec<Announcement>) -> Vec<Announcement> {
+    items
+        .into_iter()
+        .filter(|a| !is_announcement_read(conn, &a.id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +123,23 @@ mod tests {
     fn version_ge_min_version_null_means_always_visible() {
         // min_version 为空时公告始终可见（由调用方处理，这里测试解析空串）
         assert!(version_ge("v0.1.0", ""));
+    }
+
+    #[test]
+    fn filter_unread_removes_read_items() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
+        )
+        .unwrap();
+        mark_announcement_read(&conn, "a").unwrap();
+
+        let items = vec![
+            Announcement { id: "a".into(), title: "read".into(), body: "".into(), level: "info".into(), created_at: None },
+            Announcement { id: "b".into(), title: "new".into(), body: "".into(), level: "important".into(), created_at: None },
+        ];
+        let unread = filter_unread(&conn, items);
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].id, "b");
     }
 }
