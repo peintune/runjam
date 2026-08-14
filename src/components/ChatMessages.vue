@@ -81,7 +81,39 @@ const messageGroups = computed(() => {
 const visibleGroups = ref<Set<number>>(new Set());
 let visibilityObserver: IntersectionObserver | null = null;
 const GHOST_HEIGHT = 140; // px estimate for placeholder groups
-const LAZY_THRESHOLD = 50; // groups above this count get lazy rendering
+
+// Lazy rendering triggers on ESTIMATED RENDER COST, not just group count. A
+// session with 19 huge messages (many KB each, dozens of code blocks) is far more
+// expensive to render than one with 100 one-line messages — so we must key on the
+// total content size, not the number of groups. Thresholds:
+//   GROUP_COUNT    — many small messages (e.g. 100+ turns)
+//   TOTAL_CHARS    — fewer but large messages (e.g. 60KB+ of markdown/code)
+// Either condition flips the session to lazy rendering.
+const LAZY_GROUP_COUNT = 50;
+const LAZY_TOTAL_CHARS = 60_000; // ~60KB of content → render on demand
+/** Estimated render cost of the whole history: sum of all message content length.
+ * Cheap O(n) string-length scan, re-evaluated only when messages change. */
+const totalRenderChars = computed(() => {
+  let n = 0;
+  for (let i = 0; i < props.messages.length; i++) {
+    const m = props.messages[i];
+    n += (m.content?.length || 0) + (m.thinking?.length || 0);
+  }
+  return n;
+});
+/** True when this history is large enough to warrant lazy rendering */
+const lazyMode = ref(false);
+function shouldLazyRender(): boolean {
+  // Sticky: once a session is deemed large, it stays lazy for its whole life.
+  // This prevents a mid-stream flip (content growing past the threshold) from
+  // suddenly turning already-rendered groups into placeholders. Reset on switch.
+  if (lazyMode.value) return true;
+  const large =
+    messageGroups.value.length > LAZY_GROUP_COUNT ||
+    totalRenderChars.value > LAZY_TOTAL_CHARS;
+  if (large) lazyMode.value = true;
+  return large;
+}
 /** When true, every group renders fully (lazy rendering disabled). Used by
  * SessionView's scrollToMessage fallback: jumping to an arbitrary historical
  * message needs that group's DOM present, so we render everything once. */
@@ -89,7 +121,7 @@ const forceRender = ref(false);
 
 function ensureGroup(el: HTMLElement, gIdx: number) {
   // Skip observer entirely for small histories — render everything (no overhead)
-  if (messageGroups.value.length <= LAZY_THRESHOLD) return;
+  if (!shouldLazyRender()) return;
   if (visibleGroups.value.has(gIdx)) return;
   if (!visibilityObserver) {
     // Root the observer at the scroll container (the message list's scrolling
@@ -125,7 +157,7 @@ function ensureGroup(el: HTMLElement, gIdx: number) {
 // A group must render fully when it's visible OR live (streaming/processing/typing)
 function shouldRenderGroup(g: { items: { oi: number; msg: Message }[] }, gIdx: number): boolean {
   if (forceRender.value) return true; // scrollToMessage fallback: render everything
-  if (messageGroups.value.length <= LAZY_THRESHOLD) return true; // small session: render all
+  if (!shouldLazyRender()) return true; // small/cheap session: render all
   if (visibleGroups.value.has(gIdx)) return true;
   return isGroupActive(g.items); // never placeholder a live group
 }
@@ -157,6 +189,7 @@ watch(
       if (visibilityObserver) { visibilityObserver.disconnect(); visibilityObserver = null; }
       visibleGroups.value = new Set();
       forceRender.value = false; // a fresh session starts lazy again
+      lazyMode.value = false; // re-evaluate size for the new session
     }
   },
 );
