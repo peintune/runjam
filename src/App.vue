@@ -173,7 +173,7 @@ Promise.all([
   <!-- Info announcement banners (above the toast stack) -->
   <div class="fixed top-4 right-4 z-[9998] flex flex-col gap-2 w-80">
     <AnnouncementBanner
-      v-for="a in announcements.filter((x) => x.level !== 'important')"
+      v-for="a in announcements.filter((x) => x.id !== activeImportant?.id)"
       :key="a.id"
       :announcement="a"
       @close="dismissBanner(a.id)"

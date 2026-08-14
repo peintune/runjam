@@ -219,10 +219,14 @@ pub fn mark_announcement_read(
 
 /// Unified update check. Windows uses the updater plugin; macOS/Linux use
 /// the backend metadata endpoint and return a download URL for redirect.
+///
+/// The `current` argument is kept only for invoke compatibility with the
+/// frontend; the true current version is always sourced from the app's own
+/// package metadata so the check never reports a stale hardcoded version.
 #[tauri::command]
 pub async fn check_update_ui(
     app: tauri::AppHandle,
-    current: String,
+    _current: String,
 ) -> Result<crate::updates::UpdateCheckResult, String> {
     if crate::updates::is_windows() {
         let updater = app
@@ -240,8 +244,9 @@ pub async fn check_update_ui(
             Err(e) => Err(format!("update check failed: {}", e)),
         }
     } else {
-        // macOS/Linux: reuse the existing metadata check.
-        let info = check_for_updates(current).await?;
+        // macOS/Linux: reuse the existing metadata check, sourcing the
+        // current version from the app's own package metadata.
+        let info = check_for_updates(app.package_info().version.to_string()).await?;
         Ok(crate::updates::UpdateCheckResult {
             update_available: info.update_available,
             action: "open_download".into(),
