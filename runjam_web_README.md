@@ -65,6 +65,21 @@ npm run dev                  # http://localhost:3000
 - 自动（推荐）：在桌面仓库 CI 里加一步调用
   `POST https://<your-domain>/api/…`（或直接用 GitHub Actions 里的 supabase-js / psql 更新表）。
 
+## 软件升级（客户端）
+
+- Windows：客户端通过 Tauri updater 自动下载、校验签名并安装（NSIS）。
+  发布时 CI 自动生成 `.exe.sig` 签名文件，随 GitHub Release 上传。
+- macOS：客户端检测到新版本后跳转官网下载页（需手动安装）。
+- 版本元数据需同步到 Supabase `releases` 表（含 `download_urls` 与 `staged`）。
+
+## 公告（应用内）
+
+- 在 Supabase `announcements` 表插入公告：
+  - `level`: `info`（横幅）或 `important`（弹窗）
+  - `min_version`: 仅对 >= 该版本的客户端可见（可空）
+  - `active`: 需为 `true` 才显示
+- 客户端启动时拉取，本地记住已读，只提示一次。
+
 ## 灰度发布
 
 `releases.staged = true` 的版本不会出现在 `/api/updates/latest` 与官网更新日志中，

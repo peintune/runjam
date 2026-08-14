@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,4 +179,98 @@ pub fn platform_name() -> &'static str {
         "windows" => "win32",
         other => other,
     }
+}
+
+/// Fetch unread announcements (server filters active + min_version by the
+/// current app version). Client filters locally-read ones.
+#[tauri::command]
+pub async fn get_announcements(
+    app: tauri::AppHandle,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<crate::updates::Announcement>, String> {
+    let base = telemetry::api_base();
+    let version = app.package_info().version.to_string();
+    let url = format!("{}/api/announcements?current={}", base, version);
+    let agent = telemetry::build_agent(&app);
+    let resp = agent
+        .get(&url)
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("announcements fetch failed: {}", e))?;
+    let items: Vec<crate::updates::Announcement> = resp
+        .into_json()
+        .map_err(|e| format!("bad announcements response: {}", e))?;
+
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    Ok(crate::updates::filter_unread(&conn, items))
+}
+
+/// Mark an announcement as read so it is not shown again.
+#[tauri::command]
+pub fn mark_announcement_read(
+    db: State<'_, Mutex<Database>>,
+    id: String,
+) -> Result<(), String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    crate::updates::mark_announcement_read(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// Unified update check. Windows uses the updater plugin; macOS/Linux use
+/// the backend metadata endpoint and return a download URL for redirect.
+///
+/// The `current` argument is kept only for invoke compatibility with the
+/// frontend; the true current version is always sourced from the app's own
+/// package metadata so the check never reports a stale hardcoded version.
+#[tauri::command]
+pub async fn check_update_ui(
+    app: tauri::AppHandle,
+    current: String,
+) -> Result<crate::updates::UpdateCheckResult, String> {
+    // The `current` argument is required for invoke compatibility (Tauri v2
+    // matches arguments by name), but its value is ignored — the true current
+    // version is always sourced from the app's own package metadata so the
+    // check never reports a stale hardcoded version.
+    let _ = &current;
+    if crate::updates::is_windows() {
+        let updater = app
+            .updater()
+            .map_err(|e| format!("updater init failed: {}", e))?;
+        match updater.check().await {
+            Ok(Some(update)) => Ok(crate::updates::UpdateCheckResult {
+                update_available: true,
+                action: "install".into(),
+                latest_version: Some(update.version.to_string()),
+                notes: update.body.clone(),
+                download_url: None,
+            }),
+            Ok(None) => Ok(crate::updates::UpdateCheckResult::none()),
+            Err(e) => Err(format!("update check failed: {}", e)),
+        }
+    } else {
+        // macOS/Linux: reuse the existing metadata check, sourcing the
+        // current version from the app's own package metadata.
+        let info = check_for_updates(app.package_info().version.to_string()).await?;
+        Ok(crate::updates::UpdateCheckResult {
+            update_available: info.update_available,
+            action: "open_download".into(),
+            latest_version: info.latest_version,
+            notes: info.notes,
+            download_url: info.download_url,
+        })
+    }
+}
+
+/// Windows: trigger download + install of the pending update.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| format!("updater init failed: {}", e))?;
+    if let Some(update) = updater.check().await.map_err(|e| format!("update check failed: {}", e))? {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| format!("install failed: {}", e))?;
+    }
+    Ok(())
 }

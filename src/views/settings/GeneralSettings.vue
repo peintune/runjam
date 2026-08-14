@@ -8,7 +8,10 @@ import {
   getProxyConfig,
   setProxyConfig,
   testProxy,
+  checkUpdateUi,
 } from "@/api/telemetry";
+import type { UpdateCheckResult } from "@/api/telemetry";
+import UpdatePrompt from "@/components/UpdatePrompt.vue";
 
 const dataDir = ref("~/.runjam");
 const telemetryEnabled = ref(true);
@@ -77,6 +80,27 @@ async function handleTestProxy() {
   } catch (e) {
     proxyState.value = "error";
     proxyError.value = String(e);
+  }
+}
+
+const checking = ref(false);
+const updateResult = ref<UpdateCheckResult | null>(null);
+const checkError = ref("");
+
+async function checkForUpdate() {
+  checking.value = true;
+  checkError.value = "";
+  try {
+    const res = await checkUpdateUi("0.1.0");
+    if (res.updateAvailable) {
+      updateResult.value = res;
+    } else {
+      checkError.value = "已是最新版本";
+    }
+  } catch (e) {
+    checkError.value = String(e);
+  } finally {
+    checking.value = false;
   }
 }
 </script>
@@ -191,7 +215,30 @@ async function handleTestProxy() {
           </div>
           <span class="text-[13px] text-gray-400">v0.1.0</span>
         </div>
+
+        <div class="mt-8 border-t border-gray-100 pt-6">
+          <h3 class="text-[14px] font-semibold text-gray-900 mb-3">更新</h3>
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-[13px] text-gray-600">检查是否有新版本可用</p>
+              <p v-if="checkError" class="mt-1 text-[12px] text-gray-400">{{ checkError }}</p>
+            </div>
+            <button
+              class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+              :disabled="checking"
+              @click="checkForUpdate"
+            >
+              {{ checking ? "检查中…" : "检查更新" }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
+
+  <UpdatePrompt
+    v-if="updateResult"
+    :result="updateResult"
+    @close="updateResult = null"
+  />
 </template>

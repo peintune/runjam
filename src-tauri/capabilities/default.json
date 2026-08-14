@@ -16,6 +16,7 @@
     "shell:allow-stdin-write",
     "dialog:default",
     "dialog:allow-open",
+    "updater:default",
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:event:default"

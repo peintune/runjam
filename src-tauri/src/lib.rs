@@ -16,6 +16,7 @@ mod skill;
 pub mod log_util;
 mod util;
 mod telemetry;
+mod updates;
 
 use commands::term_cmd::TerminalState;
 use db::connection::Database;
@@ -95,6 +96,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(SessionManager::new()))
         .manage(Mutex::new(AppState::load()))
         .manage(Mutex::new(db))
@@ -204,6 +206,10 @@ pub fn run() {
             commands::telemetry_cmd::get_proxy_config,
             commands::telemetry_cmd::set_proxy_config,
             commands::telemetry_cmd::test_proxy,
+            commands::telemetry_cmd::check_update_ui,
+            commands::telemetry_cmd::install_update,
+            commands::telemetry_cmd::get_announcements,
+            commands::telemetry_cmd::mark_announcement_read,
         ])
         .on_window_event(|_, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
