@@ -2,10 +2,19 @@
 import { ref, onMounted } from "vue";
 import { FolderOpen } from "lucide-vue-next";
 import { getDataDir, openDataDir } from "@/api/app";
-import { getTelemetryStatus, setTelemetryEnabled } from "@/api/telemetry";
+import {
+  getTelemetryStatus,
+  setTelemetryEnabled,
+  getProxyConfig,
+  setProxyConfig,
+  testProxy,
+} from "@/api/telemetry";
 
 const dataDir = ref("~/.runjam");
 const telemetryEnabled = ref(true);
+const proxyUrl = ref("");
+const proxyState = ref<"idle" | "saving" | "saved" | "testing" | "ok" | "error">("idle");
+const proxyError = ref("");
 
 onMounted(async () => {
   try {
@@ -18,6 +27,11 @@ onMounted(async () => {
     telemetryEnabled.value = status.enabled;
   } catch {
     // backend without telemetry support
+  }
+  try {
+    proxyUrl.value = await getProxyConfig();
+  } catch {
+    // proxy support missing
   }
 });
 
@@ -37,6 +51,32 @@ async function toggleTelemetry() {
   } catch (e) {
     console.error("Failed to update telemetry setting:", e);
     telemetryEnabled.value = !next;
+  }
+}
+
+async function handleSaveProxy() {
+  if (proxyState.value === "saving" || proxyState.value === "testing") return;
+  proxyState.value = "saving";
+  proxyError.value = "";
+  try {
+    await setProxyConfig(proxyUrl.value.trim());
+    proxyState.value = "saved";
+  } catch (e) {
+    proxyState.value = "error";
+    proxyError.value = String(e);
+  }
+}
+
+async function handleTestProxy() {
+  if (proxyState.value === "saving" || proxyState.value === "testing") return;
+  proxyState.value = "testing";
+  proxyError.value = "";
+  try {
+    await testProxy(proxyUrl.value.trim());
+    proxyState.value = "ok";
+  } catch (e) {
+    proxyState.value = "error";
+    proxyError.value = String(e);
   }
 }
 </script>
@@ -92,6 +132,56 @@ async function toggleTelemetry() {
               :class="telemetryEnabled ? 'left-[22px]' : 'left-0.5'"
             />
           </button>
+        </div>
+
+        <div class="px-5 py-4">
+          <p class="text-[14px] font-medium text-gray-900">Outbound Proxy</p>
+          <p class="text-[12px] text-gray-400 mt-0.5">
+            HTTP/SOCKS5 proxy used for telemetry reporting when direct connection fails.
+            Leave empty to connect directly.
+          </p>
+          <div class="mt-3 flex items-center gap-2">
+            <input
+              v-model="proxyUrl"
+              type="text"
+              spellcheck="false"
+              placeholder="http://127.0.0.1:7890 or socks5://127.0.0.1:1080"
+              class="flex-1 h-9 px-3 rounded-lg border text-[13px] text-gray-900 placeholder:text-gray-300 bg-white focus:outline-none transition-colors disabled:opacity-50"
+              :class="proxyState === 'error' ? 'border-red-300 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'"
+              :disabled="proxyState === 'saving' || proxyState === 'testing'"
+              @keyup.enter="handleSaveProxy"
+            />
+            <button
+              class="h-9 px-3 rounded-lg text-[13px] font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              :class="proxyState === 'testing'
+                ? 'text-gray-500 border-gray-200 bg-gray-50'
+                : proxyState === 'ok'
+                  ? 'text-green-600 border-green-200 bg-green-50 hover:bg-green-100'
+                  : proxyState === 'error'
+                    ? 'text-red-600 border-red-200 bg-red-50 hover:bg-red-100'
+                    : 'text-blue-600 border-blue-200 bg-blue-50 hover:bg-blue-100'"
+              :disabled="proxyState === 'saving' || proxyState === 'testing'"
+              @click="handleTestProxy"
+            >
+              {{ proxyState === "testing" ? "Testing…" : "Test" }}
+            </button>
+            <button
+              class="h-9 px-4 rounded-lg text-[13px] font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="proxyState === 'saving' || proxyState === 'testing'"
+              @click="handleSaveProxy"
+            >
+              {{ proxyState === "saving" ? "Saving…" : "Save" }}
+            </button>
+          </div>
+          <p v-if="proxyState === 'saved'" class="mt-2 text-[12px] text-green-600">
+            Saved — will apply on the next telemetry flush.
+          </p>
+          <p v-else-if="proxyState === 'ok'" class="mt-2 text-[12px] text-green-600">
+            Proxy connection works.
+          </p>
+          <p v-else-if="proxyState === 'error'" class="mt-2 text-[12px] text-red-600">
+            {{ proxyError }}
+          </p>
         </div>
 
         <div class="flex items-center justify-between px-5 py-4">

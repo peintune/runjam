@@ -201,6 +201,9 @@ pub fn run() {
             commands::telemetry_cmd::track_event,
             commands::telemetry_cmd::submit_feedback,
             commands::telemetry_cmd::check_for_updates,
+            commands::telemetry_cmd::get_proxy_config,
+            commands::telemetry_cmd::set_proxy_config,
+            commands::telemetry_cmd::test_proxy,
         ])
         .on_window_event(|_, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

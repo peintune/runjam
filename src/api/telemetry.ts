@@ -21,6 +21,18 @@ export async function trackEvent(
   return invoke<void>("track_event", { eventName, eventProps });
 }
 
+export async function getProxyConfig(): Promise<string> {
+  return invoke<string>("get_proxy_config");
+}
+
+export async function setProxyConfig(proxy: string): Promise<void> {
+  return invoke<void>("set_proxy_config", { proxy });
+}
+
+export async function testProxy(proxy: string): Promise<void> {
+  return invoke<void>("test_proxy", { proxy });
+}
+
 export async function submitFeedback(
   feedbackType: string,
   content: string,

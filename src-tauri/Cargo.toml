@@ -30,7 +30,7 @@ regex = "1"
 directories = "5"
 toml = "1.1.2"
 tiny_http = "0.12"
-ureq = { version = "2.10", features = ["json"] }
+ureq = { version = "2.10", features = ["json", "socks-proxy"] }
 portable-pty = "0.7"
 zip = "2"
 quick-xml = "0.36"

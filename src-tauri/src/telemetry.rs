@@ -26,7 +26,8 @@ use tauri::Manager;
 pub const KEY_INSTALLATION_ID: &str = "installation_id";
 pub const KEY_TELEMETRY_ENABLED: &str = "telemetry_enabled";
 pub const KEY_CONSENT_SHOWN: &str = "telemetry_consent_shown";
-pub const DEFAULT_API_BASE: &str = "https://runjam.app";
+pub const KEY_PROXY_URL: &str = "outbound_proxy";
+pub const DEFAULT_API_BASE: &str = "https://runjam-web.vercel.app";
 
 const MAX_QUEUE_BATCH: i64 = 50;
 const MAX_ATTEMPTS: i64 = 5;
@@ -100,6 +101,24 @@ pub fn mark_consent_shown(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
         rusqlite::params![KEY_CONSENT_SHOWN, "1"],
+    )
+    .map(|_| ())
+}
+
+/// Outbound proxy used for telemetry reporting. Empty string = no proxy.
+pub fn get_proxy_url(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        [KEY_PROXY_URL],
+        |r| r.get(0),
+    )
+    .unwrap_or_default()
+}
+
+pub fn set_proxy_url(conn: &Connection, url: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
+        rusqlite::params![KEY_PROXY_URL, url],
     )
     .map(|_| ())
 }
@@ -267,6 +286,11 @@ pub fn flush_sync(app: &tauri::AppHandle) {
         return;
     }
 
+    // Build an agent honoring the configured outbound proxy (if any). The
+    // proxy URL is re-read on every flush so config changes take effect
+    // immediately.
+    let agent = build_agent(app);
+
     let mut ok_ids: Vec<i64> = Vec::new();
     let mut fail_ids: Vec<i64> = Vec::new();
     for (id, kind, payload) in rows {
@@ -274,7 +298,7 @@ pub fn flush_sync(app: &tauri::AppHandle) {
             "feedback" => format!("{}/api/feedback", base),
             k => format!("{}/api/telemetry/{}", base, k),
         };
-        if post_json(&url, &payload) {
+        if post_json_with(&agent, &url, &payload) {
             ok_ids.push(id);
         } else {
             fail_ids.push(id);
@@ -318,9 +342,36 @@ pub fn flush_async(app: &tauri::AppHandle) {
     });
 }
 
-fn post_json(url: &str, body: &str) -> bool {
-    let resp = ureq::post(url)
-        .timeout(Duration::from_secs(10))
+/// Build an HTTP agent that routes requests through the configured outbound
+/// proxy (HTTP/HTTPS/SOCKS5). Invalid proxy configs fall back to direct.
+fn build_agent(app: &tauri::AppHandle) -> ureq::Agent {
+    let proxy_url = proxy_url_from_app(app);
+    let mut builder = ureq::builder().timeout(Duration::from_secs(10));
+    let proxy_url = proxy_url.trim();
+    if !proxy_url.is_empty() {
+        if let Ok(p) = ureq::Proxy::new(proxy_url) {
+            builder = builder.proxy(p);
+        }
+    }
+    builder.build()
+}
+
+/// Read the configured outbound proxy URL. Returns empty string if the
+/// database is unavailable or no proxy is configured.
+fn proxy_url_from_app(app: &tauri::AppHandle) -> String {
+    let db = app.state::<Mutex<Database>>();
+    let Ok(guard) = db.lock() else {
+        return String::new();
+    };
+    let Ok(conn) = guard.conn.lock() else {
+        return String::new();
+    };
+    get_proxy_url(&conn)
+}
+
+fn post_json_with(agent: &ureq::Agent, url: &str, body: &str) -> bool {
+    let resp = agent
+        .post(url)
         .set("Content-Type", "application/json")
         .send_string(body);
     match resp {

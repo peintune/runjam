@@ -32,10 +32,14 @@ pub fn set_telemetry_enabled(
 ) -> Result<TelemetryStatus, String> {
     {
         let guard = db.lock().map_err(|e| e.to_string())?;
-        let conn = guard.conn.lock().map_err(|e| e.to_string())?;
-        telemetry::set_enabled(&conn, enabled).map_err(|e| e.to_string())?;
-        telemetry::mark_consent_shown(&conn).map_err(|e| e.to_string())?;
+        {
+            let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+            telemetry::set_enabled(&conn, enabled).map_err(|e| e.to_string())?;
+            telemetry::mark_consent_shown(&conn).map_err(|e| e.to_string())?;
+        }
         // Re-register so the server sees the latest consent state immediately.
+        // NOTE: conn must be dropped before register/track — those functions
+        // lock Database.conn themselves (std::sync::Mutex is not reentrant).
         if enabled {
             let version = app.package_info().version.to_string();
             let platform = platform_name();
@@ -54,6 +58,56 @@ pub fn track_event(
 ) {
     let guard = db.lock().unwrap();
     telemetry::track(&guard, &event_name, event_props.unwrap_or_else(|| serde_json::json!({})));
+}
+
+// ── outbound proxy (used for telemetry reporting) ──────────────────────
+
+/// Current outbound proxy URL (empty string = direct connection).
+#[tauri::command]
+pub fn get_proxy_config(db: State<'_, Mutex<Database>>) -> Result<String, String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    Ok(telemetry::get_proxy_url(&conn))
+}
+
+/// Save the outbound proxy URL (empty string clears it). Applies on the
+/// next telemetry flush.
+#[tauri::command]
+pub fn set_proxy_config(
+    app: tauri::AppHandle,
+    db: State<'_, Mutex<Database>>,
+    proxy: String,
+) -> Result<(), String> {
+    {
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+        telemetry::set_proxy_url(&conn, proxy.trim()).map_err(|e| e.to_string())?;
+    }
+    // Kick a flush so the new config is exercised right away (no-op if the
+    // queue is empty).
+    telemetry::flush_async(&app);
+    Ok(())
+}
+
+/// Verify the given proxy actually connects (GET https://example.com through
+/// it). The telemetry endpoint itself may be unreachable from some networks,
+/// so a generic reachable probe is used instead.
+#[tauri::command]
+pub fn test_proxy(proxy: String) -> Result<(), String> {
+    let proxy = proxy.trim();
+    if proxy.is_empty() {
+        return Err("proxy address is empty".into());
+    }
+    let p = ureq::Proxy::new(proxy).map_err(|e| format!("invalid proxy: {}", e))?;
+    let agent = ureq::builder()
+        .timeout(Duration::from_secs(8))
+        .proxy(p)
+        .build();
+    match agent.get("https://example.com").call() {
+        Ok(r) if (200..300).contains(&r.status()) => Ok(()),
+        Ok(r) => Err(format!("unexpected status: {}", r.status())),
+        Err(e) => Err(format!("connect failed: {}", e)),
+    }
 }
 
 #[tauri::command]
