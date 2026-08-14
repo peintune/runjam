@@ -226,8 +226,13 @@ pub fn mark_announcement_read(
 #[tauri::command]
 pub async fn check_update_ui(
     app: tauri::AppHandle,
-    _current: String,
+    current: String,
 ) -> Result<crate::updates::UpdateCheckResult, String> {
+    // The `current` argument is required for invoke compatibility (Tauri v2
+    // matches arguments by name), but its value is ignored — the true current
+    // version is always sourced from the app's own package metadata so the
+    // check never reports a stale hardcoded version.
+    let _ = &current;
     if crate::updates::is_windows() {
         let updater = app
             .updater()
