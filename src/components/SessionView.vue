@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, computed, nextTick } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, computed, nextTick } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter } from "vue-router";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
@@ -42,6 +42,9 @@ const props = defineProps<{
   /** Compact mode: hide text labels in permission/model selectors to save
    *  horizontal space when the chat panel is narrowed by the file tree. */
   compact?: boolean;
+  /** Session ID when using KeepAlive cache. When provided, this component
+   *  is dedicated to a single session and won't watch store.activeSessionId. */
+  sessionId?: string;
 }>();
 
 const store = useWorkspaceStore();
@@ -130,17 +133,31 @@ function scrollToMessage(msgIndex: number) {
     // Since we have the message index, we need to find the corresponding group
     // The data-user-msg-index is the group index, not the message index
     // Let's find all user message elements and match by content
-    const allUserEls = el.querySelectorAll('[data-user-msg-index]');
     const targetMsg = messages.value[msgIndex];
     if (!targetMsg) return;
-    for (const userEl of allUserEls) {
-      const textEl = userEl.querySelector('.msg-user-bubble');
-      if (textEl && textEl.textContent === targetMsg.content) {
-        userEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return;
-      }
+    if (!scrollToUserMessage(el, targetMsg.content)) {
+      // Lazy rendering: the target group may still be a placeholder (no
+      // .msg-user-bubble). Force every group to render, then retry once.
+      chatMessagesRef.value?.forceRenderAll();
+      nextTick(() => {
+        scrollToUserMessage(el, targetMsg.content);
+      });
     }
   });
+}
+
+// Find the user-message element whose bubble text matches `content` and scroll to
+// it. Returns true if found & scrolled, false if the element isn't rendered yet.
+function scrollToUserMessage(el: HTMLElement, content: string): boolean {
+  const allUserEls = el.querySelectorAll('[data-user-msg-index]');
+  for (const userEl of allUserEls) {
+    const textEl = userEl.querySelector('.msg-user-bubble');
+    if (textEl && textEl.textContent === content) {
+      userEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return true;
+    }
+  }
+  return false;
 }
 
 const agents = ref<AgentInfo[]>(agentStore.agents.length > 0 ? agentStore.agents : []);
@@ -499,6 +516,7 @@ const thoughtDuration = ref("");
 const isProcessing = ref(false);
 
 const messageContainer = ref<HTMLElement | null>(null);
+const chatMessagesRef = ref<{ forceRenderAll: () => void } | null>(null);
 const newSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const activeSessionTextarea = ref<HTMLTextAreaElement | null>(null);
 const showModelDropdown = ref(false);
@@ -650,7 +668,53 @@ function scrollToBottom() {
   });
 }
 
+// Effective session ID: use prop in KeepAlive mode, store otherwise
+const effectiveSessionId = computed(() => props.sessionId || store.activeSessionId || '');
+
+// When using KeepAlive (props.sessionId provided), initialize on mount
+// and restore messages on reactivation without re-loading from DB.
+onMounted(async () => {
+  if (props.sessionId) {
+    await initSession(props.sessionId);
+  }
+});
+
+onActivated(() => {
+  if (props.sessionId) {
+    const state = getSessionState(props.sessionId);
+    // Only sync messages if they changed while deactivated (ACP events may
+    // have added new messages). Avoids expensive re-render of cached DOM.
+    if (state.messages.length !== messages.value.length) {
+      messages.value = [...state.messages];
+    }
+    isProcessing.value = state.isProcessing;
+    scrollToBottom();
+  }
+});
+
+async function initSession(sid: string) {
+  activeThinking.value = ""; activeContent.value = ""; thoughtDuration.value = "";
+  inputText.value = "";
+  mentionsMap.value = new Map();
+  closeMentionPicker();
+  const state = getSessionState(sid);
+  messages.value = [...state.messages];
+  isProcessing.value = state.isProcessing;
+  isSessionLoading.value = true;
+  if (!unlisteners.has(sid)) {
+    try {
+      const un = await listen<AcpPayload>(`acp:${sid}`, (e) => handleAcpEvent(sid, e.payload));
+      unlisteners.set(sid, un);
+    } catch {}
+  }
+  await loadSessionMessages(sid);
+  scrollToBottom();
+  setTimeout(() => { isSessionLoading.value = false; }, 200);
+}
+
+// Legacy watch: used when sessionId prop is not provided (no KeepAlive)
 watch(() => store.activeSessionId, async (newId) => {
+  if (props.sessionId) return; // Skip if using KeepAlive mode
   activeThinking.value = ""; activeContent.value = ""; thoughtDuration.value = "";
   inputText.value = "";
   mentionsMap.value = new Map();
@@ -721,7 +785,7 @@ async function loadSessionMessages(sessionId: string) {
       state.messages = loadedMessages;
       state.loaded = true;
       msgStore.setMessages(sessionId, [...state.messages]);
-      if (store.activeSessionId === sessionId) {
+      if (effectiveSessionId.value === sessionId) {
         messages.value = [...state.messages];
       }
     } else {
@@ -1056,7 +1120,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       const im = ensureAgentMsg(state);
       // If there's a fresh interaction, we create it as a new mini-message-like block
       // But since interaction can come mid-stream, attach to last agent message
-      const currentSid = store.activeSessionId || sessionId;
+      const currentSid = effectiveSessionId.value || sessionId;
       im.interaction = {
         prompt: p.prompt || "",
         options: p.options || [],
@@ -1237,6 +1301,8 @@ async function loadAgentModels() {
   try { assignedModels.value = await getAgentModels(selectedAgentId.value); } catch { assignedModels.value = []; }
 }
 watch(() => store.activeSession, async (session) => { 
+  // In KeepAlive mode, only react when the active session matches this instance
+  if (props.sessionId && session?.id !== props.sessionId) return;
   if (session) {
     selectedAgentId.value = session.cli;
     if (session.model) {
@@ -1473,15 +1539,16 @@ async function handleSend() {
   }
 
   if (store.activeSession?.id) {
-    const state = getSessionState(store.activeSession.id);
+    const sid = effectiveSessionId.value;
+    const state = getSessionState(sid);
     state.messages.push({role:"user",content:userDisplay});
     messages.value = [...state.messages];
-    msgStore.setMessages(store.activeSession.id, [...state.messages]);
-    saveConversationMessage(store.activeSession.id, "user", userDisplay).catch(()=>{});
+    msgStore.setMessages(sid, [...state.messages]);
+    saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
   }
 
   if(store.activeSession) {
-    const sessionId = store.activeSession.id;
+    const sessionId = effectiveSessionId.value;
     if (store.activeSession.status === 'idle') {
       store.activeSession.status = 'running';
       store.sessions = [...store.sessions];
@@ -1567,14 +1634,15 @@ async function toggleSkill(name: string) {
 
 async function handleStop() {
   if (store.activeSession) {
-    const state = getSessionState(store.activeSession.id);
+    const sid = effectiveSessionId.value;
+    const state = getSessionState(sid);
     state.isProcessing = false;
     const lm = lastAgentMsg(state.messages);
     if (lm) lm.isProcessing = false;
     isProcessing.value = false;
     messages.value = [...state.messages];
-    msgStore.setMessages(store.activeSession.id, [...state.messages]);
-    await store.stopSession(store.activeSession.id);
+    msgStore.setMessages(sid, [...state.messages]);
+    await store.stopSession(sid);
   }
 }
 
@@ -1590,8 +1658,9 @@ async function pickDirectory() {
 
 // Sync messages to message store for search
 watch(messages, (msgs) => {
-  if (store.activeSessionId) {
-    msgStore.setMessages(store.activeSessionId, [...msgs]);
+  const sid = effectiveSessionId.value;
+  if (sid) {
+    msgStore.setMessages(sid, [...msgs]);
   }
 }, { deep: true });
 </script>
@@ -1618,7 +1687,7 @@ watch(messages, (msgs) => {
       <div class="flex-1 relative min-h-0">
         <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
-            <ChatMessages :messages="messages" :agent-id="selectedAgentId" />
+            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" />
             <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
               <div class="flex items-center gap-2 text-gray-400">
                 <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>

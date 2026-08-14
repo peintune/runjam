@@ -69,6 +69,98 @@ const messageGroups = computed(() => {
   return groups;
 });
 
+// ═══ Lazy rendering of off-viewport message groups ═══
+// Rendering every historical message's full DOM (markdown + hljs + DOMPurify)
+// in one tick is the dominant cost when opening a large session. We render only
+// the groups near the viewport; everything else gets a cheap fixed-height
+// placeholder. An IntersectionObserver (rootMargin 400px so rendering happens
+// before the user actually scrolls there) flips a group from placeholder → fully
+// rendered. Active/live groups always render fully. Small histories render
+// everything (no observer overhead). The module-level markdown cache stays —
+// revisits are instant.
+const visibleGroups = ref<Set<number>>(new Set());
+let visibilityObserver: IntersectionObserver | null = null;
+const GHOST_HEIGHT = 140; // px estimate for placeholder groups
+const LAZY_THRESHOLD = 50; // groups above this count get lazy rendering
+/** When true, every group renders fully (lazy rendering disabled). Used by
+ * SessionView's scrollToMessage fallback: jumping to an arbitrary historical
+ * message needs that group's DOM present, so we render everything once. */
+const forceRender = ref(false);
+
+function ensureGroup(el: HTMLElement, gIdx: number) {
+  // Skip observer entirely for small histories — render everything (no overhead)
+  if (messageGroups.value.length <= LAZY_THRESHOLD) return;
+  if (visibleGroups.value.has(gIdx)) return;
+  if (!visibilityObserver) {
+    // Root the observer at the scroll container (the message list's scrolling
+    // ancestor), NOT the viewport — otherwise a container taller than the window
+    // or a split layout would report groups as "not intersecting" and they'd
+    // never render. chatEl is the list content; its scrolling ancestor is the
+    // container that scrolls.
+    let root: HTMLElement | null = null;
+    let node = chatEl.value?.parentElement ?? el.parentElement;
+    while (node) {
+      const style = window.getComputedStyle(node);
+      if (/(auto|scroll|overlay)/.test(style.overflowY)) { root = node; break; }
+      node = node.parentElement;
+    }
+    visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        const obs = visibilityObserver;
+        for (const en of entries) {
+          const idx = Number((en.target as HTMLElement).dataset.gIdx);
+          if (Number.isNaN(idx)) continue;
+          if (en.isIntersecting) {
+            visibleGroups.value.add(idx);
+            if (obs) obs.unobserve(en.target); // render once, keep rendered
+          }
+        }
+      },
+      { root, rootMargin: "400px 0px 400px 0px" }, // render 400px before entering viewport
+    );
+  }
+  visibilityObserver.observe(el);
+}
+
+// A group must render fully when it's visible OR live (streaming/processing/typing)
+function shouldRenderGroup(g: { items: { oi: number; msg: Message }[] }, gIdx: number): boolean {
+  if (forceRender.value) return true; // scrollToMessage fallback: render everything
+  if (messageGroups.value.length <= LAZY_THRESHOLD) return true; // small session: render all
+  if (visibleGroups.value.has(gIdx)) return true;
+  return isGroupActive(g.items); // never placeholder a live group
+}
+
+// Exposed to SessionView so scrollToMessage can force every group to render
+// (its jump target may be an arbitrary historical group that is still a
+// placeholder). Once forced, lazy rendering stays off for this session — the
+// user explicitly asked to browse the full history, so full render is fine.
+function forceRenderAll() {
+  forceRender.value = true;
+}
+
+defineExpose({ forceRenderAll });
+
+// Reset visibility when the message array is swapped to a DIFFERENT session.
+// Fires only on reference change, so it's separate from the deep watchers below.
+// Streaming appends replace props.messages with a new array too, but the first
+// message's reference is unchanged (same session) — we must NOT reset then, or
+// the visible set would be wiped on every chunk and groups would flicker between
+// placeholder and rendered. Only a real session switch (different first message)
+// resets the set. We key on the FIRST message's reference only (not length):
+// an in-session rollback (error path pops messages) shrinks the array but stays
+// the same session, so it must not reset either.
+watch(
+  () => props.messages,
+  (newMsgs, oldMsgs) => {
+    const sameSession = !!oldMsgs && oldMsgs.length > 0 && newMsgs[0] === oldMsgs[0];
+    if (!sameSession) {
+      if (visibilityObserver) { visibilityObserver.disconnect(); visibilityObserver = null; }
+      visibleGroups.value = new Set();
+      forceRender.value = false; // a fresh session starts lazy again
+    }
+  },
+);
+
 // ═══ Collapsing state — track EXPANDED, not collapsed (default: hidden) ═══
 const thinkingExpanded = ref<Set<number>>(new Set());
 const toolExpanded = ref<Set<string>>(new Set());
@@ -174,6 +266,10 @@ onBeforeUnmount(() => {
     if (t.content) clearInterval(t.content);
   });
   timerMap.clear();
+  if (visibilityObserver) {
+    visibilityObserver.disconnect();
+    visibilityObserver = null;
+  }
 });
 
 function startTypewriter(
@@ -541,6 +637,19 @@ function truncateLabel(label: string, maxLen = 32): string {
 <template>
   <div ref="chatEl" class="space-y-6 py-2">
     <template v-for="(group, gIdx) in messageGroups" :key="gIdx">
+      <!-- ── Placeholder: cheap fixed-height, flips to full render when near viewport ── -->
+      <div
+        v-if="!shouldRenderGroup(group, gIdx)"
+        :data-gIdx="gIdx"
+        :ref="(el) => { if (el) ensureGroup(el as HTMLElement, gIdx); }"
+        class="msg-row msg-row-ghost"
+        :style="{ height: GHOST_HEIGHT + 'px' }"
+      >
+        <span class="text-gray-300 text-[13px]">…</span>
+      </div>
+
+      <!-- ── Fully rendered group (visible or live) ── -->
+      <template v-else>
       <!-- ── User message group (always single) ── -->
       <div
         v-if="group.type === 'user'"
@@ -886,6 +995,7 @@ function truncateLabel(label: string, maxLen = 32): string {
           </div>
         </div>
       </div>
+      </template>
     </template>
   </div>
 </template>

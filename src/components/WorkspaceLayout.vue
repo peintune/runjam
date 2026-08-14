@@ -298,7 +298,13 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
             : {}"
           :class="!isWorkspaceMode || !activeDirectory ? 'flex-1' : ''"
         >
-          <SessionView :compact="isWorkspaceMode && !!activeDirectory" />
+          <KeepAlive :max="10">
+            <SessionView
+              :key="store.activeSessionId || '__new__'"
+              :session-id="store.activeSessionId || ''"
+              :compact="isWorkspaceMode && !!activeDirectory"
+            />
+          </KeepAlive>
         </div>
       </div>
     </div>
