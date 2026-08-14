@@ -16,6 +16,7 @@ mod skill;
 pub mod log_util;
 mod util;
 mod telemetry;
+mod updates;
 
 use commands::term_cmd::TerminalState;
 use db::connection::Database;
