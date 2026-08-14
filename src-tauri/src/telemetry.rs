@@ -344,7 +344,7 @@ pub fn flush_async(app: &tauri::AppHandle) {
 
 /// Build an HTTP agent that routes requests through the configured outbound
 /// proxy (HTTP/HTTPS/SOCKS5). Invalid proxy configs fall back to direct.
-fn build_agent(app: &tauri::AppHandle) -> ureq::Agent {
+pub fn build_agent(app: &tauri::AppHandle) -> ureq::Agent {
     let proxy_url = proxy_url_from_app(app);
     let mut builder = ureq::builder().timeout(Duration::from_secs(10));
     let proxy_url = proxy_url.trim();

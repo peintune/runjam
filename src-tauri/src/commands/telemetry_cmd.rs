@@ -179,3 +179,39 @@ pub fn platform_name() -> &'static str {
         other => other,
     }
 }
+
+/// Fetch unread announcements (server filters active + min_version by the
+/// current app version). Client filters locally-read ones.
+#[tauri::command]
+pub async fn get_announcements(
+    app: tauri::AppHandle,
+    db: State<'_, Mutex<Database>>,
+) -> Result<Vec<crate::updates::Announcement>, String> {
+    let base = telemetry::api_base();
+    let version = app.package_info().version.to_string();
+    let url = format!("{}/api/announcements?current={}", base, version);
+    let agent = telemetry::build_agent(&app);
+    let resp = agent
+        .get(&url)
+        .timeout(Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("announcements fetch failed: {}", e))?;
+    let items: Vec<crate::updates::Announcement> = resp
+        .into_json()
+        .map_err(|e| format!("bad announcements response: {}", e))?;
+
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    Ok(crate::updates::filter_unread(&conn, items))
+}
+
+/// Mark an announcement as read so it is not shown again.
+#[tauri::command]
+pub fn mark_announcement_read(
+    db: State<'_, Mutex<Database>>,
+    id: String,
+) -> Result<(), String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    crate::updates::mark_announcement_read(&conn, &id).map_err(|e| e.to_string())
+}
