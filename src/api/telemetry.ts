@@ -59,3 +59,35 @@ export interface UpdateInfo {
 export async function checkForUpdates(current: string): Promise<UpdateInfo> {
   return invoke<UpdateInfo>("check_for_updates", { current });
 }
+
+export interface UpdateCheckResult {
+  updateAvailable: boolean;
+  action: "install" | "open_download";
+  latestVersion?: string | null;
+  notes?: string | null;
+  downloadUrl?: string | null;
+}
+
+export async function checkUpdateUi(current: string): Promise<UpdateCheckResult> {
+  return invoke<UpdateCheckResult>("check_update_ui", { current });
+}
+
+export async function installUpdate(): Promise<void> {
+  return invoke<void>("install_update");
+}
+
+export interface Announcement {
+  id: string;
+  title: string;
+  body: string;
+  level: "info" | "important";
+  createdAt?: string | null;
+}
+
+export async function getAnnouncements(): Promise<Announcement[]> {
+  return invoke<Announcement[]>("get_announcements");
+}
+
+export async function markAnnouncementRead(id: string): Promise<void> {
+  return invoke<void>("mark_announcement_read", { id });
+}
