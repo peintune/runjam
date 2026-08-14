@@ -50,9 +50,13 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRERDRBREM4NEQxRjUxNTIKUldSU1VSOU55SzNVVFhPSm04R0tBZWhadVFsaG5MUHNFYVg5SVg4MVkvREVtYngwYmMvQ3lwUi8K",
-      "endpoints": ["https://runjam-web.vercel.app/api/updates/latest"],
-      "windows": { "installMode": "passive" }
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMzVBNEMzMzYwRjFCREIKUldUYkd3ODJ3NlExL0NqcmltWTFrU0RmTndyYXR4UDFBaCt4V0RQcXovZlZiT3Q2bVVnbk9tZ08K",
+      "endpoints": [
+        "https://runjam-web.vercel.app/api/updates/latest"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
