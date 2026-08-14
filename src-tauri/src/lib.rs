@@ -206,6 +206,8 @@ pub fn run() {
             commands::telemetry_cmd::get_proxy_config,
             commands::telemetry_cmd::set_proxy_config,
             commands::telemetry_cmd::test_proxy,
+            commands::telemetry_cmd::check_update_ui,
+            commands::telemetry_cmd::install_update,
             commands::telemetry_cmd::get_announcements,
             commands::telemetry_cmd::mark_announcement_read,
         ])

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,4 +215,52 @@ pub fn mark_announcement_read(
     let guard = db.lock().map_err(|e| e.to_string())?;
     let conn = guard.conn.lock().map_err(|e| e.to_string())?;
     crate::updates::mark_announcement_read(&conn, &id).map_err(|e| e.to_string())
+}
+
+/// Unified update check. Windows uses the updater plugin; macOS/Linux use
+/// the backend metadata endpoint and return a download URL for redirect.
+#[tauri::command]
+pub async fn check_update_ui(
+    app: tauri::AppHandle,
+    current: String,
+) -> Result<crate::updates::UpdateCheckResult, String> {
+    if crate::updates::is_windows() {
+        let updater = app
+            .updater()
+            .map_err(|e| format!("updater init failed: {}", e))?;
+        match updater.check().await {
+            Ok(Some(update)) => Ok(crate::updates::UpdateCheckResult {
+                update_available: true,
+                action: "install".into(),
+                latest_version: Some(update.version.to_string()),
+                notes: update.body.clone(),
+                download_url: None,
+            }),
+            Ok(None) => Ok(crate::updates::UpdateCheckResult::none()),
+            Err(e) => Err(format!("update check failed: {}", e)),
+        }
+    } else {
+        // macOS/Linux: reuse the existing metadata check.
+        let info = check_for_updates(current).await?;
+        Ok(crate::updates::UpdateCheckResult {
+            update_available: info.update_available,
+            action: "open_download".into(),
+            latest_version: info.latest_version,
+            notes: info.notes,
+            download_url: info.download_url,
+        })
+    }
+}
+
+/// Windows: trigger download + install of the pending update.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| format!("updater init failed: {}", e))?;
+    if let Some(update) = updater.check().await.map_err(|e| format!("update check failed: {}", e))? {
+        update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| format!("install failed: {}", e))?;
+    }
+    Ok(())
 }
