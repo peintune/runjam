@@ -154,10 +154,16 @@ function ensureGroup(el: HTMLElement, gIdx: number) {
   visibilityObserver.observe(el);
 }
 
-// A group must render fully when it's visible OR live (streaming/processing/typing)
+// A group must render fully when it's visible OR live (streaming/processing/typing).
+// Also always render the LAST few groups: a chat opens scrolled to the bottom
+// (latest messages), so those must be real content immediately — otherwise the
+// initial scroll target is computed against placeholder heights and lands in the
+// middle of history. The old history above stays lazy.
+const ALWAYS_RENDER_TAIL = 8; // last N groups render fully on open
 function shouldRenderGroup(g: { items: { oi: number; msg: Message }[] }, gIdx: number): boolean {
   if (forceRender.value) return true; // scrollToMessage fallback: render everything
   if (!shouldLazyRender()) return true; // small/cheap session: render all
+  if (gIdx >= messageGroups.value.length - ALWAYS_RENDER_TAIL) return true; // bottom of chat
   if (visibleGroups.value.has(gIdx)) return true;
   return isGroupActive(g.items); // never placeholder a live group
 }
