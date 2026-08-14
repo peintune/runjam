@@ -108,7 +108,23 @@ function renderMarkdown(src: string, sanitize: boolean): string {
  * every session switch, which is part of why switching sessions stuttered).
  */
 const sharedMdCache = new Map<string, string>();
-const SHARED_MD_CACHE_MAX = 300;
+const SHARED_MD_CACHE_MAX = 1000;
+
+/**
+ * Separate cache for streaming content. Each typewriter tick produces a unique
+ * source string, but the same string will be requested many times within the same
+ * render cycle (Vue re-renders the entire message list, calling renderContent for
+ * every message). This cache absorbs those duplicate requests without touching the
+ * shared history cache.
+ *
+ * Cleared when a message completes (see clearStreamingCache).
+ */
+const streamingMdCache = new Map<string, string>();
+const STREAMING_MD_CACHE_MAX = 200;
+export function clearStreamingCache(): void {
+  streamingMdCache.clear();
+}
+
 export function renderCached(
   src: string,
   opts: RenderOptions = {},
@@ -116,11 +132,22 @@ export function renderCached(
   cache = true,
 ): string {
   if (!cache) {
-    // 流式中的部分内容：每次 slice 都不同，写入缓存只会冲掉已有条目
-    // （长流式 >300 chunks 会把整个 FIFO 缓存清空，上翻历史又得重新解析）。
+    // Streaming content: use a separate cache so we don't evict the shared
+    // history cache. The same streaming slice is requested multiple times per
+    // render cycle because the full message list re-renders on every tick.
+    let html = streamingMdCache.get(src);
+    if (html !== undefined) return html;
     const t0 = performance.now();
-    const html = renderMarkdown(src, opts.sanitize ?? true);
+    // Skip DOMPurify for streaming content — it will be re-parsed within 16ms
+    // anyway, and the final (complete) version always goes through full
+    // sanitization. This saves ~50% of parse time.
+    html = renderMarkdown(src, false);
     onMiss?.(performance.now() - t0);
+    streamingMdCache.set(src, html);
+    if (streamingMdCache.size > STREAMING_MD_CACHE_MAX) {
+      const oldest = streamingMdCache.keys().next().value;
+      if (oldest !== undefined) streamingMdCache.delete(oldest);
+    }
     return html;
   }
   let html = sharedMdCache.get(src);

@@ -5,7 +5,7 @@ import {
   Wrench, MousePointerClick, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
-import { useMarkdown, renderCached } from "../composables/useMarkdown";
+import { useMarkdown, renderCached, clearStreamingCache } from "../composables/useMarkdown";
 import AgentIcon from "./AgentIcon.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { recordRender, recordMdParse } from "../lib/diag";
@@ -482,6 +482,10 @@ function formatTokens(n: number): string {
 // the `now` tick. renderCached keeps a MODULE-level cache keyed by source string,
 // so unchanged messages (the vast majority of a long conversation) are never
 // re-parsed, and the cache survives session switches.
+//
+// safeSliceCache avoids redundant regex matching in safeSliceForStreaming when
+// the same displayed content is requested multiple times in the same render cycle.
+const safeSliceCache = new Map<string, string>();
 function renderContent(idx: number, msg: Message): string {
   const fullContent = msg.content;
   const displayed = displayMap[idx]?.content;
@@ -491,8 +495,17 @@ function renderContent(idx: number, msg: Message): string {
     // 完成/历史内容：可缓存
     html = renderCached(fullContent, { sanitize: true }, (ms) => recordMdParse(ms));
   } else {
-    // 流式部分内容：只渲染不缓存（cache=false），避免冲掉历史缓存
-    const safeSlice = safeSliceForStreaming(displayed);
+    // 流式部分内容：使用独立流式缓存（不与历史缓存冲突）
+    let safeSlice = safeSliceCache.get(displayed);
+    if (safeSlice === undefined) {
+      safeSlice = safeSliceForStreaming(displayed);
+      safeSliceCache.set(displayed, safeSlice);
+      // Keep the cache small — only need the most recent few slices
+      if (safeSliceCache.size > 50) {
+        const oldest = safeSliceCache.keys().next().value;
+        if (oldest !== undefined) safeSliceCache.delete(oldest);
+      }
+    }
     html = renderCached(safeSlice, { sanitize: true }, (ms) => recordMdParse(ms), false);
   }
   recordRender(performance.now() - t0);
@@ -546,6 +559,10 @@ watch(
         }
       }
       mermaidRenderedMessages.value.clear();
+      // Clear streaming caches on session switch — stale streaming slices
+      // from the previous session are never going to be requested again.
+      clearStreamingCache();
+      safeSliceCache.clear();
       // Don't clear timers — they will naturally complete when content matches
     }
     for (let i = 0; i < msgs.length; i++) {
@@ -564,6 +581,8 @@ watch(
         if (m.content && displayMap[i].content.length < m.content.length)
           startTypewriter(i, m.content, "content", 16);
       } else {
+        const wasLive = displayMap[i].content.length < (m.content?.length || 0) ||
+                        displayMap[i].thinking.length < (m.thinking?.length || 0);
         // Message is no longer live — freeze any running durations
         if (startTimes[i].thinking && !frozenDurations[i].thinking) {
           frozenDurations[i].thinking = Date.now() - startTimes[i].thinking;
@@ -579,6 +598,13 @@ watch(
         }
         if (m.content && hasMermaid(m.content)) {
           handleMermaidInContent(i, m);
+        }
+        // When a message finishes streaming, clear transient caches so stale
+        // streaming slices don't accumulate. The final content is cached in the
+        // shared module-level cache.
+        if (wasLive) {
+          clearStreamingCache();
+          safeSliceCache.clear();
         }
       }
     }
