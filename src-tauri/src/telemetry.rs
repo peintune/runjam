@@ -211,14 +211,30 @@ pub fn register(db: &Database, app_version: &str, platform: &str, arch: &str, os
     enqueue(db, "register", &payload);
 }
 
+/// App version + platform for the current build, sourced from the app handle
+/// (set once at startup). Falls back to empty strings if the handle is not yet
+/// available (e.g. very early startup or tests) so the payload stays valid.
+fn app_version_and_platform() -> (String, String) {
+    match APP_HANDLE.get() {
+        Some(app) => (
+            app.package_info().version.to_string(),
+            crate::commands::telemetry_cmd::platform_name().to_string(),
+        ),
+        None => (String::new(), String::new()),
+    }
+}
+
 /// Key feature usage event.
 pub fn track(db: &Database, event_name: &str, props: serde_json::Value) {
     let id = installation_id(db);
     if id.is_empty() {
         return;
     }
+    let (app_version, platform) = app_version_and_platform();
     let payload = serde_json::json!({
         "installation_id": id,
+        "app_version": app_version,
+        "platform": platform,
         "events": [{
             "event_name": event_name,
             "event_props": props,
@@ -239,8 +255,11 @@ pub fn report_error(db: &Database, level: &str, category: &str, message: &str, s
     if id.is_empty() {
         return;
     }
+    let (app_version, platform) = app_version_and_platform();
     let payload = serde_json::json!({
         "installation_id": id,
+        "app_version": app_version,
+        "platform": platform,
         "errors": [{
             "level": level,
             "category": category,
