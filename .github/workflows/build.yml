@@ -35,13 +35,6 @@ jobs:
 
       - name: Build Tauri (Windows)
         uses: tauri-apps/tauri-action@v0
-        with:
-          # Do NOT let tauri-action create/publish a GitHub Release. Release
-          # creation is handled exclusively by the `create-release` job below,
-          # so all artifacts (exe + sig + dmg) land in ONE release. Otherwise
-          # tauri-action's default auto-release races the create-release job
-          # and the .sig can end up in a different (draft) release.
-          createRelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Explicit platform target so that `pretauri` sync-resources.mjs
@@ -98,8 +91,6 @@ jobs:
           TAURI_ENV_PLATFORM_TARGET: x86_64-apple-darwin
         with:
           args: --target x86_64-apple-darwin
-          # Single release source: see Windows job comment.
-          createRelease: false
 
       - name: Deep-sign embedded binaries (macOS x64)
         run: |
@@ -169,9 +160,6 @@ jobs:
 
       - name: Build Tauri (macOS ARM)
         uses: tauri-apps/tauri-action@v0
-        with:
-          # Single release source: see Windows job comment.
-          createRelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Explicit target so `pretauri` and `beforeBuildCommand` scripts

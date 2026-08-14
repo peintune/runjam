@@ -27,7 +27,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "createUpdaterArtifacts": "v2Compatible",
+    "createUpdaterArtifacts": true,
     "resources": {
       "./nodejs/": "./nodejs/",
       "./binaries/llama-server/macos-x86_64/": "./binaries/llama-server/macos-x86_64/",
