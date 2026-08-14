@@ -89,6 +89,12 @@ jobs:
           # (llama-server macos-aarch64 instead of macos-x86_64, and the
           # wrong claude-agent-sdk optional dependency).
           TAURI_ENV_PLATFORM_TARGET: x86_64-apple-darwin
+          # createUpdaterArtifacts is global (not per-platform), so macOS also
+          # tries to emit an updater .sig. Provide the signing key so the build
+          # succeeds; the macOS updater artifact is unused (macOS uses the
+          # browser-download path) but harmless.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target x86_64-apple-darwin
 
@@ -166,6 +172,12 @@ jobs:
           # inside tauri-action don't depend on process.platform/arch
           # (matches host here but set for robustness & consistency).
           TAURI_ENV_PLATFORM_TARGET: aarch64-apple-darwin
+          # createUpdaterArtifacts is global (not per-platform), so macOS also
+          # tries to emit an updater .sig. Provide the signing key so the build
+          # succeeds; the macOS updater artifact is unused (macOS uses the
+          # browser-download path) but harmless.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Deep-sign embedded binaries (macOS ARM)
         run: |
