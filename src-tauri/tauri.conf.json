@@ -47,5 +47,12 @@
       "signingIdentity": null,
       "providerShortName": null
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE",
+      "endpoints": ["https://runjam-web.vercel.app/api/updates/latest"],
+      "windows": { "installMode": "passive" }
+    }
   }
 }

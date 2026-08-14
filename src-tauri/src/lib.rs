@@ -95,6 +95,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(SessionManager::new()))
         .manage(Mutex::new(AppState::load()))
         .manage(Mutex::new(db))
