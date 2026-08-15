@@ -19,6 +19,7 @@ pub struct SessionRecord {
     pub cli_display_name: String,
     pub title: String,
     pub directory: String,
+    pub model: Option<String>,
     pub status: String,
     pub pid: Option<i64>,
     pub pinned: i64,
@@ -65,6 +66,7 @@ pub fn init_db() {
         conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN acp_session_id TEXT DEFAULT ''", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", []).ok();
         // Messages table
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
@@ -187,7 +189,7 @@ pub fn save_session(
 pub fn get_sessions() -> Vec<SessionRecord> {
     let conn = match get_conn() { Ok(c) => c, Err(e) => { rjlog!("[DB ERROR] get_conn failed: {}", e); return vec![]; } };
     let mut stmt = match conn.prepare(
-        "SELECT id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, archived, acp_session_id
+        "SELECT id, cli, cli_display_name, title, directory, model, status, pid, pinned, created_at, archived, acp_session_id
          FROM sessions
          ORDER BY pinned DESC, created_at DESC"
     ) { Ok(s) => s, Err(e) => { rjlog!("[DB ERROR] prepare get_sessions failed: {}", e); return vec![]; } };
@@ -199,12 +201,13 @@ pub fn get_sessions() -> Vec<SessionRecord> {
             cli_display_name: row.get(2)?,
             title: row.get(3)?,
             directory: row.get(4)?,
-            status: row.get(5)?,
-            pid: row.get(6)?,
-            pinned: row.get(7)?,
-            created_at: row.get(8)?,
-            archived: row.get(9)?,
-            acp_session_id: row.get(10)?,
+            model: row.get(5)?,
+            status: row.get(6)?,
+            pid: row.get(7)?,
+            pinned: row.get(8)?,
+            created_at: row.get(9)?,
+            archived: row.get(10)?,
+            acp_session_id: row.get(11)?,
         })
     });
 
@@ -219,6 +222,15 @@ pub fn set_session_archived(id: &str, archived: bool) {
         conn.execute(
             "UPDATE sessions SET archived = ?1 WHERE id = ?2",
             params![archived as i64, id],
+        ).ok();
+    }
+}
+
+pub fn set_session_model(id: &str, model: &str) {
+    if let Ok(conn) = get_conn() {
+        conn.execute(
+            "UPDATE sessions SET model = ?1 WHERE id = ?2",
+            params![model, id],
         ).ok();
     }
 }

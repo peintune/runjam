@@ -8,7 +8,7 @@ import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
 import { sendInput, startSession as apiStartSession, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
-import { saveConversationMessage, getConversationMessages, saveSession } from "../api/search";
+import { saveConversationMessage, getConversationMessages, saveSession, updateSessionModel } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -1320,6 +1320,14 @@ watch(selectedAgentId, async (id) => {
   try{await setLastAgent(id);}catch{} 
   await loadModels(); 
   await loadAgentModels();
+  // If the active session carries its own model, honor it over the per-agent
+  // default — otherwise opening an old session would silently fall back to the
+  // last globally-selected model (e.g. a local model) and break it.
+  const activeModel = store.activeSession?.model;
+  if (activeModel && modelList.value.some(m => m.id === activeModel)) {
+    selectedModel.value = activeModel;
+    return;
+  }
   const savedModel = await loadSessionModel(id);
   if (savedModel && modelList.value.some(m => m.id === savedModel)) {
     selectedModel.value = savedModel;
@@ -1569,6 +1577,13 @@ async function handleSend() {
       store.sessions = [...store.sessions];
     }
     invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
+    // The agent's on-disk model config is shared per-agent (e.g. ~/.claude/
+    // settings.json), not per-session. Re-apply THIS session's own model before
+    // sending so switching models in another session doesn't leak into this one.
+    const sessionModel = store.activeSession.model || selectedModel.value;
+    if (sessionModel) {
+      setAgentModel(store.activeSession.cli, sessionModel).catch(() => {});
+    }
     sendInput(sessionId, sendText, history).catch(err=>{
       const state = getSessionState(sessionId);
       state.messages.push({role:"agent",content:`Error:${err}`});
@@ -1587,6 +1602,12 @@ function handleModelSelect(model: ModelEntry) {
   showModelDropdown.value = false;
 
   saveSessionModel(selectedAgentId.value, model.id);
+  // Remember the model per-session (persisted to DB) so this selection only
+  // affects the current session, not every session of the same agent.
+  if (store.activeSession) {
+    store.activeSession.model = model.id;
+    updateSessionModel(store.activeSession.id, model.id).catch(() => {});
+  }
   // Immediately update agent config so the agent uses the right model name
   setAgentModel(selectedAgentId.value, model.id).catch(() => {});
 }

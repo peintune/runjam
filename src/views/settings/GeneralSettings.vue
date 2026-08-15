@@ -103,7 +103,7 @@ async function handleTestProxy() {
           <div class="flex items-center gap-2">
             <span class="text-[13px] text-gray-400 font-mono">{{ dataDir }}</span>
             <button
-              class="inline-flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md transition-colors"
+              class="inline-flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-[0.98] rounded-lg transition-all duration-150 cursor-pointer"
               @click="handleOpen"
             >
               <FolderOpen :size="14" />
@@ -124,7 +124,7 @@ async function handleTestProxy() {
             role="switch"
             :aria-checked="telemetryEnabled"
             class="relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50"
-            :class="telemetryEnabled ? 'bg-blue-600' : 'bg-gray-300'"
+            :class="telemetryEnabled ? 'bg-indigo-600' : 'bg-gray-300'"
             @click="toggleTelemetry"
           >
             <span
@@ -152,7 +152,7 @@ async function handleTestProxy() {
               @keyup.enter="handleSaveProxy"
             />
             <button
-              class="h-9 px-3 rounded-lg text-[13px] font-medium border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="h-9 px-3 rounded-lg text-[13px] font-medium border transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer active:scale-[0.98]"
               :class="proxyState === 'testing'
                 ? 'text-gray-500 border-gray-200 bg-gray-50'
                 : proxyState === 'ok'
@@ -166,7 +166,7 @@ async function handleTestProxy() {
               {{ proxyState === "testing" ? "Testing…" : "Test" }}
             </button>
             <button
-              class="h-9 px-4 rounded-lg text-[13px] font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="h-9 px-4 rounded-lg text-[13px] font-medium text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm"
               :disabled="proxyState === 'saving' || proxyState === 'testing'"
               @click="handleSaveProxy"
             >

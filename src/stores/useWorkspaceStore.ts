@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { startSession as tauriStartSession, stopSession as tauriStopSession } from "../api/sessions";
 import { useMessageStore } from "./useMessageStore";
-import { saveSession, getSessions, updateSessionTitle, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, type SessionRecord } from "../api/search";
+import { saveSession, getSessions, updateSessionTitle, updateSessionModel, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, type SessionRecord } from "../api/search";
 
 export interface Directory {
   id: string;
@@ -132,6 +132,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       await saveSession(sessionId, cli, cliDisplayName, session.title, session.directory || "", "running", null, 0, 0, "");
     } catch (err) {
       console.error("saveSession failed:", err);
+    }
+    // Persist the session's model so it survives restarts (the sessions table
+    // stores it per-session, separate from the agent's global model config).
+    if (model) {
+      updateSessionModel(sessionId, model).catch(() => {});
     }
 
     try {

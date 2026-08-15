@@ -58,7 +58,7 @@ async function checkForUpdate() {
           <div class="flex items-center gap-2">
             <p v-if="checkError" class="text-[12px] text-gray-400">{{ checkError }}</p>
             <button
-              class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+              class="rounded-lg bg-indigo-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm"
               :disabled="checking"
               @click="checkForUpdate"
             >
@@ -72,7 +72,7 @@ async function checkForUpdate() {
           <p class="text-[14px] font-medium text-gray-900 mb-3">Links</p>
           <div class="space-y-2">
             <button
-              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 active:scale-[0.99] transition-all duration-150 cursor-pointer"
               @click="openLink('https://github.com/peintune/runjam')"
             >
               <div class="flex items-center gap-2">
@@ -82,7 +82,7 @@ async function checkForUpdate() {
               <ExternalLink :size="14" class="text-gray-300" />
             </button>
             <button
-              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 active:scale-[0.99] transition-all duration-150 cursor-pointer"
               @click="openLink('https://github.com/peintune/runjam/issues')"
             >
               <div class="flex items-center gap-2">
@@ -94,7 +94,7 @@ async function checkForUpdate() {
               <ExternalLink :size="14" class="text-gray-300" />
             </button>
             <button
-              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+              class="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] text-gray-600 hover:bg-gray-50 hover:text-gray-900 active:scale-[0.99] transition-all duration-150 cursor-pointer"
               @click="openLink('https://x.com/hans_jimmy52900')"
             >
               <div class="flex items-center gap-2">

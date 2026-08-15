@@ -663,7 +663,7 @@ const userAddedModels = computed(() => {
           <p class="text-[13px] font-medium text-amber-800">Llama.cpp server not available</p>
           <p class="text-[12px] text-amber-600 mt-0.5">Please ensure llama-server binaries are present in the correct location</p>
         </div>
-        <button @click="openUrl('https://github.com/ggerganov/llama.cpp')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 transition-colors cursor-pointer">
+        <button @click="openUrl('https://github.com/ggerganov/llama.cpp')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
           Download <ExternalLink :size="12" />
         </button>
       </div>
@@ -678,11 +678,11 @@ const userAddedModels = computed(() => {
           <span class="text-[12px] text-gray-500">{{ getStatusText() }}</span>
         </div>
         <div class="flex items-center gap-2">
-          <button @click="openLlamaModelsDir" class="flex items-center gap-1.5 text-[12px] text-gray-500 hover:text-gray-700 transition-colors cursor-pointer">
+          <button @click="openLlamaModelsDir" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">
             <FolderOpen :size="14" /> Open Folder
           </button>
-          <button @click="showAddLocalModel = true" 
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer">
+          <button @click="showAddLocalModel = true"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
             <Plus :size="12" /> Add Model
           </button>
         </div>
@@ -733,18 +733,18 @@ const userAddedModels = computed(() => {
                   </span>
                 </template>
                 <template v-else-if="isModelRunning(rm.filename)">
-                  <button 
+                  <button
                     @click="handleStopServer"
-                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
                   >
                     <Square :size="12" /> Stop
                   </button>
                 </template>
                 <template v-else>
-                  <button 
+                  <button
                     v-if="!runningServerPort"
                     @click="handleStartServer(rm.filename)"
-                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                    class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                   >
                     <Play :size="12" /> Start
                   </button>
@@ -755,9 +755,9 @@ const userAddedModels = computed(() => {
               </div>
             </template>
             <template v-else>
-              <button 
+              <button
                 @click="downloadModel(rm.hfRepo, rm.filename)"
-                class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
               >
                 <Download :size="12" /> Download
               </button>
@@ -795,24 +795,24 @@ const userAddedModels = computed(() => {
                 </span>
               </template>
               <template v-else-if="isModelRunning(model.name)">
-                <button 
+                <button
                   @click="handleStopServer"
-                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 transition-colors cursor-pointer"
+                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
                 >
                   <Square :size="12" /> Stop
                 </button>
               </template>
               <template v-else>
-                <button 
+                <button
                   v-if="!runningServerPort"
                   @click="handleStartServer(model.name)"
-                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer"
+                  class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                 >
                   <Play :size="12" /> Start
                 </button>
-                <button 
+                <button
                   @click="removeModel(model.id)"
-                  class="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
+                  class="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                   title="Remove model"
                 >
                   <Trash2 :size="14" />
@@ -835,7 +835,7 @@ const userAddedModels = computed(() => {
           <span class="text-[12px] text-gray-400">({{ commercialModels.length }})</span>
         </div>
         <button @click="showAdd = true; nameError = ''; apiKeyError = ''"
-          class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
+          class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
           <Plus :size="15" /> Add Model
         </button>
       </div>
@@ -879,14 +879,14 @@ const userAddedModels = computed(() => {
           <div class="flex items-center gap-2">
             <button 
               @click="openAgentDropdown(model.id, $event)"
-              class="agent-dropdown-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors cursor-pointer"
+              class="agent-dropdown-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 active:scale-[0.98] transition-all duration-150 cursor-pointer"
             >
               <Users :size="12" />
               Agents: {{ model.assignedAgents.length }}
               <ChevronDown :size="12" />
             </button>
             <button @click="removeModel(model.id)"
-              class="p-2 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all duration-150 flex-shrink-0 cursor-pointer">
+              class="p-2 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 active:scale-[0.98] transition-all duration-150 flex-shrink-0 cursor-pointer">
               <Trash2 :size="15" />
             </button>
           </div>
@@ -901,7 +901,7 @@ const userAddedModels = computed(() => {
       <h3 class="text-[15px] font-medium text-gray-700 mb-1">No models configured</h3>
       <p class="text-[13px] text-gray-400 mb-4">Add a model to start using it in conversations</p>
       <button @click="showAdd = true"
-        class="px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
+        class="px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
         Add your first model
       </button>
     </div>
@@ -973,8 +973,8 @@ const userAddedModels = computed(() => {
           </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex gap-2 justify-end">
-          <button @click="showAddLocalModel = false" class="px-4 py-2 rounded-xl text-[13px] text-gray-500 hover:bg-gray-100 transition-colors duration-150 cursor-pointer">Cancel</button>
-          <button @click="handleAddLocalModel" class="px-5 py-2 rounded-xl text-[13px] font-medium text-white bg-gray-700 hover:bg-gray-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
+          <button @click="showAddLocalModel = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">Cancel</button>
+          <button @click="handleAddLocalModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
         </div>
       </div>
     </div>
@@ -1005,8 +1005,8 @@ const userAddedModels = computed(() => {
           </div>
           
           <div v-if="serverStartFailed" class="flex gap-2 mt-4">
-            <button @click="serverStartFailed = false; serverFailureReason = ''; serverLogs = []" 
-              class="flex-1 px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer">
+            <button @click="serverStartFailed = false; serverFailureReason = ''; serverLogs = []"
+              class="flex-1 px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
               Close
             </button>
           </div>
@@ -1024,7 +1024,7 @@ const userAddedModels = computed(() => {
           <span class="text-[14px] font-semibold text-gray-900">Server Error</span>
         </div>
         <p class="text-[13px] text-gray-600 mb-4">{{ serverError }}</p>
-        <button @click="serverError = ''" class="w-full px-4 py-2 rounded-xl text-[13px] font-medium bg-gray-700 text-white hover:bg-gray-600 transition-colors cursor-pointer">
+        <button @click="serverError = ''" class="w-full px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
           OK
         </button>
       </div>
@@ -1092,8 +1092,8 @@ const userAddedModels = computed(() => {
           </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex gap-2 justify-end">
-          <button @click="showAdd = false" class="px-4 py-2 rounded-xl text-[13px] text-gray-500 hover:bg-gray-100 transition-colors duration-150 cursor-pointer">Cancel</button>
-          <button @click="addModel" class="px-5 py-2 rounded-xl text-[13px] font-medium text-white bg-gray-700 hover:bg-gray-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
+          <button @click="showAdd = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">Cancel</button>
+          <button @click="addModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
         </div>
       </div>
     </div>

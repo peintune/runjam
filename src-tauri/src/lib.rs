@@ -150,6 +150,7 @@ pub fn run() {
             commands::search_cmd::save_session,
             commands::search_cmd::get_sessions,
             commands::search_cmd::update_session_title,
+            commands::search_cmd::update_session_model,
             commands::search_cmd::delete_session,
             commands::search_cmd::archive_session,
             commands::search_cmd::unarchive_session,

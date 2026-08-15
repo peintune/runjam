@@ -57,6 +57,10 @@ export async function updateSessionTitle(id: string, title: string): Promise<voi
   return invoke("update_session_title", { id, title });
 }
 
+export async function updateSessionModel(id: string, model: string): Promise<void> {
+  return invoke("update_session_model", { id, model });
+}
+
 export async function deleteSession(id: string): Promise<void> {
   return invoke("delete_session", { id });
 }
