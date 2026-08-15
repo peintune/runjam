@@ -2310,7 +2310,8 @@ watch(messages, (msgs) => {
         </div>
         </div>
       </div>
-      <div class="flex justify-center mt-4">
+    </div>
+      <div class="flex justify-center pt-2 pb-6">
         <button
           @click="showFeedbackModal = true"
           class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
@@ -2319,7 +2320,6 @@ watch(messages, (msgs) => {
           <MessageCircle :size="15" />
         </button>
       </div>
-    </div>
     </div>
   </main>
 

@@ -40,6 +40,11 @@ const router = createRouter({
           name: "settings-general",
           component: () => import("../views/settings/GeneralSettings.vue"),
         },
+        {
+          path: "about",
+          name: "settings-about",
+          component: () => import("../views/settings/AboutSettings.vue"),
+        },
       ],
     },
   ],

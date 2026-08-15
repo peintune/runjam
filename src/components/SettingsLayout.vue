@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from "vue-router";
-import { ArrowLeft, Bot, Cpu, Settings } from "lucide-vue-next";
+import { ArrowLeft, Bot, Cpu, Info, Settings } from "lucide-vue-next";
 import WindowControls from "./WindowControls.vue";
 
 const router = useRouter();
@@ -10,6 +10,7 @@ const navItems = [
   { path: "/settings/models", label: "Models", icon: Cpu },
   { path: "/settings/agents", label: "Agents", icon: Bot },
   { path: "/settings/general", label: "General", icon: Settings },
+  { path: "/settings/about", label: "About", icon: Info },
 ];
 </script>
 
