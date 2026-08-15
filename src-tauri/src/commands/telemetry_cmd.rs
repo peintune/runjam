@@ -152,11 +152,33 @@ pub struct UpdateInfo {
     pub download_urls: Option<serde_json::Value>,
 }
 
+/// Raw response from the update API endpoint.
+#[derive(Deserialize)]
+struct BackendUpdateResponse {
+    version: String,
+    pub_date: Option<String>,
+    notes: Option<String>,
+    platforms: std::collections::HashMap<String, BackendPlatformInfo>,
+}
+
+#[derive(Deserialize)]
+struct BackendPlatformInfo {
+    url: String,
+    #[allow(dead_code)]
+    signature: String,
+}
+
 /// Phase 2 seed: update check against the backend (GitHub Releases metadata
 /// mirrored in Supabase). The actual download/install goes through the Tauri
 /// updater plugin once it is configured with signing keys.
+///
+/// Routes through the configured outbound proxy (if any), same as telemetry
+/// and announcements.
 #[tauri::command]
-pub async fn check_for_updates(current: String) -> Result<UpdateInfo, String> {
+pub async fn check_for_updates(
+    app: tauri::AppHandle,
+    current: String,
+) -> Result<UpdateInfo, String> {
     let base = telemetry::api_base();
     let url = format!(
         "{}/api/updates/latest?platform={}&arch={}&current={}",
@@ -165,11 +187,32 @@ pub async fn check_for_updates(current: String) -> Result<UpdateInfo, String> {
         std::env::consts::ARCH,
         current
     );
-    let resp = ureq::get(&url)
+    let agent = telemetry::build_agent(&app);
+    let resp = agent
+        .get(&url)
         .timeout(Duration::from_secs(10))
         .call()
         .map_err(|e| format!("update check failed: {}", e))?;
-    resp.into_json::<UpdateInfo>().map_err(|e| format!("bad update response: {}", e))
+    let backend: BackendUpdateResponse = resp
+        .into_json()
+        .map_err(|e| format!("bad update response: {}", e))?;
+
+    let update_available = crate::updates::version_ge(&backend.version, &current)
+        && backend.version.trim() != current.trim();
+    let platform_key = format!("{}-{}", platform_name(), std::env::consts::ARCH);
+    let download_url = backend
+        .platforms
+        .get(&platform_key)
+        .map(|p| p.url.trim().to_string());
+
+    Ok(UpdateInfo {
+        update_available,
+        latest_version: Some(backend.version),
+        published_at: backend.pub_date,
+        notes: backend.notes,
+        download_url,
+        download_urls: None,
+    })
 }
 
 /// Map Rust OS names to the platform strings the backend expects.
@@ -251,7 +294,7 @@ pub async fn check_update_ui(
     } else {
         // macOS/Linux: reuse the existing metadata check, sourcing the
         // current version from the app's own package metadata.
-        let info = check_for_updates(app.package_info().version.to_string()).await?;
+        let info = check_for_updates(app.clone(), app.package_info().version.to_string()).await?;
         Ok(crate::updates::UpdateCheckResult {
             update_available: info.update_available,
             action: "open_download".into(),

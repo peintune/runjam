@@ -95,7 +95,7 @@ async function checkForUpdate() {
     if (res.updateAvailable) {
       updateResult.value = res;
     } else {
-      checkError.value = "已是最新版本";
+      checkError.value = "Already up to date";
     }
   } catch (e) {
     checkError.value = String(e);
@@ -198,7 +198,7 @@ async function checkForUpdate() {
             </button>
           </div>
           <p v-if="proxyState === 'saved'" class="mt-2 text-[12px] text-green-600">
-            Saved — will apply on the next telemetry flush.
+            Saved — all requests will use this proxy.
           </p>
           <p v-else-if="proxyState === 'ok'" class="mt-2 text-[12px] text-green-600">
             Proxy connection works.
@@ -216,11 +216,11 @@ async function checkForUpdate() {
           <span class="text-[13px] text-gray-400">v0.1.0</span>
         </div>
 
-        <div class="mt-8 border-t border-gray-100 pt-6">
-          <h3 class="text-[14px] font-semibold text-gray-900 mb-3">更新</h3>
+        <div class="mt-8 border-t border-gray-100 px-5 py-4">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-[13px] text-gray-600">检查是否有新版本可用</p>
+              <p class="text-[14px] font-medium text-gray-900">Updates</p>
+              <p class="text-[12px] text-gray-400 mt-0.5">Check for new version</p>
               <p v-if="checkError" class="mt-1 text-[12px] text-gray-400">{{ checkError }}</p>
             </div>
             <button
@@ -228,7 +228,7 @@ async function checkForUpdate() {
               :disabled="checking"
               @click="checkForUpdate"
             >
-              {{ checking ? "检查中…" : "检查更新" }}
+              {{ checking ? "Checking…" : "Check for Updates" }}
             </button>
           </div>
         </div>
