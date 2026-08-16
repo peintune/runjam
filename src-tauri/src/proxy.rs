@@ -338,8 +338,13 @@ fn find_model<'a>(
         .collect();
     if !matches.is_empty() {
         if let Some(ids) = preferred_ids {
-            if let Some(m) = matches.iter().copied().find(|m| ids.contains(&m.id)) {
-                return Some(m);
+            // Prefer matches in the agent's preferred_id order, NOT the models
+            // list order: when several entries share the same name (e.g. two
+            // "MiniMax-M3" with different base URLs), the assigned model must win.
+            for id in ids {
+                if let Some(m) = matches.iter().copied().find(|m| &m.id == id) {
+                    return Some(m);
+                }
             }
         }
         matches
@@ -351,6 +356,7 @@ fn find_model<'a>(
     // --- Step 2: name didn't match, but agent has assigned models → use the first one ---
     else if let Some(ids) = preferred_ids {
         if let Some(m) = models.iter().find(|m| ids.contains(&m.id)) {
+            rjlog!("[PROXY] WARNING: requested model '{}' not found in config; falling back to assigned model '{}' (id={})", model_name, m.name, m.id);
             return Some(m);
         }
         None
@@ -754,7 +760,12 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                     "description": description
                 })
             } else {
-                tool["input_schema"].clone()
+                // input_schema 缺失/null 时用空对象 {}（OpenAI 兼容端点不接受 null）
+                let mut params = tool.get("input_schema").cloned().unwrap_or(serde_json::Value::Null);
+                if params.is_null() {
+                    params = serde_json::json!({"type": "object", "properties": {}});
+                }
+                params
             };
 
             openai_tools.push(serde_json::json!({
@@ -809,9 +820,8 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     }
 
     if reasoning_disabled {
-        openai_body["thinking"] = serde_json::json!({"type": "disabled"});
-        openai_body["reasoning_effort"] = serde_json::json!("low");
-        openai_body["enable_thinking"] = serde_json::json!(false);
+        // 只发送 OpenAI 标准参数。thinking/reasoning_effort/enable_thinking 是
+        // Anthropic/DeepSeek 扩展，OpenAI 兼容端点（如火山引擎）会报 400。
         openai_body["temperature"] = serde_json::json!(0.6);
     }
 
@@ -861,11 +871,19 @@ fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         Err(ureq::Error::Status(st, r)) => {
             let body = r.into_string().unwrap_or_default();
             rjlog!("[PROXY] Anthropic→OpenAI: upstream HTTP {}: {}", st, safe_truncate(&body, 500));
+            // Pass 4xx through as-is so the agent fails fast instead of running
+            // its own retry loop on a permanent error (bad model name → endless
+            // upstream 404s while the UI shows an infinite spinner).
+            let (resp_status, err_type) = if (400..500).contains(&st) {
+                (StatusCode(st), "invalid_request_error")
+            } else {
+                (StatusCode(502), "api_error")
+            };
             let err_body = serde_json::json!({
                 "type": "error",
-                "error": {"type": "api_error", "message": format!("Upstream {}: {}", st, safe_truncate(&body, 200))}
+                "error": {"type": err_type, "message": format!("Upstream {}: {}", st, safe_truncate(&body, 200))}
             });
-            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(resp_status, err_body.to_string())
         }
         Err(e) => {
             rjlog!("[PROXY] Anthropic→OpenAI: connection error: {:?}", e);
@@ -949,14 +967,13 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
         }
         
         if reasoning_disabled {
-            req_body["thinking"] = serde_json::json!({"type": "disabled"});
-            req_body["reasoning_effort"] = serde_json::json!("low");
-            req_body["enable_thinking"] = serde_json::json!(false);
+            // 只发送 OpenAI 标准参数（thinking/reasoning_effort/enable_thinking
+            // 非标准，OpenAI 兼容端点如火山引擎会报 400）
             req_body["temperature"] = serde_json::json!(0.6);
-            rjlog!("[PROXY] reasoning_disabled=true, modified body: enable_thinking=false, temperature=0.6");
+            rjlog!("[PROXY] reasoning_disabled=true, modified body: temperature=0.6");
         }
         let modified_body = req_body.to_string();
-        rjlog!("[PROXY] Forwarding to {} with stream={} body_len={}", url, stream, modified_body.len());
+        rjlog!("[PROXY] OpenAI direct: POST {} (model={}, stream={}, body_len={})", url, model_name, stream, modified_body.len());
         
         let request_start = std::time::Instant::now();
         let resp = ureq::post(&url)
@@ -985,6 +1002,22 @@ fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_ids: Option
                 } else {
                     ProxyResponse::Sync(StatusCode(200), r.into_string().unwrap_or_default())
                 }
+            }
+            Err(ureq::Error::Status(st, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                rjlog!("[PROXY] OpenAI direct: upstream HTTP {}: {}", st, safe_truncate(&body, 500));
+                // Pass 4xx through so the agent fails fast instead of retrying
+                // a permanent error (bad model name → endless 404s).
+                let (resp_status, err_type) = if (400..500).contains(&st) {
+                    (StatusCode(st), "invalid_request_error")
+                } else {
+                    (StatusCode(502), "api_error")
+                };
+                let err_body = serde_json::json!({
+                    "type": "error",
+                    "error": {"type": err_type, "message": format!("Upstream {}: {}", st, safe_truncate(&body, 200))}
+                });
+                ProxyResponse::Sync(resp_status, err_body.to_string())
             }
             Err(e) => ProxyResponse::Sync(StatusCode(502), format!("Proxy error: {}", e)),
         }
@@ -1035,7 +1068,7 @@ fn ensure_tool_calls_paired(messages: Vec<Value>) -> Vec<Value> {
                 result.push(msg.clone());
                 if let Some(tool_calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc in tool_calls {
-                        if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
+                        if let Some(id) = tc["id"].as_str() {
                             pending.push(id.to_string());
                         }
                     }
@@ -1043,7 +1076,7 @@ fn ensure_tool_calls_paired(messages: Vec<Value>) -> Vec<Value> {
             }
             "tool" => {
                 let tool_call_id = msg["tool_call_id"].as_str().unwrap_or("");
-                if tool_call_id.is_empty() || !pending.iter().any(|id| id == tool_call_id) {
+                if !pending.iter().any(|id| id == tool_call_id) {
                     rjlog!("[PROXY] Dropping orphaned tool message (no preceding tool_calls for id: {:?})", tool_call_id);
                     continue;
                 }
@@ -1108,16 +1141,28 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
                         }
                         let name = item["name"].as_str().unwrap_or("");
                         let arguments = item["arguments"].as_str().unwrap_or("");
+                        let new_tc = serde_json::json!({
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments}
+                        });
+                        // Merge consecutive function_calls into a single assistant
+                        // message with multiple tool_calls. The Chat API requires
+                        // tool responses to follow the assistant message that emitted
+                        // the tool_calls — separate assistant messages would violate
+                        // this ordering and cause "insufficient tool messages" errors.
+                        if let Some(last) = msgs.last_mut() {
+                            if last["role"].as_str() == Some("assistant") && last.get("tool_calls").is_some() {
+                                if let Some(arr) = last["tool_calls"].as_array_mut() {
+                                    arr.push(new_tc);
+                                    continue;
+                                }
+                            }
+                        }
                         msgs.push(serde_json::json!({
                             "role": "assistant",
-                            // 上游（DeepSeek 等）校验 content 必须是 string 或 list，
-                            // null 会被拒绝（"content should be a string or a list"）。
                             "content": "",
-                            "tool_calls": [{
-                                "id": call_id,
-                                "type": "function",
-                                "function": {"name": name, "arguments": arguments}
-                            }]
+                            "tool_calls": [new_tc]
                         }));
                     }
                     "function_call_output" => {
@@ -1211,12 +1256,17 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         let mut chat_tools: Vec<Value> = tools.iter()
             .filter(|t| t["type"].as_str() == Some("function"))
             .map(|t| {
+                // parameters 缺失/null 时用空对象 {}（OpenAI 兼容端点不接受 null）
+                let mut parameters = t.get("parameters").cloned().unwrap_or(serde_json::Value::Null);
+                if parameters.is_null() {
+                    parameters = serde_json::json!({"type": "object", "properties": {}});
+                }
                 serde_json::json!({
                     "type": "function",
                     "function": {
                         "name": t["name"],
                         "description": t.get("description").unwrap_or(&Value::Null),
-                        "parameters": t.get("parameters").unwrap_or(&Value::Null),
+                        "parameters": parameters,
                     }
                 })
             })
@@ -1240,9 +1290,8 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
     }
 
     if reasoning_disabled {
-        chat_body["thinking"] = serde_json::json!({"type": "disabled"});
-        chat_body["reasoning_effort"] = serde_json::json!("low");
-        chat_body["enable_thinking"] = serde_json::json!(false);
+        // 只发送 OpenAI 标准参数（thinking/reasoning_effort/enable_thinking
+        // 非标准，OpenAI 兼容端点如火山引擎会报 400）
         chat_body["temperature"] = serde_json::json!(0.6);
     }
 
@@ -1292,7 +1341,11 @@ fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], preferred_ids: O
         Err(ureq::Error::Status(status, r)) => {
             let body = r.into_string().unwrap_or_default();
             rjlog!("[PROXY] Upstream HTTP {}: {}", status, safe_truncate(&body, 1000));
-            ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Upstream {}: {}"}}"#, status, body))
+            // Pass 4xx through so agents fail fast instead of retrying a
+            // permanent error (e.g. bad model name → endless 404s).
+            let resp_status = if (400..500).contains(&status) { StatusCode(status) } else { StatusCode(502) };
+            let err_type = if status < 500 { "invalid_request_error" } else { "api_error" };
+            ProxyResponse::Sync(resp_status, format!(r#"{{"error":{{"message":"Upstream {}: {}","type":"{}"}}}}"#, status, safe_truncate(&body, 300), err_type))
         }
         Err(e) => {
             rjlog!("[PROXY] Connection error: {:?}", e);
@@ -1865,6 +1918,7 @@ fn forward_to_anthropic(body: &str) -> (StatusCode, String) {
     let base = std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into());
 
     let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+    rjlog!("[PROXY] Anthropic direct: POST {} (model={})", url, model);
     let resp = ureq::post(&url)
         .set("x-api-key", &api_key)
         .set("anthropic-version", "2023-06-01")
@@ -2600,6 +2654,7 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
     let target = find_model(models, model_name, preferred_ids);
 
     let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
+        rjlog!("[PROXY] Gemini→OpenAI: model '{}' resolved id={} provider={} base_url={}", m.name, m.id, m.provider, m.api_base);
         (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
     } else {
         let (s, b) = forward_to_gemini(body, path);
@@ -2677,7 +2732,12 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
                 for decl in decls {
                     let name = decl["name"].as_str().unwrap_or("");
                     let description = decl["description"].as_str().unwrap_or("");
-                    let params = &decl["parameters"];
+                    // Gemini 的 functionDeclaration 可能没有 parameters 字段，
+                    // 缺失/null 时用空对象 {}（OpenAI 兼容端点如火山引擎不接受 null）
+                    let mut params = decl.get("parameters").cloned().unwrap_or(serde_json::Value::Null);
+                    if params.is_null() {
+                        params = serde_json::json!({"type": "object", "properties": {}});
+                    }
                     openai_tools.push(serde_json::json!({
                         "type": "function",
                         "function": {
@@ -2704,13 +2764,35 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
     }
 
     if reasoning_disabled {
-        openai_body["thinking"] = serde_json::json!({"type": "disabled"});
-        openai_body["reasoning_effort"] = serde_json::json!("low");
-        openai_body["enable_thinking"] = serde_json::json!(false);
+        // 只发送 OpenAI 标准参数。thinking/reasoning_effort/enable_thinking 是
+        // Anthropic/DeepSeek 扩展，OpenAI 兼容端点（如火山引擎）会报 400。
         openai_body["temperature"] = serde_json::json!(0.6);
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    rjlog!("[PROXY] Gemini→OpenAI: POST {} (model={}, stream={})", url, real_model, stream);
+    let body_str = openai_body.to_string();
+    // 结构化诊断：非 messages 的顶层键 + 每条消息的 role/content 类型/tool_calls
+    // （messages 正文可能很大，只打结构不打内容）
+    if let Some(obj) = openai_body.as_object() {
+        for (k, v) in obj.iter() {
+            if k == "messages" { continue; }
+            rjlog!("[PROXY] Gemini→OpenAI: body[{}]={}", k, v);
+        }
+    }
+    for (i, m) in openai_messages.iter().enumerate() {
+        let role = m["role"].as_str().unwrap_or("?");
+        let content_desc = match m.get("content") {
+            Some(c) if c.is_null() => "null".to_string(),
+            Some(c) if c.is_string() => format!("str({})", c.as_str().unwrap().len()),
+            Some(c) if c.is_array() => format!("array({})", c.as_array().unwrap().len()),
+            Some(_) => "other".to_string(),
+            None => "missing".to_string(),
+        };
+        let has_tc = m.get("tool_calls").is_some() || m.get("tool_call_id").is_some();
+        rjlog!("[PROXY] Gemini→OpenAI: msg[{}] role={} content={} tool_calls={}", i, role, content_desc, has_tc);
+    }
+    rjlog!("[PROXY] Gemini→OpenAI: body_len={}", body_str.len());
     let resp = ureq::post(&url)
         .set("Authorization", &format!("Bearer {}", api_key))
         .set("Content-Type", "application/json")
@@ -2736,18 +2818,24 @@ fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferr
         Err(e) => {
             // Surface the upstream's actual response body — a bare "status code
             // 400" says nothing about WHICH field the API rejected.
-            let detail = match e {
+            let (detail, upstream_code) = match e {
                 ureq::Error::Status(code, resp) => {
                     let body = resp.into_string().unwrap_or_default();
                     rjlog!("[PROXY] Gemini upstream returned {}: {}", code, body.chars().take(500).collect::<String>());
-                    format!("status code {}: {}", code, body.chars().take(300).collect::<String>())
+                    (format!("status code {}: {}", code, body.chars().take(300).collect::<String>()), Some(code))
                 }
-                other => other.to_string(),
+                other => (other.to_string(), None),
+            };
+            // Pass 4xx status through so the agent fails fast instead of
+            // retrying a permanent error (bad model name → endless 404s).
+            let status = match upstream_code {
+                Some(code) if (400..500).contains(&code) => StatusCode(code),
+                _ => StatusCode(502),
             };
             let err_body = serde_json::json!({
-                "error": {"code": 502, "message": format!("Proxy error: {}", detail)}
+                "error": {"code": status.0, "message": format!("Proxy error: {}", detail)}
             });
-            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
+            ProxyResponse::Sync(status, err_body.to_string())
         }
     }
 }
@@ -2756,15 +2844,11 @@ fn extract_model_from_path(path: &str) -> Option<&str> {
     for prefix in &["/v1/models/", "/v1beta/models/"] {
         if let Some(start) = path.find(prefix) {
             let start = start + prefix.len();
-            let mut colon_count = 0;
-            let end = path[start..].find(|c: char| {
-                if c == ':' {
-                    colon_count += 1;
-                    colon_count >= 2
-                } else {
-                    c == '/'
-                }
-            }).unwrap_or(path[start..].len());
+            // Gemini 路径格式: /v1beta/models/{model}:{method}?{params}
+            // 模型名在第 1 个 ':'（方法分隔）、'/' 或 '?' 处结束。
+            // 例如 MiniMax-M3:streamGenerateContent?alt=sse → MiniMax-M3
+            let end = path[start..].find(|c: char| c == ':' || c == '/' || c == '?')
+                .unwrap_or(path[start..].len());
             return Some(&path[start..start + end]);
         }
     }
@@ -2776,6 +2860,7 @@ fn forward_to_gemini(body: &str, path: &str) -> (StatusCode, String) {
     let base = std::env::var("GOOGLE_GEMINI_BASE_URL").unwrap_or_else(|_| "https://generativelanguage.googleapis.com".into());
     
     let url = format!("{}{}", base, path);
+    rjlog!("[PROXY] Gemini direct: POST {} (model={})", url, extract_model_from_path(path).unwrap_or("?"));
     let resp = ureq::post(&url)
         .set("Authorization", &format!("Bearer {}", api_key))
         .set("Content-Type", "application/json")

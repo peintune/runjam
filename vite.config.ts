@@ -34,7 +34,18 @@ export default defineConfig(async () => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: [
+        "**/src-tauri/**",
+        // Agents write per-cwd state/skills into hidden dot-directories of the
+        // selected working directory (.codex/, .claude/, .gemini/, ...). When
+        // that directory is inside the Vite-watched project tree (dev only),
+        // those writes trigger a full-page reload that wipes all in-memory
+        // state — the backend session survives but the frontend drops back to
+        // the new-session page. Ignore every dot-directory so agent file
+        // writes never restart the dev page.
+        "**/.*/**",
+        "**/.*",
+      ],
     },
   },
 }));

@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { startSession as tauriStartSession, stopSession as tauriStopSession } from "../api/sessions";
 import { useMessageStore } from "./useMessageStore";
 import { saveSession, getSessions, updateSessionTitle, updateSessionModel, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, type SessionRecord } from "../api/search";
@@ -73,14 +73,41 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+// Persist the last active session across webview reloads. Directory-based
+// sessions can write into the project tree (skills deployment, agent files),
+// which triggers a vite full-page reload in dev; the backend session survives
+// but all in-memory store state is wiped, leaving the app on the new-session
+// page. Restoring activeSessionId re-opens the real session after the reload.
+const ACTIVE_SESSION_KEY = "runjam-active-session-id";
+
+function loadPersistedActiveSession(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export const useWorkspaceStore = defineStore("workspace", () => {
   const directories = ref<Directory[]>([]);
   const sessions = ref<Session[]>([]);
-  const activeSessionId = ref<string | null>(null);
+  const activeSessionId = ref<string | null>(loadPersistedActiveSession());
 
   const activeSession = computed(() =>
     sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
+
+  // Keep localStorage in sync so a reload (dev HMR full-reload, crash, etc.)
+  // doesn't drop the user back on the new-session page.
+  watch(activeSessionId, (id) => {
+    try {
+      if (id) {
+        localStorage.setItem(ACTIVE_SESSION_KEY, id);
+      } else {
+        localStorage.removeItem(ACTIVE_SESSION_KEY);
+      }
+    } catch {}
+  });
 
   async function loadSessions() {
     try {
@@ -98,7 +125,21 @@ export const useWorkspaceStore = defineStore("workspace", () => {
         return session;
       });
 
-      
+      // Re-attach to the persisted active session only after a webview RELOAD
+      // (dev HMR full-reload, crash, manual refresh). On a fresh app launch
+      // ("navigate") keep the existing behavior: start on the new-session page.
+      let navType = "";
+      try {
+        navType = (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type || "";
+      } catch {}
+      const persisted = loadPersistedActiveSession();
+      if (navType === "reload" && persisted && sessions.value.some((s) => s.id === persisted)) {
+        console.log("[STORE] Restoring active session after reload:", persisted);
+        activeSessionId.value = persisted;
+      } else if (persisted && !sessions.value.some((s) => s.id === persisted)) {
+        console.warn("[STORE] Persisted active session not found in DB, dropping:", persisted);
+        try { localStorage.removeItem(ACTIVE_SESSION_KEY); } catch {}
+      }
     } catch (err) {
       console.error("Failed to load sessions:", err);
     }

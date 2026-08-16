@@ -2,12 +2,12 @@
 import { ref, watch, onMounted, onBeforeUnmount, onActivated, computed, nextTick } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter } from "vue-router";
-import { useWorkspaceStore } from "../stores/useWorkspaceStore";
+import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
 import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput, startSession as apiStartSession, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
+import { sendInput, startSession as apiStartSession, stopSession as tauriStopSession, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession, updateSessionModel } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
@@ -169,6 +169,11 @@ const selectedAgent = computed(() => agents.value.find(a => a.id === selectedAge
 const modelList = ref<ModelEntry[]>(agentStore.models.length > 0 ? agentStore.models : []);
 const selectedModel = ref("");
 const assignedModels = ref<ModelEntry[]>([]);
+
+// 记录每个会话的 agent 进程实际启动时使用的模型。切换模型后，运行中的
+// agent 进程仍使用启动时的模型环境变量（例如 ~/.gemini/settings.json 在
+// 进程启动时快照的 GEMINI_MODEL），必须重启进程新模型才会生效。
+const lastUsedModel = new Map<string, string | null>();
 
 // Onboarding state
 const hasAnyAgentInstalled = computed(() => agents.value.some(a => a.installed));
@@ -708,8 +713,39 @@ async function initSession(sid: string) {
     } catch {}
   }
   await loadSessionMessages(sid);
+  restorePendingSend(sid);
   scrollToBottom();
   setTimeout(() => { isSessionLoading.value = false; }, 200);
+}
+
+/**
+ * After a webview reload interrupted a send (see handleSend's
+ * "runjam-pending-send" marker), put the lost question back into the input box
+ * so the user can re-send it. Only fires on an actual page reload AND when the
+ * session has no messages yet — in the normal flow the marker is cleared by the
+ * time this runs.
+ */
+function restorePendingSend(sid: string) {
+  // Skip on the initial launch: this only applies after a reload.
+  let navType = "";
+  try {
+    navType = (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type || "";
+  } catch {}
+  if (navType !== "reload") return;
+  // Fresh session only — a session with messages already survived.
+  if (messages.value.length > 0) return;
+  try {
+    const raw = localStorage.getItem("runjam-pending-send");
+    if (!raw) return;
+    const pending = JSON.parse(raw);
+    localStorage.removeItem("runjam-pending-send");
+    // Stale marker (>60s old) or wrong target — drop it.
+    if (!pending?.text || typeof pending.at !== "number") return;
+    if (Date.now() - pending.at > 60_000) return;
+    inputText.value = pending.text;
+    console.log("[SEND] Restored pending question into input after reload (session", sid, ")");
+    nextTick(() => activeSessionTextarea.value?.focus());
+  } catch {}
 }
 
 // Legacy watch: used when sessionId prop is not provided (no KeepAlive)
@@ -749,7 +785,20 @@ interface SessionState {
   isProcessing: boolean;
   loaded: boolean;
   turnStartTime: number;
+  /** Send retry state. Set when a message is dispatched; drives the
+   *  auto-retry loop (max 3 attempts) that shows "try x/3" on the chat. */
+  retry: {
+    attempts: number;
+    lastText: string;
+    timer: ReturnType<typeof setTimeout> | null;
+    deadlineTimer: ReturnType<typeof setTimeout> | null;
+  } | null;
 }
+
+// Max send attempts including the first try; failures auto-retry up to this.
+const RETRY_MAX = 3;
+const RETRY_DELAY_MS = 1000;
+const RETRY_TIMEOUT_MS = 60_000;
 
 const sessionStates = new Map<string, SessionState>();
 
@@ -765,6 +814,7 @@ function getSessionState(sessionId: string): SessionState {
       isProcessing: false,
       loaded: false,
       turnStartTime: 0,
+      retry: null,
     };
     sessionStates.set(sessionId, state);
   }
@@ -841,6 +891,106 @@ function pushPhaseMessage(state: SessionState, phase: 'thinking' | 'tool') {
   return msg;
 }
 
+/** (Re)start the no-activity timeout for the current send attempt. If the
+ *  agent goes silent (no ACP events) for RETRY_TIMEOUT_MS, the attempt is
+ *  treated as failed and the retry loop takes over — this is what breaks the
+ *  "infinite spinner" when the agent never reports an error. */
+function startRetryDeadline(sessionId: string, state: SessionState) {
+  const retry = state.retry;
+  if (!retry) return;
+  if (retry.deadlineTimer) clearTimeout(retry.deadlineTimer);
+  retry.deadlineTimer = setTimeout(() => {
+    retry.deadlineTimer = null;
+    handleSendFailure(sessionId, state, `Timed out waiting for a response (${RETRY_TIMEOUT_MS / 1000}s without activity)`);
+  }, RETRY_TIMEOUT_MS);
+}
+
+/** Push the timeout back every time the agent emits an event. */
+function resetRetryDeadline(sessionId: string, state: SessionState) {
+  const retry = state.retry;
+  if (!retry || retry.attempts > RETRY_MAX) return;
+  startRetryDeadline(sessionId, state);
+}
+
+/** Cancel all retry timers and drop the retry context (success / final failure). */
+function clearRetry(state: SessionState) {
+  if (!state.retry) return;
+  if (state.retry.timer) { clearTimeout(state.retry.timer); state.retry.timer = null; }
+  if (state.retry.deadlineTimer) { clearTimeout(state.retry.deadlineTimer); state.retry.deadlineTimer = null; }
+  state.retry = null;
+}
+
+/**
+ * Handle a failed send attempt. Shows the failure on the chat (with a "try
+ * x/3" label), then either auto-retries after a short delay or — after the
+ * last attempt — leaves the final error visible. Never leaves the UI stuck on
+ * a bare spinner.
+ */
+function handleSendFailure(sessionId: string, state: SessionState, errMsg: string) {
+  const isActiveSession = store.activeSessionId === sessionId;
+  state.isProcessing = false;
+  state.thinkingStartTime = 0;
+  for (const m of state.messages) {
+    if (m.role === 'agent') m.isProcessing = false;
+  }
+  // Remove empty "start" placeholder so "..." dots disappear
+  const le = lastAgentMsg(state.messages);
+  if (le && !le.content && !le.thinking) {
+    state.messages.pop();
+  }
+
+  const retry = state.retry;
+  if (retry && retry.attempts < RETRY_MAX) {
+    const attempt = retry.attempts;
+    state.messages.push({
+      role: "agent",
+      content: `⚠️ Request failed (try ${attempt}/${RETRY_MAX}): ${errMsg}，${RETRY_DELAY_MS / 1000}s 后自动重试...`,
+      isProcessing: true,
+    });
+    if (isActiveSession) {
+      messages.value = [...state.messages];
+      msgStore.setMessages(sessionId, messages.value);
+    }
+    retry.attempts = attempt + 1;
+    if (retry.deadlineTimer) { clearTimeout(retry.deadlineTimer); retry.deadlineTimer = null; }
+    retry.timer = setTimeout(() => {
+      retry.timer = null;
+      retrySend(sessionId, state);
+    }, RETRY_DELAY_MS);
+    return;
+  }
+
+  // Final failure — surface the real error and give up retrying.
+  state.messages.push({
+    role: "agent",
+    content: retry ? `Error: ${errMsg}（已自动重试 ${retry.attempts} 次）` : `Error: ${errMsg}`,
+  });
+  clearRetry(state);
+  if (isActiveSession) {
+    messages.value = [...state.messages];
+    isProcessing.value = false;
+    msgStore.setMessages(sessionId, messages.value);
+  }
+}
+
+/** Re-send the last failed text (attempts N+1). */
+function retrySend(sessionId: string, state: SessionState) {
+  const retry = state.retry;
+  if (!retry) return;
+  const sess = store.sessions.find(s => s.id === sessionId);
+  if (!sess || sess.status === 'stopped' || sess.status === 'error') {
+    clearRetry(state);
+    return;
+  }
+  state.isProcessing = true;
+  state.turnStartTime = Date.now();
+  if (store.activeSessionId === sessionId) isProcessing.value = true;
+  startRetryDeadline(sessionId, state);
+  sendInput(sessionId, retry.lastText, undefined).catch((err: unknown) => {
+    handleSendFailure(sessionId, state, `Send failed: ${err}`);
+  });
+}
+
 function handleAcpEvent(sessionId: string, p: AcpPayload) {
   // Drop events for sessions the user already stopped or deleted — a few
   // buffered lines can still arrive in the window between Stop and the process
@@ -869,6 +1019,12 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   };
   const state = getSessionState(sessionId);
   const isActiveSession = store.activeSessionId === sessionId;
+  // Any live event (thinking/text/tool, etc.) means the agent is still working —
+  // push back the no-activity timeout that backs the auto-retry loop. finish
+  // and error are handled by their own branches.
+  if (state.retry && p.type !== "finish" && p.type !== "error") {
+    resetRetryDeadline(sessionId, state);
+  }
   // 仅活动会话打逐事件日志——每 chunk 的 console.log + JSON.stringify 在
   // 主线程上是真实开销，多个后台会话并行流式时尤其明显（统计仍由 diag 记录）
   if (isActiveSession) {
@@ -1133,6 +1289,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       break;
     }
     case "finish":
+      clearRetry(state);
       state.isProcessing = false;
       state.thinkingStartTime = 0;
       // Mark all agent messages in this turn as not processing
@@ -1193,23 +1350,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       }
       break;
     case "error":
-      state.isProcessing = false;
-      state.thinkingStartTime = 0;
-      // Mark all agent messages as not processing
-      for (const m of state.messages) {
-        if (m.role === 'agent') m.isProcessing = false;
-      }
-      // Remove empty "start" placeholder so "..." dots disappear
-      const le = lastAgentMsg(state.messages);
-      if (le && !le.content && !le.thinking) {
-        state.messages.pop();
-      }
-      state.messages.push({ role: "agent", content: `Error: ${p.message||"Unknown"}` });
-      if (isActiveSession) {
-        messages.value = [...state.messages];
-        isProcessing.value = false;
-        msgStore.setMessages(sessionId, messages.value);
-      }
+      handleSendFailure(sessionId, state, p.message || "Unknown");
       break;
   }
 }
@@ -1493,6 +1634,14 @@ async function handleSend() {
 
   inputText.value = "";
 
+  // Persist the pending question before starting a session. If the webview is
+  // reloaded mid-send (dev HMR full-reload from agent files landing in the
+  // project tree), the backend session survives but the send is lost — the
+  // restored session page can then bring the text back into the input box.
+  try {
+    localStorage.setItem("runjam-pending-send", JSON.stringify({ text, at: Date.now() }));
+  } catch {}
+
   // 发送给 LLM 的文本：含附件解析出的完整内容
   let sendText = text;
   let attachNames: string[] = [];
@@ -1513,6 +1662,12 @@ async function handleSend() {
     suppressSkillSync = true;
     try {
       await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+      // 记住该会话进程启动时用的模型（创建时可能尚未选模型 → null，
+      // 首次发送时会用空标记触发进程重启，确保用上正确模型）。
+      const created = store.activeSession as Session | null;
+      if (created) {
+        lastUsedModel.set(created.id, created.model || null);
+      }
     } catch (err) {
       // Session failed to start — show error and abort send.
       showWarning(`Failed to start session: ${err}`);
@@ -1527,6 +1682,10 @@ async function handleSend() {
     const s = store.activeSession;
     try {
       const dirPathForRestart = s.directory || dirPath.value || undefined;
+      // If the session was restored after a webview reload, the backend process
+      // may still be alive (only the webview reloaded). Stop it first so the
+      // restart doesn't orphan the old agent process.
+      try { await tauriStopSession(s.id); } catch {}
       await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
       s.status = 'running';
       s.freshAgentProcess = true;
@@ -1582,10 +1741,24 @@ async function handleSend() {
     // sending so switching models in another session doesn't leak into this one.
     const sessionModel = store.activeSession.model || selectedModel.value;
     if (sessionModel) {
-      setAgentModel(store.activeSession.cli, sessionModel).catch(() => {});
+      // 先把模型写入 agent 配置文件（重启后的新进程会读到最新值），
+      // 必须等待写入完成再重启进程
+      await setAgentModel(store.activeSession.cli, sessionModel).catch(() => {});
+      // 若进程启动时用的模型与本次不同，运行中的进程仍使用启动时的旧模型
+      //（进程环境变量在启动时固化，如 gemini 的 GEMINI_MODEL），必须重启
+      // 进程才能让新模型生效。重启后 freshAgentProcess 会把历史作为上下文。
+      await ensureAgentProcessUsesModel(sessionId, sessionModel);
     }
+    // Arm the auto-retry loop before dispatching: the first failure shows
+    // "try 1/3" on the chat and re-sends after a short delay, up to RETRY_MAX
+    // attempts total. The timeout also catches agents that go silent without
+    // ever reporting an error (otherwise the UI hangs on a bare spinner).
+    const st = getSessionState(sessionId);
+    st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null };
+    startRetryDeadline(sessionId, st);
     sendInput(sessionId, sendText, history).catch(err=>{
       const state = getSessionState(sessionId);
+      clearRetry(state);
       state.messages.push({role:"agent",content:`Error:${err}`});
       state.isProcessing = false;
       if (store.activeSessionId === sessionId) {
@@ -1594,7 +1767,27 @@ async function handleSend() {
       }
       msgStore.setMessages(sessionId, [...state.messages]);
     });
+    // The send was dispatched (or errored) — drop the reload-recovery marker.
+    try { localStorage.removeItem("runjam-pending-send"); } catch {}
   }
+}
+
+// 若指定会话的 agent 进程启动时使用的模型与期望不一致，则重启进程让
+// 新模型生效（agent 进程的模型环境变量在启动时固化，改配置文件不会影响
+// 已运行进程）。重启后 freshAgentProcess 会把最近的对话作为上下文注入。
+async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: string) {
+  const s = store.activeSession;
+  if (!s || !sessionModel) return;
+  const used = lastUsedModel.get(sessionId);
+  if (used !== sessionModel && s.status !== 'stopped' && s.status !== 'error') {
+    console.log(`[MODEL-CHANGE] ${sessionId}: ${used ?? '(none)'} -> ${sessionModel}, restarting agent process`);
+    try { await tauriStopSession(sessionId); } catch {}
+    await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, sessionId, sessionModel, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+    s.status = 'running';
+    s.freshAgentProcess = true;
+    store.sessions = [...store.sessions];
+  }
+  lastUsedModel.set(sessionId, sessionModel);
 }
 
 function handleModelSelect(model: ModelEntry) {
@@ -1657,6 +1850,7 @@ async function handleStop() {
   if (store.activeSession) {
     const sid = effectiveSessionId.value;
     const state = getSessionState(sid);
+    clearRetry(state);
     state.isProcessing = false;
     const lm = lastAgentMsg(state.messages);
     if (lm) lm.isProcessing = false;
