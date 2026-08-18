@@ -208,6 +208,47 @@ const en = {
     license: "MIT License",
     copyright: "© 2025 RunJam",
   },
+  fileTree: {
+    // Toolbar
+    openInFinder: "Open in Finder",
+    refresh: "Refresh",
+    searchPlaceholder: "Search files...",
+    // Toolbar "+" dropdown
+    newFile: "New File",
+    newFolder: "New Folder",
+    // Context menu
+    newFileHere: "New File",
+    newFolderHere: "New Folder",
+    rename: "Rename",
+    moveTo: "Move to...",
+    delete: "Delete",
+    // Inline inputs
+    namePlaceholder: "Enter name",
+    // Search / empty states
+    noResults: "No results",
+    files: "Files",
+    inFiles: "In Files",
+    emptyDirectory: "Empty directory",
+    // Move dialog
+    moveToTitle: "Move to...",
+    selectDestination: "Select destination folder",
+    move: "Move",
+    cancel: "Cancel",
+    root: "(root)",
+    // Delete dialog
+    deleteConfirmTitle: "Delete file?",
+    deleteFileMessage: "Are you sure you want to delete \"{name}\"? This cannot be undone.",
+    deleteFolderMessage: "Are you sure you want to delete the folder \"{name}\" and all its contents? This cannot be undone.",
+    deleted: "Deleted \"{name}\"",
+    createdFile: "Created \"{name}\"",
+    createdFolder: "Created folder \"{name}\"",
+    // Toast errors
+    errAlreadyExists: "\"{name}\" already exists",
+    errCycle: "Cannot move a folder into itself or its descendants",
+    errEscape: "Path is outside the workspace",
+    errRoot: "Cannot delete the workspace root",
+    errGeneric: "Operation failed: {message}",
+  },
 };
 
 export type Locale = typeof en;

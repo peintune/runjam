@@ -202,6 +202,47 @@ const zh: Locale = {
     license: "MIT License",
     copyright: "© 2025 RunJam",
   },
+  fileTree: {
+    // Toolbar
+    openInFinder: "在资源管理器中打开",
+    refresh: "刷新",
+    searchPlaceholder: "搜索文件...",
+    // Toolbar "+" dropdown
+    newFile: "新建文件",
+    newFolder: "新建文件夹",
+    // Context menu
+    newFileHere: "新建文件",
+    newFolderHere: "新建文件夹",
+    rename: "重命名",
+    moveTo: "移动到...",
+    delete: "删除",
+    // Inline inputs
+    namePlaceholder: "输入名称",
+    // Search / empty states
+    noResults: "无结果",
+    files: "文件",
+    inFiles: "文件内",
+    emptyDirectory: "空目录",
+    // Move dialog
+    moveToTitle: "移动到...",
+    selectDestination: "选择目标文件夹",
+    move: "移动",
+    cancel: "取消",
+    root: "(根目录)",
+    // Delete dialog
+    deleteConfirmTitle: "删除文件？",
+    deleteFileMessage: "确定要删除 \"{name}\" 吗？此操作无法撤销。",
+    deleteFolderMessage: "确定要删除文件夹 \"{name}\" 及其所有内容吗？此操作无法撤销。",
+    deleted: "已删除 \"{name}\"",
+    createdFile: "已创建 \"{name}\"",
+    createdFolder: "已创建文件夹 \"{name}\"",
+    // Toast errors
+    errAlreadyExists: "\"{name}\" 已存在",
+    errCycle: "不能将文件夹移动到自身或子目录中",
+    errEscape: "路径超出了工作区范围",
+    errRoot: "不能删除工作区根目录",
+    errGeneric: "操作失败：{message}",
+  },
 };
 
 export default zh;

@@ -56,3 +56,46 @@ pub fn open_in_finder(path: String) -> Result<(), String> {
     }
     open_path(&p)
 }
+
+/// Reveal a path in the system file manager.
+/// - For a directory: opens it (same as open_in_finder).
+/// - For a file: reveals/selects it in its parent folder (macOS `open -R`,
+///   Windows `explorer /select,`). On Linux, falls back to opening the parent
+///   directory since there's no standard "reveal" primitive.
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+    if p.is_dir() {
+        return open_path(&p);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        hidden_command("explorer")
+            .arg("/select,")
+            .arg(&p)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Linux: no standard reveal — open the parent directory instead.
+    #[cfg(target_os = "linux")]
+    {
+        let parent = p.parent().unwrap_or(&p).to_path_buf();
+        return open_path(&parent);
+    }
+}

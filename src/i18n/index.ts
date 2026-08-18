@@ -39,14 +39,20 @@ if (typeof document !== "undefined") {
  *        <span>{{ t('nav.features') }}</span>
  */
 export function useI18n() {
-  function t(key: string): string {
+  function t(key: string, params?: Record<string, string | number>): string {
     const parts = key.split(".");
     let value: any = locales[currentLang.value];
     for (const part of parts) {
       if (value == null) return key;
       value = value[part];
     }
-    return typeof value === "string" ? value : key;
+    if (typeof value !== "string") return key;
+    if (!params) return value;
+    // Replace {name}, {message} etc. with provided values. Missing params
+    // stay as-is so the bug is obvious in the UI rather than silently empty.
+    return value.replace(/\{(\w+)\}/g, (m, name) =>
+      name in params ? String(params[name]) : m
+    );
   }
 
   function toggleLang() {

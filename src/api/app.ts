@@ -11,3 +11,7 @@ export async function openDataDir(): Promise<void> {
 export async function openInFinder(path: string): Promise<void> {
   return invoke<void>("open_in_finder", { path });
 }
+
+export async function revealPath(path: string): Promise<void> {
+  return invoke<void>("reveal_path", { path });
+}

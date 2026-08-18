@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, computed } from "vue";
-import { listDir, searchFiles, type FileEntry, type FileSearchResult } from "../api/fs";
+import { ref, watch, computed, onBeforeUnmount, onMounted, nextTick } from "vue";
+import { listDir, searchFiles, createFile, createDir, type FileEntry, type FileSearchResult } from "../api/fs";
 import FileTreeNode from "./FileTreeNode.vue";
 import {
   Folder,
@@ -9,8 +9,13 @@ import {
   Search,
   X,
   File,
+  Plus,
+  FilePlus,
+  FolderPlus,
 } from "lucide-vue-next";
 import { openInFinder } from "../api/app";
+import { useToast } from "../composables/useToast";
+import FileContextMenu from "./FileContextMenu.vue";
 
 const props = defineProps<{
   rootPath: string;
@@ -19,6 +24,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "select-file", path: string): void;
 }>();
+
+const { showSuccess } = useToast();
 
 const entries = ref<FileEntry[]>([]);
 const expanded = ref<Set<string>>(new Set());
@@ -43,10 +50,20 @@ const dirCache = new Map<string, DirTreeState>();
 // instead of re-scanning the subdirectory from disk.
 const childrenCache = new Map<string, FileEntry[]>();
 
-/** Return cached children for a directory, or load + cache them from disk. */
-async function resolveChildren(dirPath: string): Promise<FileEntry[]> {
-  const cached = childrenCache.get(dirPath);
-  if (cached) return cached;
+/** Bumped on every write operation (create/rename/move/delete). Passed down to
+ *  FileTreeNode so an already-mounted expanded folder re-reads its children
+ *  from disk and reflects the change immediately, instead of relying on the
+ *  (now stale) cached listing. */
+const mutationVersion = ref(0);
+
+/** Return cached children for a directory, or load + cache them from disk.
+ *  Pass `force = true` after a write operation (create/rename/move) so the
+ *  stale cache is bypassed and the fresh listing is returned. */
+async function resolveChildren(dirPath: string, force = false): Promise<FileEntry[]> {
+  if (!force) {
+    const cached = childrenCache.get(dirPath);
+    if (cached) return cached;
+  }
   const loaded = await listDir(dirPath);
   childrenCache.set(dirPath, loaded);
   return loaded;
@@ -66,6 +83,32 @@ const filenameResults = computed(() =>
 const contentResults = computed(() =>
   searchResults.value.filter((r) => r.match_type === "content")
 );
+
+// ── "+" dropdown state ──────────────────────────────────────────
+const showNewMenu = ref(false);
+const newMenuRef = ref<HTMLDivElement | null>(null);
+
+function onNewPointerDown(e: PointerEvent) {
+  if (newMenuRef.value && !newMenuRef.value.contains(e.target as Node)) {
+    showNewMenu.value = false;
+  }
+}
+onMounted(() => document.addEventListener("pointerdown", onNewPointerDown));
+onBeforeUnmount(() => document.removeEventListener("pointerdown", onNewPointerDown));
+
+// ── Root blank-area context menu ────────────────────────────────
+// Right-clicking the empty area of the tree (not a specific entry) offers the
+// same create actions as the toolbar "+" button, scoped to the workspace root.
+const rootContextMenu = ref<{ x: number; y: number } | null>(null);
+
+function onRootContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  rootContextMenu.value = { x: e.clientX, y: e.clientY };
+}
+
+function closeRootContextMenu() {
+  rootContextMenu.value = null;
+}
 
 function getIconClass(ext: string) {
   const map: Record<string, string> = {
@@ -176,12 +219,44 @@ function refreshTree() {
   loadEntries();
 }
 
+/** Drop cached state for `dirPath` (and the root if it matches) and reload
+ *  the relevant listing. Used after write operations so the UI shows the
+ *  new/renamed/moved entry without a full refresh. */
+async function invalidateAndReload(dirPath: string) {
+  childrenCache.delete(dirPath);
+  // If we touch the root, also drop the per-root snapshot so the new entry
+  // shows up in the top-level listing.
+  if (dirPath === props.rootPath) {
+    dirCache.delete(props.rootPath);
+    expanded.value = new Set();
+    selectedPath.value = null;
+    await loadEntries();
+    return;
+  }
+  // If this dir is currently expanded, force a reload of its children.
+  if (expanded.value.has(dirPath)) {
+    try {
+      const reloaded = await listDir(dirPath);
+      childrenCache.set(dirPath, reloaded);
+    } catch (err) {
+      console.error("Failed to reload dir after mutation:", err);
+    }
+  }
+}
+
 function toggleExpand(path: string) {
   if (expanded.value.has(path)) {
     expanded.value.delete(path);
   } else {
     expanded.value.add(path);
   }
+}
+
+/** Child node mutated (renamed/moved/created/deleted). Refresh the right
+ *  directory's cache. Path = the parent directory that was affected. */
+function onNodeMutated(parentPath: string) {
+  mutationVersion.value++;
+  invalidateAndReload(parentPath);
 }
 
 function handleFileClick(entry: FileEntry) {
@@ -245,6 +320,91 @@ function highlightMatch(text: string, query: string): { before: string; match: s
   };
 }
 
+// ── "+" menu: create at root ─────────────────────────────────────
+
+/** Prompt the user for a name with a small inline input. Returns the entered
+ *  name or null if cancelled. The prompt is appended as a transient row at
+ *  the bottom of the entry list. */
+const inlineCreate = ref<{
+  kind: "file" | "folder";
+  parentPath: string;
+  value: string;
+  error: string | null;
+} | null>(null);
+
+function startInlineCreate(kind: "file" | "folder", parentPath: string) {
+  inlineCreate.value = { kind, parentPath, value: "", error: null };
+  showNewMenu.value = false;
+  nextTick(() => {
+    const input = document.getElementById("inline-create-input") as HTMLInputElement | null;
+    input?.focus();
+  });
+}
+
+async function commitInlineCreate() {
+  if (!inlineCreate.value) return;
+  // Local handle — we null out `inlineCreate.value` on success and the
+  // catch block still wants to write to `.error` on the original object.
+  const ctx = inlineCreate.value;
+  const { kind, parentPath, value } = ctx;
+  const name = value.trim();
+  if (!name) {
+    inlineCreate.value = null;
+    return;
+  }
+  // Reject path separators — these would create nested paths we didn't intend.
+  if (name.includes("/") || name.includes("\\")) {
+    ctx.error = `Invalid name: "${name}" contains a path separator`;
+    return;
+  }
+  const target = parentPath === "/" ? `/${name}` : `${parentPath}/${name}`;
+  try {
+    if (kind === "file") {
+      await createFile(target, props.rootPath);
+    } else {
+      await createDir(target, props.rootPath);
+    }
+    showSuccess(kind === "file" ? `Created ${name}` : `Created ${name}/`);
+    inlineCreate.value = null;
+    await invalidateAndReload(parentPath);
+  } catch (err) {
+    const msg = String(err);
+    if (msg.includes("already exists")) {
+      ctx.error = `"${name}" already exists`;
+    } else {
+      ctx.error = `Operation failed: ${msg}`;
+    }
+  }
+}
+
+function cancelInlineCreate() {
+  inlineCreate.value = null;
+}
+
+function onInlineKey(e: KeyboardEvent) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitInlineCreate();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    cancelInlineCreate();
+  }
+}
+
+/** If the user clicks away, commit (treat as "OK"). Esc cancels. We commit
+ *  on blur rather than cancel because the typed name is usually intentional
+ *  — losing it on a stray click would be frustrating. */
+function onInlineBlur() {
+  // Defer so a click on a sibling button can register first.
+  setTimeout(() => {
+    if (inlineCreate.value && inlineCreate.value.value.trim()) {
+      commitInlineCreate();
+    } else if (inlineCreate.value) {
+      cancelInlineCreate();
+    }
+  }, 150);
+}
+
 watch(() => props.rootPath, (newPath, oldPath) => {
   // Save current state to cache before switching away
   if (oldPath) {
@@ -256,6 +416,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
   }
   // Search results belong to the previous directory — always clear on switch.
   clearSearch();
+  inlineCreate.value = null;
   // Restore cached state if we've seen this dir before — instant, folders stay
   // expanded and already-loaded children are reused (no re-scan).
   const cached = newPath ? dirCache.get(newPath) : undefined;
@@ -284,17 +445,46 @@ watch(() => props.rootPath, (newPath, oldPath) => {
         </span>
       </div>
       <div class="flex items-center gap-1">
+        <!-- "+" dropdown -->
+        <div ref="newMenuRef" class="relative">
+          <button
+            @click="showNewMenu = !showNewMenu"
+            class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+            :title="'New File'"
+          >
+            <Plus :size="13" />
+          </button>
+          <div
+            v-if="showNewMenu"
+            class="absolute right-0 top-full mt-1 z-30 min-w-[160px] bg-white rounded-lg shadow-lg border border-gray-200 py-1"
+          >
+            <button
+              class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 text-[12px] text-gray-700 text-left"
+              @click="startInlineCreate('file', rootPath)"
+            >
+              <FilePlus :size="13" class="text-gray-500" />
+              <span>New File</span>
+            </button>
+            <button
+              class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 text-[12px] text-gray-700 text-left"
+              @click="startInlineCreate('folder', rootPath)"
+            >
+              <FolderPlus :size="13" class="text-gray-500" />
+              <span>New Folder</span>
+            </button>
+          </div>
+        </div>
         <button
           @click="openInFinder(props.rootPath)"
           class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-          title="Open in Finder"
+          :title="'Open in Finder'"
         >
           <ExternalLink :size="13" />
         </button>
         <button
           @click="refreshTree"
           class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-          title="Refresh"
+          :title="'Refresh'"
         >
           <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
         </button>
@@ -308,7 +498,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
         <input
           v-model="searchQuery"
           @input="doSearch"
-          placeholder="Search files..."
+          :placeholder="'Search files...'"
           class="w-full pl-8 pr-7 py-1.5 text-[12px] bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-blue-300 focus:bg-white transition-colors placeholder-gray-400"
         />
         <button
@@ -322,7 +512,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
     </div>
 
     <!-- tree / search results -->
-    <div class="flex-1 overflow-y-auto py-1">
+    <div class="flex-1 overflow-y-auto py-1" @contextmenu="onRootContextMenu">
       <!-- Loading -->
       <div v-if="isSearching && searching" class="flex items-center justify-center py-8">
         <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
@@ -388,7 +578,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
         <div v-if="loading" class="flex items-center justify-center py-8">
           <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
         </div>
-        <div v-else-if="entries.length === 0" class="flex flex-col items-center justify-center py-12 text-gray-300">
+        <div v-else-if="entries.length === 0 && !inlineCreate" class="flex flex-col items-center justify-center py-12 text-gray-300">
           <Folder :size="28" class="mb-2 opacity-30" />
           <p class="text-[12px] text-gray-400">Empty directory</p>
         </div>
@@ -403,11 +593,51 @@ watch(() => props.rootPath, (newPath, oldPath) => {
             :is-previewable="isPreviewable"
             :get-icon-class="getIconClass"
             :resolve-children="resolveChildren"
+            :root-path="rootPath"
+            :mutation-version="mutationVersion"
             @toggle="toggleExpand"
             @select="handleFileClick"
+            @mutated="onNodeMutated"
           />
+          <!-- Inline create row (only at root level for the toolbar "+" entry point) -->
+          <div
+            v-if="inlineCreate && inlineCreate.parentPath === rootPath"
+            class="flex items-center gap-1 px-2 py-0.5"
+            :style="{ paddingLeft: '8px' }"
+          >
+            <span class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+              <FolderPlus v-if="inlineCreate.kind === 'folder'" :size="12" class="text-gray-400" />
+              <FilePlus v-else :size="12" class="text-gray-400" />
+            </span>
+            <input
+              id="inline-create-input"
+              v-model="inlineCreate.value"
+              @keydown="onInlineKey"
+              @blur="onInlineBlur"
+              :placeholder="'Enter name'"
+              class="flex-1 text-[12px] px-1 py-0.5 border border-blue-300 rounded outline-none focus:border-blue-500"
+            />
+          </div>
+          <p
+            v-if="inlineCreate && inlineCreate.error && inlineCreate.parentPath === rootPath"
+            class="px-3 py-0.5 text-[10px] text-red-500"
+          >
+            {{ inlineCreate.error }}
+          </p>
         </template>
       </template>
     </div>
+
+    <!-- Root blank-area context menu: New File / New Folder at the root -->
+    <FileContextMenu
+      v-if="rootContextMenu"
+      :x="rootContextMenu.x"
+      :y="rootContextMenu.y"
+      :is-dir="true"
+      :root-mode="true"
+      @new-file="startInlineCreate('file', rootPath)"
+      @new-folder="startInlineCreate('folder', rootPath)"
+      @close="closeRootContextMenu"
+    />
   </div>
 </template>

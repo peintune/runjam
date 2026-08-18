@@ -38,6 +38,28 @@ export async function searchFiles(rootPath: string, query: string, limit?: numbe
   return invoke<FileSearchResult[]>("search_files", { rootPath, query, limit });
 }
 
+// ── File tree mutations ──────────────────────────────────────────
+//
+// The file tree's right-click menu and "+" toolbar use these to create and
+// rename files/folders. `renamePath` doubles as cross-directory move since
+// Tauri hands it straight to fs::rename.
+
+export async function createDir(path: string, root: string): Promise<void> {
+  return invoke("create_dir", { path, root });
+}
+
+export async function createFile(path: string, root: string): Promise<void> {
+  return invoke("create_file", { path, root });
+}
+
+export async function renamePath(oldPath: string, newPath: string, root: string): Promise<void> {
+  return invoke("rename_path", { oldPath, newPath, root });
+}
+
+export async function deletePath(path: string, root: string): Promise<void> {
+  return invoke("delete_path", { path, root });
+}
+
 export interface MentionEntries {
   recent: FileEntry[];
   root: FileEntry[];

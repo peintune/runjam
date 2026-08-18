@@ -246,6 +246,59 @@ const ATTACH_ACCEPTED_EXTS = [
 // Max total attached text sent to the LLM (100k chars) to protect context.
 const MAX_ATTACH_TOTAL_CHARS = 100_000;
 
+// ── Context size indicator ────────────────────────────────────
+// The total character count of everything that would be sent to the LLM if
+// the user hit Send right now: the full message history (content + thinking +
+// tool inputs/outputs) plus the text currently typed in the input box. When
+// this exceeds MAX_CONTEXT_CHARS the send is blocked — the user has to start
+// a new session to keep going.
+const MAX_CONTEXT_CHARS = 200_000;
+
+function messageCharTotal(m: Message): number {
+  let n = (m.content?.length || 0) + (m.thinking?.length || 0);
+  if (m.toolCalls) {
+    for (const tc of m.toolCalls) {
+      n += (tc.input?.length || 0) + (tc.output?.length || 0);
+    }
+  }
+  return n;
+}
+
+const contextCharCount = computed(() => {
+  let total = 0;
+  for (const m of messages.value) total += messageCharTotal(m);
+  total += inputText.value.length;
+  return total;
+});
+
+const contextFillRatio = computed(() => {
+  // Clamp to 1 for the visual; popover shows the true ratio.
+  return Math.min(contextCharCount.value / MAX_CONTEXT_CHARS, 1);
+});
+
+const contextOverLimit = computed(() => contextCharCount.value > MAX_CONTEXT_CHARS);
+
+const contextRingColor = computed(() => {
+  const r = contextCharCount.value / MAX_CONTEXT_CHARS;
+  if (contextOverLimit.value) return "#ef4444"; // red-500
+  if (r >= 0.9) return "#f97316";              // orange-500
+  if (r >= 0.7) return "#f59e0b";              // amber-500
+  return "#9ca3af";                            // gray-400
+});
+
+const contextRingLabel = computed(() => {
+  const n = contextCharCount.value;
+  if (n < 1_000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+});
+
+const contextRingTitle = computed(() => {
+  return `Context: ${contextCharCount.value.toLocaleString()} / ${MAX_CONTEXT_CHARS.toLocaleString()} chars`;
+});
+
+const showContextPopover = ref(false);
+
 async function handleAttachFiles() {
   try {
     const selected = await open({
@@ -1379,12 +1432,13 @@ function formatDuration(ms: number): string {
 
 function closeDropdowns(e: MouseEvent) {
   const target = e.target as HTMLElement;
-  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector') && !target.closest('.message-list-dropdown') && !target.closest('.skills-selector')) {
+  if (!target.closest('.permission-selector') && !target.closest('.model-selector') && !target.closest('.dir-selector') && !target.closest('.more-agents-selector') && !target.closest('.message-list-dropdown') && !target.closest('.skills-selector') && !target.closest('.context-ring')) {
     showPermissionDropdown.value = false;
     showModelDropdown.value = false;
     showDirMenu.value = false;
     showMoreAgents.value = false;
     showSkillsPopover.value = false;
+    showContextPopover.value = false;
     closeMessageList();
   }
 }
@@ -1632,6 +1686,13 @@ async function handleSend() {
     return;
   }
 
+  // Block send when the accumulated context has exceeded the per-session cap.
+  // The user has to start a new session to keep going.
+  if (contextOverLimit.value) {
+    showWarning("Context limit reached. Please start a new session to continue.");
+    return;
+  }
+
   inputText.value = "";
 
   // Persist the pending question before starting a session. If the webview is
@@ -1852,8 +1913,27 @@ async function handleStop() {
     const state = getSessionState(sid);
     clearRetry(state);
     state.isProcessing = false;
-    const lm = lastAgentMsg(state.messages);
-    if (lm) lm.isProcessing = false;
+    // Clear isProcessing on ALL agent messages, not just the last one. A
+    // crashed/stopped session can leave earlier messages stuck at
+    // isProcessing=true, which would keep ChatMessages.hasLiveActivity true and
+    // drive the `now` tick (and a full list re-render) every 500ms forever.
+    for (const m of state.messages) {
+      if (m.role === 'agent') {
+        m.isProcessing = false;
+        // Also settle any tool calls stuck in "started"/"running" — they'd
+        // otherwise keep hasLiveActivity true the same way. Mark them "failed"
+        // (not "completed"): the session was stopped, so the tool did not
+        // actually finish, and showing a green "completed" check would mislead
+        // (e.g. a write_file that was killed).
+        if (m.toolCalls) {
+          for (const tc of m.toolCalls) {
+            if (tc.status === "started" || tc.status === "running") {
+              tc.status = "failed";
+            }
+          }
+        }
+      }
+    }
     isProcessing.value = false;
     messages.value = [...state.messages];
     msgStore.setMessages(sid, [...state.messages]);
@@ -2155,9 +2235,62 @@ watch(messages, (msgs) => {
                 <button @click="noThinking = !noThinking" :disabled="isProcessing" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" title="Toggle reasoning mode">
                   <Sparkles :size="14" />
                 </button>
-                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+
+                <!-- Context size ring: shows accumulated conversation chars as a
+                     fraction of the 200k cap. Click to expand the exact number. -->
+                <div class="relative flex-shrink-0 mr-1 context-ring">
+                  <button
+                    @click.stop="showContextPopover = !showContextPopover"
+                    :title="contextRingTitle"
+                    class="relative w-8 h-8 flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-gray-100 cursor-pointer"
+                    :class="contextOverLimit ? 'ring-1 ring-red-200' : ''"
+                  >
+                    <svg class="absolute inset-0 w-8 h-8 -rotate-90" viewBox="0 0 32 32">
+                      <circle cx="16" cy="16" r="13" fill="none" stroke="#e5e7eb" stroke-width="2.5" />
+                      <circle
+                        cx="16" cy="16" r="13" fill="none"
+                        :stroke="contextRingColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        :stroke-dasharray="`${contextFillRatio * 81.68} 81.68`"
+                        class="transition-all duration-300"
+                      />
+                    </svg>
+                    <span
+                      class="relative text-[9px] font-semibold tabular-nums leading-none"
+                      :class="contextOverLimit ? 'text-red-600' : 'text-gray-600'"
+                    >{{ contextRingLabel }}</span>
+                  </button>
+                  <div
+                    v-if="showContextPopover"
+                    @click.stop
+                    class="absolute bottom-full right-0 mb-2 w-56 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50"
+                  >
+                    <div class="px-3 py-2 border-b border-gray-50 flex items-center justify-between">
+                      <span class="text-[11px] font-medium text-gray-500">Context size</span>
+                      <button @click="showContextPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
+                        <X :size="12" />
+                      </button>
+                    </div>
+                    <div class="px-3 py-2.5">
+                      <div class="text-[12px] text-gray-800 tabular-nums font-medium">
+                        {{ contextCharCount.toLocaleString() }} / {{ MAX_CONTEXT_CHARS.toLocaleString() }}
+                      </div>
+                      <div class="text-[10px] text-gray-400 mt-0.5">characters in this session</div>
+                      <div
+                        v-if="contextOverLimit"
+                        class="mt-2 text-[11px] text-red-600 leading-snug"
+                      >
+                        Context limit reached. Please start a new session to continue.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel || contextOverLimit" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel && !contextOverLimit)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
                   <Send :size="12" />Send
                   <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
+                  <span v-else-if="contextOverLimit" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Context limit reached — start a new session</span>
                 </button>
                 <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0"><Square :size="12" />Stop</button>
               </div>

@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { AlertTriangle, X } from "lucide-vue-next";
 
-defineProps<{
+withDefaults(defineProps<{
   show: boolean;
   title: string;
   message: string;
-}>();
+  /** Optional button labels. Defaults to English so existing callers
+   *  (WorkspaceLayout, ModelsSettings) keep their current text. */
+  cancelText?: string;
+  confirmText?: string;
+}>(), {
+  cancelText: "Cancel",
+  confirmText: "Delete",
+});
 
 const emit = defineEmits<{
   (e: "confirm"): void;
@@ -33,8 +40,8 @@ const emit = defineEmits<{
         </div>
         
         <div class="px-6 py-4 bg-gray-50 flex gap-2">
-          <button @click="emit('cancel')" class="flex-1 px-4 py-2.5 rounded-xl text-[13px] font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 transition-all duration-150 cursor-pointer">Cancel</button>
-          <button @click="emit('confirm')" class="flex-1 px-4 py-2.5 rounded-xl text-[13px] font-medium text-white bg-red-500 hover:bg-red-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Delete</button>
+          <button @click="emit('cancel')" class="flex-1 px-4 py-2.5 rounded-xl text-[13px] font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 transition-all duration-150 cursor-pointer">{{ cancelText }}</button>
+          <button @click="emit('confirm')" class="flex-1 px-4 py-2.5 rounded-xl text-[13px] font-medium text-white bg-red-500 hover:bg-red-600 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">{{ confirmText }}</button>
         </div>
       </div>
     </div>

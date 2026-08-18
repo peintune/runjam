@@ -269,16 +269,16 @@ const hasLiveActivity = computed(() => {
   const msgs = props.messages;
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
-    // Message is actively being generated / processed
+    // Message is actively being generated / processed — this is the ONLY live
+    // signal that matters. A message still being generated needs the `now`
+    // tick to show live durations ("working Xs", "Thinking • Xs").
     if (m.isProcessing === true) return true;
-    // Typewriter still revealing content or thinking
+    // Typewriter still revealing content or thinking (content is growing)
     const d = displayMap[i];
     if (d) {
       if (m.content && d.content.length < m.content.length) return true;
       if (m.thinking && d.thinking.length < m.thinking.length) return true;
     }
-    // Thinking in progress (no content yet → live "Thinking • Xs" label)
-    if (m.thinking && !m.content) return true;
     // A tool call is currently executing (running duration shown)
     if (m.toolCalls && m.toolCalls.some((tc) => tc.status === "started" || tc.status === "running")) return true;
   }
@@ -461,8 +461,15 @@ function thinkingLabel(msg: Message, idx: number): string {
   if (frozenDurations[idx]?.thinking)
     return `Thought • ${elapsed(frozenDurations[idx].thinking)}`;
   if (msg.content) return "Thought";
-  const st = startTimes[idx]?.thinking || 0;
-  return st ? `Thinking • ${elapsed(now.value - st)}` : "Thinking...";
+  // A finished thinking-only message (thinking shown, no content — an agent
+  // that thought and then ended) should read as "Thought", not a live
+  // "Thinking..." that implies it's still running. Only show a live timer
+  // while the message is actually being generated.
+  if (msg.isProcessing === true) {
+    const st = startTimes[idx]?.thinking || 0;
+    return st ? `Thinking • ${elapsed(now.value - st)}` : "Thinking...";
+  }
+  return "Thought";
 }
 
 function formatDuration(ms: number): string {

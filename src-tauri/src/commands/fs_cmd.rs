@@ -544,6 +544,173 @@ pub fn search_mention_files(
     Ok(results)
 }
 
+// ── File Tree Mutations ──────────────────────────────────────────
+//
+// create_dir / create_file / rename_path are the write-side counterparts to
+// list_dir. They power the file tree's right-click menu and "+" toolbar in
+// FileTree.vue.
+//
+// All three accept an absolute `path` for the *target* (so the caller picks
+// the exact destination, including the new name). rename_path is also used
+// for cross-directory moves — fs::rename handles same-volume moves atomically;
+// cross-volume moves fall back to copy+remove via std::fs::rename's documented
+// behavior. The caller is responsible for picking a name that doesn't collide.
+
+/// Validate `path` against `root` for safety: both must exist, `path` must
+/// resolve to a location inside `root` after canonicalization. Returns the
+/// canonicalized path on success.
+///
+/// This guards against:
+///   - `..` traversal in caller-supplied paths
+///   - symlinks pointing outside the project root
+///   - typos that would land outside the workspace
+fn validate_inside_root(path: &Path, root: &Path) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|e| format!("Invalid root: {}", e))?;
+    let canonical_path = fs::canonicalize(path)
+        .map_err(|e| format!("Invalid path: {}", e))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(format!(
+            "Path '{}' is outside the workspace root",
+            canonical_path.display()
+        ));
+    }
+    Ok((canonical_root, canonical_path))
+}
+
+/// Create a directory at `path`. Parent directories must already exist
+/// (callers resolve the target parent themselves, so this stays predictable).
+/// Errors if the path already exists.
+#[tauri::command]
+pub fn create_dir(path: String, root: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("Path already exists: {}", path));
+    }
+    // Safety: the new dir doesn't exist yet, so validate its parent stays
+    // inside the workspace root. This blocks `..` traversal and symlink-escape.
+    validate_inside_root(p.parent().unwrap_or(p), Path::new(&root))?;
+    fs::create_dir(p).map_err(|e| format!("Failed to create directory: {}", e))
+}
+
+/// Create an empty file at `path`. Errors if the path already exists, so the
+/// caller can decide whether to overwrite (currently we don't — that should
+/// be an explicit user action).
+#[tauri::command]
+pub fn create_file(path: String, root: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.exists() {
+        return Err(format!("Path already exists: {}", path));
+    }
+    // Safety: the new file doesn't exist yet, so validate its parent stays
+    // inside the workspace root.
+    validate_inside_root(p.parent().unwrap_or(p), Path::new(&root))?;
+    // touch() semantics: create empty file. fs::OpenOptions::create_new returns
+    // an error if the file exists, which matches our "no overwrite" policy.
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(p)
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    // No content to write, but we need to keep `f` alive past the open. A no-op
+    // flush makes intent clear without writing any bytes.
+    f.flush().map_err(|e| format!("Failed to finalize file: {}", e))?;
+    Ok(())
+}
+
+/// Rename or move a file/directory from `old_path` to `new_path`. Both paths
+/// must live inside the same workspace root (the `root` argument). Atomic
+/// within a filesystem via fs::rename.
+///
+/// Refuses to move a directory into one of its own descendants (would create
+/// a cycle). The caller is expected to pre-validate the user's selection, but
+/// we re-check here as a safety net.
+#[tauri::command]
+pub fn rename_path(
+    old_path: String,
+    new_path: String,
+    root: String,
+) -> Result<(), String> {
+    let old = Path::new(&old_path);
+    let new = Path::new(&new_path);
+    let root_path = Path::new(&root);
+
+    if !old.exists() {
+        return Err(format!("Source does not exist: {}", old_path));
+    }
+    if new.exists() {
+        return Err(format!("Destination already exists: {}", new_path));
+    }
+
+    // Path safety: both endpoints must live under the workspace root.
+    let (_, canonical_old) = validate_inside_root(old, root_path)?;
+    let (_, canonical_new) = validate_inside_root(new.parent().unwrap_or(new), root_path)?;
+    // `new` itself doesn't exist yet, so canonicalize the parent. We've
+    // already confirmed the parent is inside the root.
+
+    // Cycle check: moving a directory into itself or a descendant would make
+    // it unreachable. canonicalize the new path's intended parent + the new
+    // name, then check the resulting prefix.
+    if canonical_old.is_dir() {
+        // The new path will be `canonical_new_parent/new_file_name`.
+        // If canonical_old is an ancestor of that, it's a cycle.
+        if canonical_new.starts_with(&canonical_old) {
+            return Err("Cannot move a directory into itself or its descendant".to_string());
+        }
+    }
+
+    fs::rename(&canonical_old, new).map_err(|e| format!("Failed to rename: {}", e))
+}
+
+/// Permanently delete a file or directory (recursively). The path must live
+/// inside the workspace `root`. Deleting is irreversible — the frontend shows
+/// a confirmation dialog before calling this.
+///
+/// Never deletes the workspace root itself, even if asked (guards against a
+/// UI bug or a malicious caller wiping the project).
+#[tauri::command]
+pub fn delete_path(path: String, root: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    let root_path = Path::new(&root);
+
+    if !p.exists() && !p.symlink_metadata().is_ok() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    // Detect symlinks with symlink_metadata (does NOT follow the link). A
+    // symlink is a small file pointing elsewhere — deleting it must remove the
+    // LINK, never the target's contents. So we treat symlinks as files and
+    // validate the link's own location (via its parent), not its target.
+    let meta = p.symlink_metadata().map_err(|e| format!("Failed to read metadata: {}", e))?;
+    let is_symlink = meta.file_type().is_symlink();
+
+    if is_symlink {
+        // Validate the symlink's parent dir is inside the root, then remove
+        // the link itself with remove_file (which on symlinks removes the link,
+        // not the target).
+        validate_inside_root(p.parent().unwrap_or(p), root_path)?;
+        return fs::remove_file(p).map_err(|e| format!("Failed to delete: {}", e));
+    }
+
+    // Regular file or directory: canonicalize (resolves any remaining symlink
+    // components in the path) and confirm it stays inside the root.
+    let (canonical_root, canonical_path) = validate_inside_root(p, root_path)?;
+
+    // Refuse to delete the workspace root or anything at/above it.
+    if canonical_path == canonical_root {
+        return Err("Cannot delete the workspace root".to_string());
+    }
+
+    if canonical_path.is_dir() {
+        fs::remove_dir_all(&canonical_path)
+            .map_err(|e| format!("Failed to delete directory: {}", e))
+    } else {
+        fs::remove_file(&canonical_path)
+            .map_err(|e| format!("Failed to delete file: {}", e))
+    }
+}
+
 // ── File Attachment Parser ──────────────────────────────────────
 
 /// Max file size for parsing (10 MB).
@@ -866,5 +1033,356 @@ mod tests {
         assert!(!text.trim().is_empty(), "extracted text is empty");
         let preview: String = text.chars().take(2000).collect();
         println!("=== PPTX EXTRACTED TEXT ===\n{}", preview);
+    }
+
+    // ── File tree mutation tests ────────────────────────────────
+    //
+    // Use a unique temp directory per test so they can run in parallel and
+    // never touch the real workspace. The dir is created at test start and
+    // best-effort cleaned up at the end (we don't panic on cleanup failure).
+
+    use std::path::PathBuf;
+
+    /// Build a fresh temp dir for a test. The returned path is guaranteed to
+    /// exist and be empty.
+    fn make_tmpdir(label: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "runjam-fs-cmd-test-{}-{}",
+            label,
+            std::process::id()
+        ));
+        // Each test gets its own subdir so parallel test runs don't collide.
+        let unique = base.join(format!(
+            "{}-{}",
+            label,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(&unique).expect("create temp dir");
+        unique
+    }
+
+    fn best_effort_remove(p: &Path) {
+        if p.is_dir() {
+            let _ = fs::remove_dir_all(p);
+        } else if p.exists() {
+            let _ = fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn test_create_dir_happy_path() {
+        let root = make_tmpdir("create_dir_ok");
+        let target = root.join("new_folder");
+        let result = create_dir(
+            target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "create_dir failed: {:?}", result.err());
+        assert!(target.is_dir(), "directory was not actually created");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_create_dir_already_exists() {
+        let root = make_tmpdir("create_dup");
+        let target = root.join("dup");
+        fs::create_dir(&target).unwrap();
+        let result = create_dir(
+            target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected error when path already exists");
+        assert!(
+            result.as_ref().err().unwrap().contains("already exists"),
+            "error message should mention 'already exists', got: {:?}",
+            result
+        );
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_create_file_happy_path() {
+        let root = make_tmpdir("create_file_ok");
+        let target = root.join("note.txt");
+        let result = create_file(
+            target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "create_file failed: {:?}", result.err());
+        assert!(target.is_file(), "file was not actually created");
+        let size = fs::metadata(&target).unwrap().len();
+        assert_eq!(size, 0, "newly created file should be empty");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_create_file_already_exists() {
+        let root = make_tmpdir("create_file_dup");
+        let target = root.join("dup.txt");
+        fs::write(&target, "existing content").unwrap();
+        let result = create_file(
+            target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected error when file already exists");
+        // The original content must be preserved — we don't silently overwrite.
+        let preserved = fs::read_to_string(&target).unwrap();
+        assert_eq!(preserved, "existing content");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_create_rejects_escape() {
+        let root = make_tmpdir("create_escape");
+        // Attempt to create a file OUTSIDE the root. Its parent canonicalizes
+        // outside root, so create_file must refuse.
+        let outside = std::env::temp_dir().join(format!(
+            "runjam-create-escape-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let escape_path = outside.join("evil.txt");
+
+        let result = create_file(
+            escape_path.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected escape attempt to be rejected");
+        assert!(!escape_path.exists(), "outside file must not be created");
+
+        best_effort_remove(&outside);
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_rename_simple() {
+        let root = make_tmpdir("rename_simple");
+        let src = root.join("a.txt");
+        let dst = root.join("b.txt");
+        fs::write(&src, "hello").unwrap();
+
+        let result = rename_path(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "rename failed: {:?}", result.err());
+        assert!(!src.exists(), "source should be gone after rename");
+        assert!(dst.is_file(), "destination should exist");
+        assert_eq!(fs::read_to_string(&dst).unwrap(), "hello");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_rename_across_directories() {
+        let root = make_tmpdir("rename_xdir");
+        let sub_a = root.join("a");
+        let sub_b = root.join("b");
+        fs::create_dir(&sub_a).unwrap();
+        fs::create_dir(&sub_b).unwrap();
+        let src = sub_a.join("file.txt");
+        let dst = sub_b.join("moved.txt");
+        fs::write(&src, "x").unwrap();
+
+        let result = rename_path(
+            src.to_string_lossy().to_string(),
+            dst.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "cross-dir rename failed: {:?}", result.err());
+        assert!(!src.exists());
+        assert!(dst.is_file());
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_rename_rejects_cycle() {
+        let root = make_tmpdir("rename_cycle");
+        let parent = root.join("parent");
+        let child = parent.join("child");
+        fs::create_dir(&parent).unwrap();
+        fs::create_dir(&child).unwrap();
+
+        // Attempt to move `parent` into `child` — that would make parent
+        // unreachable (it'd be inside itself).
+        let bad_dst = child.join("parent");
+        let result = rename_path(
+            parent.to_string_lossy().to_string(),
+            bad_dst.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected cycle to be rejected");
+        assert!(
+            result.as_ref().err().unwrap().contains("itself or its descendant"),
+            "error should explain the cycle, got: {:?}",
+            result
+        );
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_rename_rejects_escape() {
+        let root = make_tmpdir("rename_escape");
+        // A file *outside* the root — attempt to move it into the root.
+        let outside = std::env::temp_dir().join(format!(
+            "runjam-outside-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&outside, "outside").unwrap();
+
+        let inside_target = root.join("sneaky.txt");
+        let result = rename_path(
+            outside.to_string_lossy().to_string(),
+            inside_target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected escape attempt to be rejected");
+
+        best_effort_remove(&outside);
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_file() {
+        let root = make_tmpdir("delete_file");
+        let target = root.join("gone.txt");
+        fs::write(&target, "bye").unwrap();
+
+        let result = delete_path(
+            target.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "delete_file failed: {:?}", result.err());
+        assert!(!target.exists(), "file should be gone");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_directory_recursive() {
+        let root = make_tmpdir("delete_dir");
+        let dir = root.join("sub");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("nested").join("a.txt"), "x").unwrap();
+        fs::write(dir.join("b.txt"), "y").unwrap();
+
+        let result = delete_path(
+            dir.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "delete_dir failed: {:?}", result.err());
+        assert!(!dir.exists(), "directory tree should be gone");
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_rejects_root() {
+        let root = make_tmpdir("delete_root");
+        let result = delete_path(
+            root.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected deleting the root to be rejected");
+        assert!(
+            result.as_ref().err().unwrap().contains("workspace root"),
+            "error should mention the root guard, got: {:?}",
+            result
+        );
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_rejects_escape() {
+        let root = make_tmpdir("delete_escape");
+        // A file outside the root — must not be deletable through the guard.
+        let outside = std::env::temp_dir().join(format!(
+            "runjam-outside-del-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&outside, "outside").unwrap();
+
+        let result = delete_path(
+            outside.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_err(), "expected escape attempt to be rejected");
+        assert!(outside.exists(), "outside file must be untouched");
+
+        best_effort_remove(&outside);
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_symlink_removes_link_not_target() {
+        let root = make_tmpdir("delete_symlink");
+        // A real directory OUTSIDE the root that a symlink points to.
+        let real_target = std::env::temp_dir().join(format!(
+            "runjam-symlink-target-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::create_dir_all(real_target.join("inner")).unwrap();
+        fs::write(real_target.join("inner").join("data.txt"), "keep me").unwrap();
+
+        // Symlink inside the root pointing at the outside target.
+        let link = root.join("link_to_target");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_target, &link).unwrap();
+
+        let result = delete_path(
+            link.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "deleting the symlink should succeed: {:?}", result.err());
+        // The link itself is gone...
+        assert!(!link.symlink_metadata().is_ok(), "symlink should be removed");
+        // ...but the target's contents are untouched.
+        assert!(
+            real_target.join("inner").join("data.txt").exists(),
+            "symlink target contents must NOT be deleted"
+        );
+
+        best_effort_remove(&real_target);
+        best_effort_remove(&root);
+    }
+
+    #[test]
+    fn test_delete_symlink_to_file_removes_link() {
+        let root = make_tmpdir("delete_symlink_file");
+        let real_file = std::env::temp_dir().join(format!(
+            "runjam-symlink-file-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        fs::write(&real_file, "keep").unwrap();
+
+        let link = root.join("file_link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_file, &link).unwrap();
+
+        let result = delete_path(
+            link.to_string_lossy().to_string(),
+            root.to_string_lossy().to_string(),
+        );
+        assert!(result.is_ok(), "deleting symlink should succeed: {:?}", result.err());
+        assert!(!link.symlink_metadata().is_ok(), "symlink should be removed");
+        assert!(real_file.exists(), "target file must be untouched");
+
+        best_effort_remove(&real_file);
+        best_effort_remove(&root);
     }
 }
