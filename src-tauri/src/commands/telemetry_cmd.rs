@@ -171,7 +171,7 @@ struct BackendPlatformInfo {
 /// Phase 2 seed: update check against the backend (GitHub Releases metadata
 /// mirrored in Supabase). The actual download/install goes through the Tauri
 /// updater plugin once it is configured with signing keys.
-///
+额3xzAa0PO///
 /// Routes through the configured outbound proxy (if any), same as telemetry
 /// and announcements.
 #[tauri::command]

@@ -29,6 +29,9 @@ interface TabState {
   fitAddon: FitAddon | null;
   unlisten: UnlistenFn | null;
   resizeObserver: ResizeObserver | null;
+  /** Buffer text captured when the directory was switched away. Written into
+   *  the new Terminal on mount before the event listener is attached. */
+  pendingBuffer?: string;
 }
 
 const tabs = ref<TabState[]>([]);
@@ -47,6 +50,11 @@ interface SavedTab {
   id: number;
   title: string;
   cwd: string;
+  /** Captured xterm buffer text at save time. Restored into the new Terminal
+   *  when this directory is shown again — without this, switching sessions
+   *  destroyed the xterm buffer (term.dispose()) and the historical output
+   *  was lost even though the backend shell process stayed alive. */
+  bufferText?: string;
 }
 
 interface SavedDirectoryState {
@@ -57,17 +65,80 @@ interface SavedDirectoryState {
 
 const directoryStates = new Map<string, SavedDirectoryState>();
 
-/** Save current tabs metadata for a directory WITHOUT killing backend processes */
+/** Write a large string to a terminal in chunks, letting xterm process each
+ *  chunk on its own frame. A single synchronous write of a large scrollback
+ *  would block the main thread for the whole write; chunking keeps the UI
+ *  responsive while restoring history. Calls `onDone` when all chunks have been
+ *  written (or immediately if the text is empty). */
+function writeChunked(term: Terminal, text: string, onDone?: () => void, chunkSize = 8192) {
+  let offset = 0;
+  const writeNext = () => {
+    if (offset >= text.length) {
+      onDone?.();
+      return;
+    }
+    const chunk = text.slice(offset, offset + chunkSize);
+    offset += chunkSize;
+    term.write(chunk, writeNext);
+  };
+  writeNext();
+}
+
+/** Export a terminal's visible buffer (scrollback + current screen) as text.
+ *  xterm has no direct serialization API, so we walk the buffer lines and
+ *  join them. Wrapped lines are joined without a newline to preserve the
+ *  original line structure. */
+function captureBufferText(term: Terminal): string {
+  const buffer = term.buffer.active;
+  const lines: string[] = [];
+  // Walk from the top of the buffer (including scrollback) to the bottom.
+  for (let y = 0; y < buffer.length; y++) {
+    const line = buffer.getLine(y);
+    if (!line) continue;
+    // A wrapped line continues the previous logical line. For the FIRST segment
+    // of a wrapped logical line (isWrapped === false but the next line wraps),
+    // trimRight would drop a legitimate trailing space ("foo " + "bar" → "foobar").
+    // So keep trailing whitespace on any line that is itself wrapped OR is
+    // followed by a wrapped continuation; trim only standalone lines.
+    const next = buffer.getLine(y + 1);
+    const isPartOfWrapped = line.isWrapped || (next?.isWrapped === true);
+    const text = line.translateToString(!isPartOfWrapped);
+    if (line.isWrapped && lines.length > 0) {
+      lines[lines.length - 1] += text;
+    } else {
+      lines.push(text);
+    }
+  }
+  // Join with \r\n (carriage return + line feed), not just \n — terminals
+  // require CR to return to column 0 before the LF. Writing back with only \n
+  // makes xterm advance lines without returning the cursor, so the restored
+  // history appears misaligned/jumbled.
+  return lines.join("\r\n").replace(/\r\n+$/, "");
+}
+
+/** Save current tabs metadata (incl. buffer text) for a directory WITHOUT
+ *  killing backend processes */
 function saveDirectoryState(cwd: string) {
   if (!cwd || tabs.value.length === 0) return;
   directoryStates.set(cwd, {
-    tabs: tabs.value.map((t) => ({ id: t.id, title: t.title, cwd: t.cwd })),
+    tabs: tabs.value.map((t) => ({
+      id: t.id,
+      title: t.title,
+      cwd: t.cwd,
+      // Capture the live term's buffer if it's mounted; otherwise fall back to
+      // any pendingBuffer that hasn't been written yet (mountTerminal may not
+      // have run). This keeps history across a rapid switch-before-mount.
+      bufferText: t.term ? captureBufferText(t.term) : t.pendingBuffer,
+    })),
     activeIndex: activeTabIndex.value,
     counter: tabCounter,
   });
 }
 
-/** Restore tabs for a directory. Returns null if no saved state. */
+/** Restore tabs for a directory. Returns null if no saved state. Event
+ *  listeners are NOT established here — they're set up in mountTerminal after
+ *  the buffer text is written, so restored history arrives before any new
+ *  backend output. */
 async function restoreDirectoryState(cwd: string): Promise<{
   restoredTabs: TabState[];
   restoredIndex: number;
@@ -86,22 +157,8 @@ async function restoreDirectoryState(cwd: string): Promise<{
       fitAddon: null,
       unlisten: null,
       resizeObserver: null,
+      pendingBuffer: st.bufferText,
     };
-
-    // Re-listen to backend terminal output
-    tab.unlisten = await listen<number[] | string>(
-      `terminal-data-${tab.id}`,
-      (event) => {
-        if (!tab.term) return;
-        const payload = event.payload;
-        if (typeof payload === "string") {
-          tab.term.write(payload);
-        } else if (Array.isArray(payload)) {
-          tab.term.write(new Uint8Array(payload));
-        }
-      }
-    );
-
     restoredTabs.push(tab);
   }
 
@@ -152,7 +209,9 @@ async function createTab(): Promise<TabState> {
   const termId = await invoke<number>("spawn_terminal", { cwd: workDir });
   tabCounter++;
 
-  const tab: TabState = {
+  // Event listener is attached in mountTerminal (after any pending buffer is
+  // written), so a fresh shell's first output isn't dropped before the term exists.
+  return {
     id: termId,
     title: `sh-${tabCounter}`,
     cwd: workDir || "",
@@ -161,21 +220,6 @@ async function createTab(): Promise<TabState> {
     unlisten: null,
     resizeObserver: null,
   };
-
-  tab.unlisten = await listen<number[] | string>(
-    `terminal-data-${termId}`,
-    (event) => {
-      if (!tab.term) return;
-      const payload = event.payload;
-      if (typeof payload === "string") {
-        tab.term.write(payload);
-      } else if (Array.isArray(payload)) {
-        tab.term.write(new Uint8Array(payload));
-      }
-    }
-  );
-
-  return tab;
 }
 
 async function addTab() {
@@ -183,7 +227,7 @@ async function addTab() {
   tabs.value.push(tab);
   activeTabIndex.value = tabs.value.length - 1;
   await nextTick();
-  mountTerminal(tab);
+  await mountTerminal(tab);
 }
 
 /** Kill every backend terminal process and clear all local state for the
@@ -235,7 +279,7 @@ function switchTab(index: number) {
   });
 }
 
-function mountTerminal(tab: TabState) {
+async function mountTerminal(tab: TabState, myGen?: number) {
   const el = containerEls.value[tab.id];
   if (!el) return;
 
@@ -291,7 +335,68 @@ function mountTerminal(tab: TabState) {
   tab.term = term;
   tab.fitAddon = fitAddon;
 
-  setTimeout(() => fitAddon.fit(), 150);
+  // ── History restore + listener ordering ────────────────────────────
+  // We must write the captured history BEFORE any new backend output, or the
+  // restored text would be interleaved with fresh output. But we also want the
+  // listener attached as early as possible so a freshly spawned shell's prompt
+  // isn't dropped. Solution: attach the listener immediately, but buffer any
+  // incoming output until the history has finished writing (historyDone), then
+  // flush the buffer. This preserves ordering AND doesn't drop early output.
+  let historyDone = !tab.pendingBuffer;
+  const pendingOutput: (string | Uint8Array)[] = [];
+
+  if (!tab.unlisten) {
+    tab.unlisten = await listen<number[] | string>(
+      `terminal-data-${tab.id}`,
+      (event) => {
+        if (!tab.term) return;
+        const payload = event.payload;
+        const data = typeof payload === "string" ? payload : new Uint8Array(payload);
+        if (!historyDone) {
+          // History still being written — hold this output until it's flushed.
+          pendingOutput.push(data);
+          return;
+        }
+        tab.term.write(data);
+      }
+    );
+  }
+
+  // If this tab was superseded by a newer session switch while we awaited the
+  // listener, tear down what we just set up (the tab is no longer current).
+  if (myGen !== undefined && myGen !== initGeneration) {
+    // The tab may already have been disposed by teardownCurrentTabs. If term is
+    // still alive, dispose it; always unlisten to avoid leaking the listener.
+    if (tab.term === term) {
+      tab.term = null;
+      tab.fitAddon = null;
+      term.dispose();
+    }
+    tab.unlisten?.();
+    tab.unlisten = null;
+    return;
+  }
+
+  // Write captured history (chunked so a large scrollback doesn't block the
+  // main thread). When done, flush any output that arrived during the write.
+  if (tab.pendingBuffer) {
+    const history = tab.pendingBuffer;
+    tab.pendingBuffer = undefined;
+    writeChunked(term, history, () => {
+      historyDone = true;
+      for (const d of pendingOutput) term.write(d);
+      pendingOutput.length = 0;
+    });
+  }
+
+  // fit() must only run while this tab's term is still the live one — after a
+  // session switch the tab may be disposed, and fit() on a disposed terminal
+  // throws. Guard every fit call against tab.term having been swapped/disposed.
+  const safelyFit = () => {
+    if (tab.term === term) fitAddon.fit();
+  };
+
+  setTimeout(safelyFit, 150);
 
   let fitTimer: ReturnType<typeof setTimeout> | null = null;
   tab.resizeObserver = new ResizeObserver(() => {
@@ -299,7 +404,7 @@ function mountTerminal(tab: TabState) {
     // During sidebar/panel resize animations, the observer fires on every
     // frame — calling fit() each time blocks the main thread and causes jank.
     if (fitTimer) clearTimeout(fitTimer);
-    fitTimer = setTimeout(() => { fitAddon.fit(); fitTimer = null; }, 80);
+    fitTimer = setTimeout(() => { safelyFit(); fitTimer = null; }, 80);
   });
   tab.resizeObserver.observe(el);
 }
@@ -339,7 +444,16 @@ async function initForCwd(cwd: string) {
     await nextTick();
     if (myGen !== initGeneration) return;
     const tab = tabs.value[activeTabIndex.value];
-    if (tab) mountTerminal(tab);
+    if (tab) {
+      // Fire-and-forget: don't block the session switch on terminal init.
+      // mountTerminal restores history + attaches the listener asynchronously;
+      // the UI stays responsive and the terminal fills in as it initializes.
+      // Pass myGen so mountTerminal can abandon itself if superseded by a newer
+      // switch (prevents a listener/term leak on the orphaned tab).
+      mountTerminal(tab, myGen).catch((err) => {
+        console.error("Failed to init terminal:", err);
+      });
+    }
   } else if (!spawnedCwds.has(cwd)) {
     // Never spawned a shell for this directory — create one. The generation
     // token guarantees this is the latest init (no concurrent double-spawn), so
