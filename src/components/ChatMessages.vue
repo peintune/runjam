@@ -172,8 +172,30 @@ function shouldRenderGroup(g: { items: { oi: number; msg: Message }[] }, gIdx: n
 // (its jump target may be an arbitrary historical group that is still a
 // placeholder). Once forced, lazy rendering stays off for this session — the
 // user explicitly asked to browse the full history, so full render is fine.
+// ═══ 历史折叠：超长会话只渲染尾部，头部收进一个"查看更早"按钮 ═══
+// 惰性渲染（IntersectionObserver + placeholder）决定"组是否渲染真实内容"；
+// 折叠更进一步，让头部组根本不进入 v-for —— DOM 里只有 1 个按钮而不是
+// 上千个 placeholder div。展开时锚定回原位置，视口不跳。
+const HISTORY_FOLD_THRESHOLD = 40; // 组数超过该值就折叠头部
+const showFullHistory = ref(false);
+const foldedHeadCount = computed(() => {
+  if (showFullHistory.value) return 0;
+  return Math.max(0, messageGroups.value.length - HISTORY_FOLD_THRESHOLD);
+});
+
+function expandHistory() {
+  const anchorIdx = foldedHeadCount.value;
+  showFullHistory.value = true;
+  nextTick(() => {
+    // 锚定：展开后滚动到原第一组的位置，避免视口跳到历史开头
+    const el = chatEl.value?.querySelector(`[data-gIdx="${anchorIdx}"]`);
+    if (el) el.scrollIntoView({ block: "start" });
+  });
+}
+
 function forceRenderAll() {
   forceRender.value = true;
+  showFullHistory.value = true; // scrollToMessage 需要全部组真实渲染
 }
 
 defineExpose({ forceRenderAll });
@@ -708,7 +730,18 @@ function truncateLabel(label: string, maxLen = 32): string {
 
 <template>
   <div ref="chatEl" class="space-y-6 py-2">
+    <!-- ── 历史折叠：头部组收进一个按钮，点击展开并锚定回原位 ── -->
+    <button
+      v-if="foldedHeadCount > 0"
+      @click="expandHistory"
+      class="msg-row w-full flex items-center justify-center gap-2 py-3 text-[13px] text-indigo-500 hover:text-indigo-600 hover:bg-indigo-50/40 rounded-xl border border-dashed border-indigo-200 transition-colors cursor-pointer"
+    >
+      <ChevronDown :size="14" />
+      查看更早的 {{ foldedHeadCount }} 条消息
+    </button>
+
     <template v-for="(group, gIdx) in messageGroups" :key="gIdx">
+      <template v-if="gIdx >= foldedHeadCount">
       <!-- ── Placeholder: cheap fixed-height, flips to full render when near viewport ── -->
       <div
         v-if="!shouldRenderGroup(group, gIdx)"
@@ -727,6 +760,7 @@ function truncateLabel(label: string, maxLen = 32): string {
         v-if="group.type === 'user'"
         class="msg-row flex gap-3 justify-end"
         :data-user-msg-index="gIdx"
+        :data-gIdx="gIdx"
       >
         <div class="msg-user-bubble max-w-[75%] px-4 py-2.5 text-[15px] leading-relaxed">
           {{ group.items[0].msg.content }}
@@ -734,7 +768,7 @@ function truncateLabel(label: string, maxLen = 32): string {
       </div>
 
       <!-- ── Agent message group (1+ messages in one bubble) ── -->
-      <div v-else class="msg-row flex gap-3 justify-start">
+      <div v-else class="msg-row flex gap-3 justify-start" :data-gIdx="gIdx">
         <div class="msg-agent-avatar shrink-0 mt-0.5">
           <AgentIcon v-if="agentId" :agent-id="agentId" :size="28" />
           <span v-else class="text-[13px] font-bold text-gray-400">A</span>
@@ -1067,6 +1101,7 @@ function truncateLabel(label: string, maxLen = 32): string {
           </div>
         </div>
       </div>
+      </template>
       </template>
     </template>
   </div>
