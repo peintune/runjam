@@ -19,6 +19,7 @@ export interface SessionRecord {
   pinned: number;
   archived: number;
   created_at: string;
+  last_active_at: string | null;
   acp_session_id: string;
 }
 
@@ -75,4 +76,11 @@ export async function unarchiveSession(id: string): Promise<void> {
 
 export async function deleteArchivedSessions(): Promise<void> {
   return invoke("delete_archived_sessions");
+}
+
+/** Bump the session's last_active_at timestamp on the backend so the
+ *  sidebar's time and ordering reflect the freshest activity, even after a
+ *  page reload. Cheap — single UPDATE, no network. */
+export async function touchSession(id: string): Promise<void> {
+  return invoke("touch_session", { id });
 }

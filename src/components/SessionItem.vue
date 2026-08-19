@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
 import type { Session } from "../stores/useWorkspaceStore";
+import { useWorkspaceStore } from "../stores/useWorkspaceStore";
+import { useMessageStore } from "../stores/useMessageStore";
+import { useAgentStore } from "../stores/useAgentStore";
 import { MoreHorizontal, Pin, Pencil, Trash2, Archive, RotateCcw, Terminal, FileText } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
 import { useSessionLayout } from "../composables/useSessionLayout";
+import { computeContextStats } from "../composables/useContextSize";
 
 const props = defineProps<{
   session: Session;
@@ -34,10 +38,48 @@ const editText = ref("");
 
 const { peekLayout } = useSessionLayout();
 
+const workspaceStore = useWorkspaceStore();
+const messageStore = useMessageStore();
+const agentStore = useAgentStore();
+
 /** Directory-level layout info for this session's bound directory */
 const dirLayout = computed(() => {
   if (!props.session.directoryId || props.archived) return null;
   return peekLayout(props.session.directoryId);
+});
+
+/** Context-size stats for the ACTIVE session, so the sidebar shows the same
+ *  number as the session view's progress ring (message chars + input draft
+ *  vs the model's context_window × 4). Hidden for archived/inactive rows. */
+const contextStats = computed(() => {
+  if (!props.active || props.archived) return null;
+  const messages = messageStore.getMessages(props.session.id);
+  const model = agentStore.models.find(m => m.id === props.session.model);
+  // Include the live input draft (as a length-only placeholder string) so
+  // the total, ratio and color match the session view exactly.
+  return computeContextStats(
+    messages,
+    " ".repeat(workspaceStore.activeDraftChars),
+    model?.context_window || undefined,
+  );
+});
+
+/** Compact label like "12.3k/200k" for the sidebar row. */
+const contextLabel = computed(() => {
+  const s = contextStats.value;
+  if (!s) return "";
+  const fmt = (n: number) => {
+    if (n < 1_000) return `${n}`;
+    if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+    return `${(n / 1_000_000).toFixed(2)}M`;
+  };
+  return `${fmt(s.totalChars)}/${fmt(s.maxChars)}`;
+});
+
+const contextTitle = computed(() => {
+  const s = contextStats.value;
+  if (!s) return "";
+  return `Context: ${s.totalChars.toLocaleString()} / ${s.maxChars.toLocaleString()} chars`;
 });
 
 function timeAgo(iso: string): string {
@@ -87,6 +129,14 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
         </div>
         <p v-if="!compact" class="text-[11px] text-gray-400 mt-0.5 truncate flex items-center gap-1.5">
           {{ timeAgo(session.lastActiveAt) }}
+          <span
+            v-if="contextStats"
+            :title="contextTitle"
+            class="inline-flex items-center gap-1 flex-shrink-0 ml-auto pl-1.5"
+          >
+            <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :style="{ backgroundColor: contextStats.ringColor }" />
+            <span class="tabular-nums" :style="{ color: contextStats.ringColor }">{{ contextLabel }}</span>
+          </span>
         </p>
       </template>
     </div>

@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import { startSession as tauriStartSession, stopSession as tauriStopSession } from "../api/sessions";
 import { useMessageStore } from "./useMessageStore";
-import { saveSession, getSessions, updateSessionTitle, updateSessionModel, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, type SessionRecord } from "../api/search";
+import { saveSession, getSessions, updateSessionTitle, updateSessionModel, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, touchSession as apiTouchSession, type SessionRecord } from "../api/search";
 
 export interface Directory {
   id: string;
@@ -53,7 +53,9 @@ function recordToSession(record: SessionRecord): Session {
     pinned: record.pinned === 1,
     archived: record.archived === 1,
     createdAt: record.created_at,
-    lastActiveAt: record.created_at,
+    // Prefer the backend's last_active_at (persisted across reloads) and
+    // fall back to created_at for sessions that predate the column.
+    lastActiveAt: record.last_active_at || record.created_at,
     unread: false,
     acpSessionId: record.acp_session_id || "",
     newlyCompleted: false,
@@ -92,6 +94,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   const directories = ref<Directory[]>([]);
   const sessions = ref<Session[]>([]);
   const activeSessionId = ref<string | null>(loadPersistedActiveSession());
+  /** Character length of the input draft in the active session. Kept here
+   *  so the sidebar (SessionItem) can show the same context-size number the
+   *  session view computes — the draft counts toward the context total. */
+  const activeDraftChars = ref(0);
 
   const activeSession = computed(() =>
     sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
@@ -246,8 +252,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   function touchSession(id: string) {
+    // Optimistic local update so the sidebar re-orders immediately, then
+    // persist to the backend so the order survives a page reload.
     const s = sessions.value.find(s => s.id === id);
     if (s) s.lastActiveAt = new Date().toISOString();
+    apiTouchSession(id).catch(err => console.error("Failed to touch session:", err));
   }
 
   function archiveSession(id: string) {
@@ -328,6 +337,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     sessions,
     activeSessionId,
     activeSession,
+    activeDraftChars,
     loadSessions,
     createSession,
     selectSession,

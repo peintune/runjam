@@ -21,6 +21,7 @@ import { type FileEntry, parseFile } from "../api/fs";
 import { submitFeedback } from "../api/telemetry";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
+import { useContextSize } from "../composables/useContextSize";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -248,41 +249,24 @@ const ATTACH_ACCEPTED_EXTS = [
 const MAX_ATTACH_TOTAL_CHARS = 100_000;
 
 // ── Context size indicator ────────────────────────────────────
-// The total character count of the conversation's message body text
-// (content only — thinking blocks and tool inputs/outputs are display-only
-// and not counted) plus the text currently typed in the input box. When
-// this exceeds MAX_CONTEXT_CHARS the send is blocked — the user has to start
-// a new session to keep going.
-const MAX_CONTEXT_CHARS = 200_000;
+// Shared with the sidebar via useContextSize: the numerator is the char
+// count of the conversation's message body text (content only — thinking
+// blocks and tool inputs/outputs are display-only and not counted) plus the
+// text currently typed in the input box; the denominator is the selected
+// model's context_window × CHARS_PER_TOKEN, falling back to 200k chars when
+// the model has no window configured. When the total exceeds the cap the
+// send is blocked — the user has to start a new session to keep going.
+const modelContextWindow = computed(() =>
+  modelList.value.find(m => m.id === selectedModel.value)?.context_window ?? undefined,
+);
 
-function messageCharTotal(m: Message): number {
-  // Only the message body (content) counts toward the context size. Thinking
-  // blocks and tool inputs/outputs are display-only in this app — they are not
-  // part of what is sent back to the LLM, so they don't count.
-  return m.content?.length || 0;
-}
-
-const contextCharCount = computed(() => {
-  let total = 0;
-  for (const m of messages.value) total += messageCharTotal(m);
-  total += inputText.value.length;
-  return total;
-});
-
-const contextFillRatio = computed(() => {
-  // Clamp to 1 for the visual; popover shows the true ratio.
-  return Math.min(contextCharCount.value / MAX_CONTEXT_CHARS, 1);
-});
-
-const contextOverLimit = computed(() => contextCharCount.value > MAX_CONTEXT_CHARS);
-
-const contextRingColor = computed(() => {
-  const r = contextCharCount.value / MAX_CONTEXT_CHARS;
-  if (contextOverLimit.value) return "#ef4444"; // red-500
-  if (r >= 0.9) return "#f97316";              // orange-500
-  if (r >= 0.7) return "#f59e0b";              // amber-500
-  return "#9ca3af";                            // gray-400
-});
+const {
+  totalChars: contextCharCount,
+  maxChars: contextMaxChars,
+  fillRatio: contextFillRatio,
+  overLimit: contextOverLimit,
+  ringColor: contextRingColor,
+} = useContextSize(messages, inputText, modelContextWindow);
 
 const contextRingLabel = computed(() => {
   const n = contextCharCount.value;
@@ -292,7 +276,7 @@ const contextRingLabel = computed(() => {
 });
 
 const contextRingTitle = computed(() => {
-  return `Context: ${contextCharCount.value.toLocaleString()} / ${MAX_CONTEXT_CHARS.toLocaleString()} chars`;
+  return `Context: ${contextCharCount.value.toLocaleString()} / ${contextMaxChars.value.toLocaleString()} chars`;
 });
 
 const showContextPopover = ref(false);
@@ -476,6 +460,12 @@ watch(inputText, (newVal) => {
   } else if (!typingPlaceholder.value) {
     startTyping();
   }
+});
+
+// Keep the sidebar's context-size display in sync with the active session's
+// input draft — the draft counts toward the context total in both places.
+watch(inputText, (newVal) => {
+  store.activeDraftChars = newVal.length;
 });
 
 const defaultPermissionModes: Record<string, string> = {
@@ -1786,6 +1776,11 @@ async function handleSend() {
     // 可能耗时或抛错）之前，保证这条消息无论后续发生什么都一定显示在会话里——
     // 新会话创建后视图实例刚切换，任何一次异常都可能导致它丢失。
     const sid = effectiveSessionId.value;
+    // Bump the session's last-active timestamp on the backend so the sidebar
+    // reorders this session to the top, even after a page reload. The
+    // backend's save_message also touches it, but that's not awaited and the
+    // optimistic local update here is what drives the immediate sidebar sort.
+    store.touchSession(sid);
     const state = getSessionState(sid);
     state.messages.push({role:"user",content:userDisplay});
     syncMessagesToView(state);
@@ -2309,7 +2304,7 @@ watch(messages, (msgs) => {
                     </div>
                     <div class="px-3 py-2.5">
                       <div class="text-[12px] text-gray-800 tabular-nums font-medium">
-                        {{ contextCharCount.toLocaleString() }} / {{ MAX_CONTEXT_CHARS.toLocaleString() }}
+                        {{ contextCharCount.toLocaleString() }} / {{ contextMaxChars.toLocaleString() }}
                       </div>
                       <div class="text-[10px] text-gray-400 mt-0.5">characters in this session</div>
                       <div

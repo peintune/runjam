@@ -65,3 +65,8 @@ pub fn unarchive_session(id: String) {
 pub fn delete_archived_sessions() {
     search::delete_archived_sessions();
 }
+
+#[tauri::command]
+pub fn touch_session(id: String) {
+    search::touch_session(&id);
+}

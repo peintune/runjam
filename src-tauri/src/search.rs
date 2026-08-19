@@ -25,6 +25,7 @@ pub struct SessionRecord {
     pub pinned: i64,
     pub archived: i64,
     pub created_at: String,
+    pub last_active_at: Option<String>,
     pub acp_session_id: String,
 }
 
@@ -57,7 +58,8 @@ pub fn init_db() {
                 status TEXT NOT NULL DEFAULT 'running',
                 pid INTEGER,
                 pinned INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                last_active_at TEXT
             );"
         ).ok();
         // Schema migrations (ignore errors if column already exists)
@@ -67,6 +69,13 @@ pub fn init_db() {
         conn.execute("ALTER TABLE sessions ADD COLUMN archived INTEGER DEFAULT 0", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN acp_session_id TEXT DEFAULT ''", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN last_active_at TEXT", []).ok();
+        // Backfill last_active_at = created_at for rows created before the
+        // column existed, so the sidebar time display stays sensible.
+        conn.execute(
+            "UPDATE sessions SET last_active_at = created_at WHERE last_active_at IS NULL",
+            [],
+        ).ok();
         // Messages table
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS messages (
@@ -102,11 +111,22 @@ pub fn init_db() {
 
 pub fn save_message(session_id: &str, role: &str, content: &str) {
     if let Ok(conn) = get_conn() {
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content) VALUES (?1, ?2, ?3)",
-            params![session_id, role, content],
-        ).ok();
+        save_message_on(&conn, session_id, role, content);
     }
+}
+
+pub(crate) fn save_message_on(conn: &Connection, session_id: &str, role: &str, content: &str) {
+    // Insert the message, then bump the session's last_active_at so the
+    // sidebar time and ordering reflect the freshest activity (covers both
+    // user-sent and agent-responded messages, since both go through here).
+    let _ = conn.execute(
+        "INSERT INTO messages (session_id, role, content) VALUES (?1, ?2, ?3)",
+        params![session_id, role, content],
+    );
+    let _ = conn.execute(
+        "UPDATE sessions SET last_active_at = datetime('now','localtime') WHERE id = ?1",
+        params![session_id],
+    );
 }
 
 pub fn search_messages(query: &str, limit: usize) -> Vec<SearchResult> {
@@ -175,23 +195,50 @@ pub fn save_session(
     acp_session_id: &str,
 ) {
     if let Ok(conn) = get_conn() {
-        match conn.execute(
-            "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, archived, acp_session_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now', 'localtime'), ?9, ?10)",
-            params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id],
-        ) {
-            Ok(_) => {},
-            Err(e) => rjlog!("[DB ERROR] save_session failed: {}", e),
-        }
+        save_session_on(&conn, id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id);
+    }
+}
+
+pub(crate) fn save_session_on(
+    conn: &Connection,
+    id: &str,
+    cli: &str,
+    cli_display_name: &str,
+    title: &str,
+    directory: &str,
+    status: &str,
+    pid: Option<i64>,
+    pinned: i64,
+    archived: i64,
+    acp_session_id: &str,
+) {
+    // A brand-new session's last_active_at starts equal to its created_at so
+    // the sidebar sorts it at creation time. INSERT OR REPLACE also covers
+    // later updates from save_session — for those we keep the existing
+    // last_active_at (the COALESCE picks up the row's prior value).
+    let result = conn.execute(
+        "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, last_active_at, archived, acp_session_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 COALESCE((SELECT created_at FROM sessions WHERE id = ?1), datetime('now', 'localtime')),
+                 COALESCE((SELECT last_active_at FROM sessions WHERE id = ?1), datetime('now', 'localtime')),
+                 ?9, ?10)",
+        params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id],
+    );
+    if let Err(e) = result {
+        rjlog!("[DB ERROR] save_session failed: {}", e);
     }
 }
 
 pub fn get_sessions() -> Vec<SessionRecord> {
     let conn = match get_conn() { Ok(c) => c, Err(e) => { rjlog!("[DB ERROR] get_conn failed: {}", e); return vec![]; } };
+    get_sessions_on(&conn)
+}
+
+pub(crate) fn get_sessions_on(conn: &Connection) -> Vec<SessionRecord> {
     let mut stmt = match conn.prepare(
-        "SELECT id, cli, cli_display_name, title, directory, model, status, pid, pinned, created_at, archived, acp_session_id
+        "SELECT id, cli, cli_display_name, title, directory, model, status, pid, pinned, created_at, last_active_at, archived, acp_session_id
          FROM sessions
-         ORDER BY pinned DESC, created_at DESC"
+         ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC"
     ) { Ok(s) => s, Err(e) => { rjlog!("[DB ERROR] prepare get_sessions failed: {}", e); return vec![]; } };
 
     let results = stmt.query_map([], |row| {
@@ -206,8 +253,9 @@ pub fn get_sessions() -> Vec<SessionRecord> {
             pid: row.get(7)?,
             pinned: row.get(8)?,
             created_at: row.get(9)?,
-            archived: row.get(10)?,
-            acp_session_id: row.get(11)?,
+            last_active_at: row.get(10)?,
+            archived: row.get(11)?,
+            acp_session_id: row.get(12)?,
         })
     });
 
@@ -215,6 +263,19 @@ pub fn get_sessions() -> Vec<SessionRecord> {
         Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
         Err(_) => vec![],
     }
+}
+
+pub fn touch_session(id: &str) {
+    if let Ok(conn) = get_conn() {
+        touch_session_on(&conn, id);
+    }
+}
+
+pub(crate) fn touch_session_on(conn: &Connection, id: &str) {
+    let _ = conn.execute(
+        "UPDATE sessions SET last_active_at = datetime('now', 'localtime') WHERE id = ?1",
+        params![id],
+    );
 }
 
 pub fn set_session_archived(id: &str, archived: bool) {
@@ -279,4 +340,120 @@ pub fn delete_session(id: &str) -> Result<()> {
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
     eprintln!("[delete_session] Deleted session: {}", id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Open an in-memory database with the same schema `init_db` produces.
+    /// Tests use this to avoid touching the real `~/.runjam/runjam.db`.
+    fn open_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Schema mirror of `init_db` (the relevant subset). Kept in sync
+        // manually — both live in this file, so a divergence is caught by
+        // tests. The `last_active_at` column is the one under test.
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                cli TEXT NOT NULL,
+                cli_display_name TEXT NOT NULL,
+                title TEXT,
+                directory TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                pid INTEGER,
+                pinned INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+                last_active_at TEXT,
+                archived INTEGER DEFAULT 0,
+                acp_session_id TEXT DEFAULT '',
+                model TEXT DEFAULT ''
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );"
+        ).unwrap();
+        conn
+    }
+
+    #[test]
+    fn new_session_gets_last_active_at_equal_to_created_at() {
+        let conn = open_test_db();
+        save_session_on(
+            &conn,
+            "s1", "claude", "Claude", "title", "/tmp", "running",
+            None, 0, 0, "",
+        );
+        let rec = get_one_session_on(&conn, "s1").unwrap();
+        assert_eq!(rec.last_active_at.as_deref(), Some(rec.created_at.as_str()));
+    }
+
+    #[test]
+    fn touch_session_updates_last_active_at() {
+        let conn = open_test_db();
+        save_session_on(
+            &conn, "s1", "claude", "Claude", "title", "/tmp", "running",
+            None, 0, 0, "",
+        );
+        let before = get_one_session_on(&conn, "s1").unwrap().last_active_at.unwrap();
+        // Sleep past the 1-second granularity of `datetime('now')` so the
+        // timestamp actually changes.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        touch_session_on(&conn, "s1");
+        let after = get_one_session_on(&conn, "s1").unwrap().last_active_at.unwrap();
+        assert_ne!(before, after, "touch_session should change last_active_at");
+    }
+
+    #[test]
+    fn save_message_also_touches_session_last_active_at() {
+        let conn = open_test_db();
+        save_session_on(
+            &conn, "s1", "claude", "Claude", "title", "/tmp", "running",
+            None, 0, 0, "",
+        );
+        let before = get_one_session_on(&conn, "s1").unwrap().last_active_at.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        save_message_on(&conn, "s1", "user", "hi");
+        let after = get_one_session_on(&conn, "s1").unwrap().last_active_at.unwrap();
+        assert_ne!(before, after, "save_message should also touch the session");
+    }
+
+    #[test]
+    fn get_sessions_orders_by_last_active_at_desc() {
+        let conn = open_test_db();
+        save_session_on(&conn, "old", "claude", "C", "t", "/tmp", "running", None, 0, 0, "");
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        save_session_on(&conn, "new", "claude", "C", "t", "/tmp", "running", None, 0, 0, "");
+        // Order it so 'new' ends up on top by touching it last.
+        touch_session_on(&conn, "new");
+        let ordered = get_sessions_on(&conn);
+        assert_eq!(ordered[0].id, "new");
+        assert_eq!(ordered[1].id, "old");
+    }
+
+    // ── test-only read helpers ────────────────────────────────────
+
+    fn get_one_session_on(conn: &Connection, id: &str) -> Option<TestSession> {
+        conn.query_row(
+            "SELECT id, created_at, last_active_at FROM sessions WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok(TestSession {
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                last_active_at: row.get(2)?,
+            }),
+        ).ok()
+    }
+
+    #[derive(Debug)]
+    struct TestSession {
+        id: String,
+        created_at: String,
+        last_active_at: Option<String>,
+    }
 }
