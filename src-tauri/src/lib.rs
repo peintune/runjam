@@ -262,6 +262,11 @@ pub fn run() {
                 telemetry::flush_async(&worker_handle);
             });
 
+            // Warm the terminal's cached user PATH in the background: probing the
+            // interactive shell's PATH (nvm/conda/etc.) takes seconds on the
+            // first run, so start it now so the first terminal spawn never blocks.
+            std::thread::spawn(|| commands::term_cmd::prefetch_user_path());
+
             // `titleBarStyle: Overlay` + `hiddenTitle` in tauri.conf.json are
             // macOS-only. On Windows they are ignored, so the app would show a
             // native title bar on top of our custom in-app nav bar (the h-8

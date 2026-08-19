@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { X, Trash2, Plus, TerminalIcon } from "lucide-vue-next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { useToast } from "../composables/useToast";
 
 const props = defineProps<{
   cwd?: string;
@@ -390,7 +391,7 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   // isn't dropped. Solution: attach the listener immediately, but buffer any
   // incoming output until the history has finished writing (historyDone), then
   // flush the buffer. This preserves ordering AND doesn't drop early output.
-  let historyDone = !tab.pendingBuffer;
+  let historyDone = true; // recomputed after the pending drain below
   const pendingOutput: (string | Uint8Array)[] = [];
 
   if (!tab.unlisten) {
@@ -410,8 +411,24 @@ async function mountTerminal(tab: TabState, myGen?: number) {
     );
   }
 
+  // Drain PTY output the backend buffered BEFORE the listener attached. Called
+  // after listen() so nothing can fall between the drain and the listener: any
+  // output produced from here on flows through the event channel above. Fixes
+  // lost history when a session switch races the initial xterm mount (the tab
+  // had no term yet, so saveDirectoryState couldn't capture its buffer).
+  let pendingData: Uint8Array | undefined;
+  try {
+    const raw = await invoke<number[] | null>("take_terminal_pending", {
+      terminalId: tab.id,
+    });
+    if (raw && raw.length) pendingData = new Uint8Array(raw);
+  } catch {
+    // Terminal already killed on the backend — nothing to restore.
+  }
+
   // If this tab was superseded by a newer session switch while we awaited the
-  // listener, tear down what we just set up (the tab is no longer current).
+  // listener (or the pending drain), tear down what we just set up (the tab is
+  // no longer current).
   if (myGen !== undefined && myGen !== initGeneration) {
     // The tab may already have been disposed by teardownCurrentTabs. If term is
     // still alive, dispose it; always unlisten to avoid leaking the listener.
@@ -426,20 +443,34 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   }
 
   // Write captured history (chunked so a large scrollback doesn't block the
-  // main thread). When done, flush any output that arrived during the write.
-  if (tab.pendingBuffer) {
-    const history = tab.pendingBuffer;
-    tab.pendingBuffer = undefined;
+  // main thread): first the saved buffer (if any), then the pre-mount PTY
+  // output drained above, then flush any output that arrived during the write.
+  const savedHistory = tab.pendingBuffer;
+  tab.pendingBuffer = undefined;
+  const hasHistory = !!savedHistory || !!pendingData;
+  historyDone = !hasHistory;
+  const flushPendingOutput = () => {
+    historyDone = true;
+    if (tab.term !== term) return;
+    for (const d of pendingOutput) term.write(d);
+    pendingOutput.length = 0;
+  };
+  if (hasHistory) {
     // Guard: the tab may have been disposed by teardownCurrentTabs while we
     // awaited the listener (lazy-mount via switchTab has no caller generation
     // bump) — writing into a disposed xterm would throw.
     if (tab.term !== term) return;
-    writeChunked(term, history, () => {
-      historyDone = true;
-      if (tab.term !== term) return;
-      for (const d of pendingOutput) term.write(d);
-      pendingOutput.length = 0;
-    });
+    if (savedHistory) {
+      writeChunked(term, savedHistory, () => {
+        if (tab.term !== term) return;
+        if (pendingData) term.write(pendingData, flushPendingOutput);
+        else flushPendingOutput();
+      });
+    } else if (pendingData) {
+      term.write(pendingData, flushPendingOutput);
+    } else {
+      flushPendingOutput();
+    }
   }
 
   // fit() must only run while this tab's term is still the live one — after a
@@ -485,8 +516,29 @@ const spawnedCwds = new Set<string>();
 // still the latest before applying its result — stale inits abandon themselves.
 let initGeneration = 0;
 
+// One-time hint when the backend runs terminals in lightweight shell mode (the
+// user's rc config is heavy, e.g. oh-my-zsh/p10k). Tell them why the terminal
+// looks bare so it isn't mistaken for a bug.
+let shellModeHintShown = false;
+const { showWarning } = useToast();
+async function maybeHintLightweightShell() {
+  if (shellModeHintShown) return;
+  shellModeHintShown = true;
+  try {
+    const mode = await invoke<string>("get_terminal_shell_mode");
+    if (mode === "lightweight") {
+      showWarning(
+        "Your shell config is heavy, so the terminal runs in lightweight mode to reduce CPU usage (rc files are not loaded)."
+      );
+    }
+  } catch {
+    // Backend without the command (older build) — ignore.
+  }
+}
+
 async function initForCwd(cwd: string) {
   const myGen = ++initGeneration;
+  maybeHintLightweightShell();
   const restored = await restoreDirectoryState(cwd);
   if (myGen !== initGeneration) return; // superseded by a newer switch
   if (restored) {
