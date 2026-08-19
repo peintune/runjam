@@ -98,26 +98,27 @@ const userMessages = computed(() => {
     .filter(m => m.role === 'user' && m.content);
 });
 
-function checkScrollPosition() {
-  const el = messageContainer.value;
-  if (!el) return;
-  const threshold = 100;
-  showScrollToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight > threshold;
-}
-
 // ═══ Smart auto-scroll (stick-to-bottom) ═══
 // 只在用户位于底部附近时自动跟随滚动；用户向上滚动查看历史后暂停跟随，
 // 滚回底部附近自动恢复。避免会话生成过程中被强制拉回底部、无法上翻。
 const STICK_THRESHOLD = 100;
 const stickToBottom = ref(true);
 
+// scroll 事件高频触发，同步读 scrollHeight/clientHeight 会强制布局。
+// 用 rAF 节流：同一帧内多次 scroll 只算一次，一次布局读取同时算出
+// stickToBottom 与 showScrollToBottom。
+let scrollCheckPending = false;
 function onChatScroll() {
-  const el = messageContainer.value;
-  if (el) {
+  if (scrollCheckPending) return;
+  scrollCheckPending = true;
+  requestAnimationFrame(() => {
+    scrollCheckPending = false;
+    const el = messageContainer.value;
+    if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     stickToBottom.value = distFromBottom <= STICK_THRESHOLD;
-  }
-  checkScrollPosition();
+    showScrollToBottom.value = distFromBottom > 100;
+  });
 }
 
 function scrollToMessage(msgIndex: number) {
@@ -713,15 +714,12 @@ function scrollToBottom() {
   // 用户手动点击"回到底部"（或切换会话）时恢复自动跟随
   stickToBottom.value = true;
   showScrollToBottom.value = false;
-  nextTick(() => {
+  // 单次 rAF 设置即可：原 nextTick + rAF 双查会对超大 DOM 触发两次强制布局
+  // （读 scrollHeight + 写 scrollTop）。响应式更新在 rAF 回调前已 flush；
+  // 流式期间的持续跟随由 watch(messages) 负责。
+  requestAnimationFrame(() => {
     if (messageContainer.value) {
       messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
-      // For completed sessions, double-check after paint
-      requestAnimationFrame(() => {
-        if (messageContainer.value) {
-          messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
-        }
-      });
     }
   });
 }
