@@ -1782,6 +1782,18 @@ async function handleSend() {
   }
 
   if (store.activeSession?.id) {
+    // 用户消息入列。放在模型操作（setAgentModel / ensureAgentProcessUsesModel，
+    // 可能耗时或抛错）之前，保证这条消息无论后续发生什么都一定显示在会话里——
+    // 新会话创建后视图实例刚切换，任何一次异常都可能导致它丢失。
+    const sid = effectiveSessionId.value;
+    const state = getSessionState(sid);
+    state.messages.push({role:"user",content:userDisplay});
+    syncMessagesToView(state);
+    msgStore.setMessages(sid, [...state.messages]);
+    saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
+  }
+
+  if (store.activeSession?.id) {
     const sessionId = effectiveSessionId.value;
     if (store.activeSession.status === 'idle') {
       store.activeSession.status = 'running';
@@ -1799,22 +1811,26 @@ async function handleSend() {
       // 若进程启动时用的模型与本次不同，运行中的进程仍使用启动时的旧模型
       //（进程环境变量在启动时固化，如 gemini 的 GEMINI_MODEL），必须重启
       // 进程才能让新模型生效。重启会把 freshAgentProcess 置为 true，下面的
-      // 历史注入就会带上最近对话，新进程因此仍保有上下文。
-      await ensureAgentProcessUsesModel(sessionId, sessionModel);
+      // 历史注入就会带上最近对话，新进程因此仍保有上下文。重启失败不阻塞
+      // 发送（旧进程可能仍可用），只记录错误。
+      try {
+        await ensureAgentProcessUsesModel(sessionId, sessionModel);
+      } catch (err) {
+        console.error("ensureAgentProcessUsesModel failed:", err);
+      }
     }
     // 上下文注入：仅当 Agent 进程是刚启动的（freshAgentProcess）才需要把历史
-    // 消息拼进第一条 prompt。两个顺序约束很关键——
-    //   1) 必须在模型处理（可能重启进程）之后计算，否则进程刚被重启而历史已经
-    //      消费掉，新进程收到空上下文，Agent 会回答“我没有上下文”；
-    //   2) 必须在当前用户消息入列之前计算，否则当前消息会被重复计入历史
-    //      （"Previous conversation: ...user: 1... --- New message: 1"），
-    //      让 Agent 误以为消息被截断（“I only received '1'”）。
+    // 消息拼进第一条 prompt。必须在模型处理（可能重启进程）之后计算——否则进程
+    // 刚被重启而历史已经消费掉，新进程收到空上下文（“I only received '1'”）。
+    // 用户消息已在上面入列，这里先排除最后一条（当前消息），避免它被重复计入
+    // 历史（"Previous conversation: ...user: 1... --- New message: 1"）。
     let history: string[] | undefined = undefined;
     if (store.activeSession?.freshAgentProcess) {
       const sessionMsgs = msgStore.getMessages(sessionId);
-      if (sessionMsgs.length > 1) {
+      const prevMsgs = sessionMsgs.length > 0 ? sessionMsgs.slice(0, -1) : sessionMsgs;
+      if (prevMsgs.length > 0) {
         // 最多取最后2轮对话（4条消息：user/agent/user/agent）
-        const recentMsgs = sessionMsgs.slice(-4);
+        const recentMsgs = prevMsgs.slice(-4);
         history = recentMsgs
           .filter(m => m.content)
           .map(m => `${m.role}: ${m.content}`);
@@ -1822,15 +1838,6 @@ async function handleSend() {
       // 历史已取出，标记为非新进程
       store.activeSession.freshAgentProcess = false;
       store.sessions = [...store.sessions];
-    }
-    // 用户消息入列（在 history 计算之后，保证历史里不包含本条消息）
-    {
-      const sid = effectiveSessionId.value;
-      const state = getSessionState(sid);
-      state.messages.push({role:"user",content:userDisplay});
-      syncMessagesToView(state);
-      msgStore.setMessages(sid, [...state.messages]);
-      saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
     }
     // Arm the auto-retry loop before dispatching: the first failure shows
     // "try 1/3" on the chat and re-sends after a short delay, up to RETRY_MAX
