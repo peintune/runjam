@@ -1071,3 +1071,17 @@ function truncateLabel(label: string, maxLen = 32): string {
     </template>
   </div>
 </template>
+
+<style scoped>
+/* ── content-visibility：让浏览器原生跳过离屏消息组的布局/渲染 ──
+   IntersectionObserver 决定"是否渲染真实内容"（placeholder ↔ 完整 DOM），
+   这里决定"已渲染但离屏的组不再参与布局/绘制"。KeepAlive 恢复组件时，
+   离屏组不再逐个 layout——这是"重新点击会话卡几秒"的主要来源之一。
+   contain-intrinsic-size: auto 140px：离屏时用浏览器记忆的上次真实尺寸占位
+   （auto 关键字），滚动条高度真实、无跳变。auto 不支持的旧内核（老
+   WKWebView）会整体忽略这两条声明，退化为现状——无优化但不破坏功能。 */
+.msg-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
+}
+</style>
