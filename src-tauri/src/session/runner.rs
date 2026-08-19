@@ -110,6 +110,18 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Whether a backend client (agent process) currently exists AND is still
+    /// running for a session. The frontend uses this after a webview reload to
+    /// avoid restarting a still-alive agent — restarting would wipe the
+    /// process's in-memory session context (conversation history).
+    pub fn has_client(&self, id: &str) -> bool {
+        let clients = self.clients.lock().unwrap();
+        match clients.get(id) {
+            Some(ClientType::Acp(acp, _)) => acp.lock().unwrap().is_alive(),
+            None => false,
+        }
+    }
+
     /// Live-update the permission mode of a running session's ACP client
     /// (e.g. switching out of Plan Mode mid-conversation).
     pub fn set_permission_mode(&self, id: &str, mode: &str) -> Result<(), String> {

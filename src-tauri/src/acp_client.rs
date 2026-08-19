@@ -1766,6 +1766,17 @@ impl AcpClient {
         self.process.id()
     }
 
+    /// Whether the agent process is still running. The session manager's client
+    /// map isn't cleaned up when a process exits on its own (only stop() removes
+    /// entries), so presence in the map alone can't be trusted — try_wait tells
+    /// a live process apart from a zombie entry whose stdin writes would fail.
+    pub fn is_alive(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
+        matches!(self.process.try_wait(), Ok(None))
+    }
+
     pub async fn new(agent_id: &str, _session_id: &str, app: &AppHandle) -> Result<Self, String> {
         rjlog!("[ACP DEBUG] Creating test ACP client for agent: {}", agent_id);
 

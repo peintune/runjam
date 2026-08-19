@@ -157,6 +157,7 @@ pub fn run() {
             commands::search_cmd::delete_archived_sessions,
             commands::session_cmd::start_session,
             commands::session_cmd::stop_session,
+            commands::session_cmd::session_alive,
             commands::session_cmd::send_input,
             commands::session_cmd::respond_interaction,
             commands::session_cmd::set_session_permission_mode,

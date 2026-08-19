@@ -60,6 +60,13 @@ export async function stopSession(id: string): Promise<void> {
   return invoke("stop_session", { id });
 }
 
+/** Whether a backend agent process still exists for the session. Used after a
+ *  webview reload to avoid restarting a still-alive agent (which would wipe
+ *  its in-process conversation context). */
+export async function sessionAlive(id: string): Promise<boolean> {
+  return invoke<boolean>("session_alive", { id });
+}
+
 export async function listSessions(): Promise<SessionInfo[]> {
   return invoke<SessionInfo[]>("list_sessions");
 }

@@ -126,6 +126,19 @@ pub async fn stop_session(
     res
 }
 
+/// Whether a backend agent process still exists for the session. After a
+/// webview reload (dev HMR full-reload from agent files landing in the project
+/// tree) the backend process usually survives — the frontend uses this to avoid
+/// killing it and losing the in-process conversation context.
+#[tauri::command]
+pub async fn session_alive(
+    manager: State<'_, Mutex<SessionManager>>,
+    id: String,
+) -> Result<bool, String> {
+    let mgr = manager.lock().map_err(|e| e.to_string())?;
+    Ok(mgr.has_client(&id))
+}
+
 #[tauri::command]
 pub async fn send_input(
     app: tauri::AppHandle,

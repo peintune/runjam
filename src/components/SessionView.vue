@@ -7,7 +7,7 @@ import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput, startSession as apiStartSession, stopSession as tauriStopSession, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
+import { sendInput, startSession as apiStartSession, stopSession as tauriStopSession, sessionAlive, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession, updateSessionModel } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
@@ -1750,61 +1750,41 @@ async function handleSend() {
       suppressSkillSync = false;
     }
   } else if (store.activeSession.status === 'stopped' || store.activeSession.status === 'error') {
-    // Restart backend only if process is truly dead
+    // Restart backend only if process is truly dead. After a webview reload
+    // (dev HMR full-reload from agent files landing in the project tree) the
+    // backend process usually survives — only the webview reloaded. Restarting
+    // it anyway would wipe its in-process session memory, so the next message
+    // lands in an empty context ("I only received '1'"). Check liveness first.
     const s = store.activeSession;
-    try {
-      const dirPathForRestart = s.directory || dirPath.value || undefined;
-      // If the session was restored after a webview reload, the backend process
-      // may still be alive (only the webview reloaded). Stop it first so the
-      // restart doesn't orphan the old agent process.
-      try { await tauriStopSession(s.id); } catch {}
-      await apiStartSession(s.cli, s.cliDisplayName, dirPathForRestart, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
-      s.status = 'running';
+    const alive = await sessionAlive(s.id);
+    if (!alive) {
+      // Process is truly gone — start a fresh one. freshAgentProcess makes the
+      // send flow below inject the recent conversation as context.
+      try {
+        await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+      } catch (err) {
+        console.error("Failed to restart session:", err);
+        // Show error in chat instead of calling sendInput (which would fail with "No client for session")
+        const state = getSessionState(s.id);
+        state.messages.push({role:"user",content:userDisplay});
+        state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
+        syncMessagesToView(state);
+        msgStore.setMessages(s.id, [...state.messages]);
+        saveConversationMessage(s.id, "user", userDisplay).catch(()=>{});
+        return;
+      }
       s.freshAgentProcess = true;
-      store.sessions = [...store.sessions];
-      // 加载历史消息用于恢复会话上下文
-      await loadSessionMessages(s.id);
-    } catch (err) {
-      console.error("Failed to restart session:", err);
-      // Show error in chat instead of calling sendInput (which would fail with "No client for session")
-      const state = getSessionState(s.id);
-      state.messages.push({role:"user",content:userDisplay});
-      state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
-      syncMessagesToView(state);
-      msgStore.setMessages(s.id, [...state.messages]);
-      saveConversationMessage(s.id, "user", userDisplay).catch(()=>{});
-      return;
     }
+    s.status = 'running';
+    store.sessions = [...store.sessions];
+    // 加载历史消息用于恢复会话上下文
+    await loadSessionMessages(s.id);
   }
 
   if (store.activeSession?.id) {
-    const sid = effectiveSessionId.value;
-    const state = getSessionState(sid);
-    state.messages.push({role:"user",content:userDisplay});
-    syncMessagesToView(state);
-    msgStore.setMessages(sid, [...state.messages]);
-    saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
-  }
-
-  if(store.activeSession) {
     const sessionId = effectiveSessionId.value;
     if (store.activeSession.status === 'idle') {
       store.activeSession.status = 'running';
-      store.sessions = [...store.sessions];
-    }
-    // 如果是新启动的Agent进程，把历史消息传给后端作为上下文（最多2轮）
-    let history: string[] | undefined = undefined;
-    if (store.activeSession?.freshAgentProcess) {
-      const sessionMsgs = msgStore.getMessages(sessionId);
-      if (sessionMsgs.length > 1) {
-        // 最多取最后2轮对话（4条消息：user/agent/user/agent）
-        const recentMsgs = sessionMsgs.slice(-4);
-        history = recentMsgs
-          .filter(m => m.content)
-          .map(m => `${m.role}: ${m.content}`);
-      }
-      // 发送完历史消息后，标记为非新进程
-      store.activeSession.freshAgentProcess = false;
       store.sessions = [...store.sessions];
     }
     invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
@@ -1818,8 +1798,39 @@ async function handleSend() {
       await setAgentModel(store.activeSession.cli, sessionModel).catch(() => {});
       // 若进程启动时用的模型与本次不同，运行中的进程仍使用启动时的旧模型
       //（进程环境变量在启动时固化，如 gemini 的 GEMINI_MODEL），必须重启
-      // 进程才能让新模型生效。重启后 freshAgentProcess 会把历史作为上下文。
+      // 进程才能让新模型生效。重启会把 freshAgentProcess 置为 true，下面的
+      // 历史注入就会带上最近对话，新进程因此仍保有上下文。
       await ensureAgentProcessUsesModel(sessionId, sessionModel);
+    }
+    // 上下文注入：仅当 Agent 进程是刚启动的（freshAgentProcess）才需要把历史
+    // 消息拼进第一条 prompt。两个顺序约束很关键——
+    //   1) 必须在模型处理（可能重启进程）之后计算，否则进程刚被重启而历史已经
+    //      消费掉，新进程收到空上下文，Agent 会回答“我没有上下文”；
+    //   2) 必须在当前用户消息入列之前计算，否则当前消息会被重复计入历史
+    //      （"Previous conversation: ...user: 1... --- New message: 1"），
+    //      让 Agent 误以为消息被截断（“I only received '1'”）。
+    let history: string[] | undefined = undefined;
+    if (store.activeSession?.freshAgentProcess) {
+      const sessionMsgs = msgStore.getMessages(sessionId);
+      if (sessionMsgs.length > 1) {
+        // 最多取最后2轮对话（4条消息：user/agent/user/agent）
+        const recentMsgs = sessionMsgs.slice(-4);
+        history = recentMsgs
+          .filter(m => m.content)
+          .map(m => `${m.role}: ${m.content}`);
+      }
+      // 历史已取出，标记为非新进程
+      store.activeSession.freshAgentProcess = false;
+      store.sessions = [...store.sessions];
+    }
+    // 用户消息入列（在 history 计算之后，保证历史里不包含本条消息）
+    {
+      const sid = effectiveSessionId.value;
+      const state = getSessionState(sid);
+      state.messages.push({role:"user",content:userDisplay});
+      syncMessagesToView(state);
+      msgStore.setMessages(sid, [...state.messages]);
+      saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
     }
     // Arm the auto-retry loop before dispatching: the first failure shows
     // "try 1/3" on the chat and re-sends after a short delay, up to RETRY_MAX
@@ -1851,7 +1862,12 @@ async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: stri
   const s = store.activeSession;
   if (!s || !sessionModel) return;
   const used = lastUsedModel.get(sessionId);
-  if (used !== sessionModel && s.status !== 'stopped' && s.status !== 'error') {
+  // 仅在“明确知道”进程用的是不同模型时才重启。lastUsedModel 是内存 Map，
+  // webview 刷新（dev 下 agent 文件落盘会触发 vite 整页重载）后被清空——
+  // 此时 used 为 undefined。若照旧重启，会杀掉仍健康、且内存里带着完整会话
+  // 上下文的进程，下一次消息就落进一个空上下文的新会话（“I only received…”）。
+  // 无记录时假定运行中的进程用的就是会话持久化的模型（它本来就是用它启动的）。
+  if (used !== undefined && used !== sessionModel && s.status !== 'stopped' && s.status !== 'error') {
     console.log(`[MODEL-CHANGE] ${sessionId}: ${used ?? '(none)'} -> ${sessionModel}, restarting agent process`);
     try { await tauriStopSession(sessionId); } catch {}
     await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, sessionId, sessionModel, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
