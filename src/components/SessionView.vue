@@ -248,21 +248,18 @@ const ATTACH_ACCEPTED_EXTS = [
 const MAX_ATTACH_TOTAL_CHARS = 100_000;
 
 // ── Context size indicator ────────────────────────────────────
-// The total character count of everything that would be sent to the LLM if
-// the user hit Send right now: the full message history (content + thinking +
-// tool inputs/outputs) plus the text currently typed in the input box. When
+// The total character count of the conversation's message body text
+// (content only — thinking blocks and tool inputs/outputs are display-only
+// and not counted) plus the text currently typed in the input box. When
 // this exceeds MAX_CONTEXT_CHARS the send is blocked — the user has to start
 // a new session to keep going.
 const MAX_CONTEXT_CHARS = 200_000;
 
 function messageCharTotal(m: Message): number {
-  let n = (m.content?.length || 0) + (m.thinking?.length || 0);
-  if (m.toolCalls) {
-    for (const tc of m.toolCalls) {
-      n += (tc.input?.length || 0) + (tc.output?.length || 0);
-    }
-  }
-  return n;
+  // Only the message body (content) counts toward the context size. Thinking
+  // blocks and tool inputs/outputs are display-only in this app — they are not
+  // part of what is sent back to the LLM, so they don't count.
+  return m.content?.length || 0;
 }
 
 const contextCharCount = computed(() => {
@@ -2250,8 +2247,9 @@ watch(messages, (msgs) => {
                   <Sparkles :size="14" />
                 </button>
 
-                <!-- Context size ring: shows accumulated conversation chars as a
-                     fraction of the 200k cap. Click to expand the exact number. -->
+                <!-- Context size ring: shows accumulated message body text
+                     (content only) plus the current input as a fraction of the
+                     200k cap. Click to expand the exact number. -->
                 <div class="relative flex-shrink-0 mr-1 context-ring">
                   <button
                     @click.stop="showContextPopover = !showContextPopover"
