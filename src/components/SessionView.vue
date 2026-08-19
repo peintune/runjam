@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount, onActivated, computed, nextTick } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, onActivated, computed, nextTick, reactive } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRouter } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
@@ -740,13 +740,12 @@ onMounted(async () => {
 onActivated(() => {
   if (props.sessionId) {
     const state = getSessionState(props.sessionId);
-    // Only sync messages if they changed while deactivated (ACP events may
-    // have added new messages). Avoids expensive re-render of cached DOM.
-    if (state.messages.length !== messages.value.length) {
-      messages.value = [...state.messages];
-    }
+    // 后台会话可能继续收到 ACP 事件。建立同引用（Task 2）即可让新增消息
+    // 自动反映到视图；引用不同 = 首次激活或换会话，需滚动到底显示最新。
+    const firstTime = messages.value !== state.messages;
+    syncMessagesToView(state);
     isProcessing.value = state.isProcessing;
-    scrollToBottom();
+    if (firstTime) scrollToBottom();
   }
 });
 
@@ -756,7 +755,7 @@ async function initSession(sid: string) {
   mentionsMap.value = new Map();
   closeMentionPicker();
   const state = getSessionState(sid);
-  messages.value = [...state.messages];
+  syncMessagesToView(state);
   isProcessing.value = state.isProcessing;
   isSessionLoading.value = true;
   if (!unlisteners.has(sid)) {
@@ -810,7 +809,7 @@ watch(() => store.activeSessionId, async (newId) => {
   closeMentionPicker();
   if (newId) {
     const state = getSessionState(newId);
-    messages.value = [...state.messages];
+    syncMessagesToView(state);
     isProcessing.value = state.isProcessing;
     isSessionLoading.value = true;
     if (!unlisteners.has(newId)) {
@@ -859,7 +858,10 @@ function getSessionState(sessionId: string): SessionState {
   let state = sessionStates.get(sessionId);
   if (!state) {
     state = {
-      messages: msgStore.getMessages(sessionId) || [],
+      // reactive()：状态数组本身是响应式 proxy。对它的 push / 原地属性
+      // 修改会自动触发 messages 视图更新（Task 2 建立同引用后）。
+      // reactive(proxy) 返回自身，不会二次包装。
+      messages: reactive(msgStore.getMessages(sessionId) || []),
       activeThinking: "",
       activeContent: "",
       thoughtDuration: "",
@@ -874,6 +876,20 @@ function getSessionState(sessionId: string): SessionState {
   return state;
 }
 
+/**
+ * 让视图消息数组与状态数组建立同一引用。状态数组是 reactive proxy，
+ * 之后 handleAcpEvent 等对 state.messages 的原地修改/追加会自动触发视图
+ * 更新（Vue 追踪 proxy 的数组变更），无需每次整体换数组——整体换数组会
+ * 让 ChatMessages 的引用 watcher 误判为"换会话"，清空 mermaid 渲染缓存并
+ * 重建 displayMap，是重新打开长会话卡顿的主因之一。
+ * 引用已相同时为 no-op（O(1)），可安全地在每个事件分支调用。
+ */
+function syncMessagesToView(state: SessionState) {
+  if (messages.value !== state.messages) {
+    messages.value = state.messages as unknown as Message[];
+  }
+}
+
 async function loadSessionMessages(sessionId: string) {
   const state = getSessionState(sessionId);
   if (state.loaded) return;
@@ -885,11 +901,11 @@ async function loadSessionMessages(sessionId: string) {
         content: m.content,
         isProcessing: false, // historical messages are never live
       }));
-      state.messages = loadedMessages;
+      state.messages = reactive(loadedMessages);
       state.loaded = true;
       msgStore.setMessages(sessionId, [...state.messages]);
       if (effectiveSessionId.value === sessionId) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
       }
     } else {
       state.loaded = true;
@@ -1001,7 +1017,7 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
       isProcessing: true,
     });
     if (isActiveSession) {
-      messages.value = [...state.messages];
+      syncMessagesToView(state);
       msgStore.setMessages(sessionId, messages.value);
     }
     retry.attempts = attempt + 1;
@@ -1020,7 +1036,7 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   });
   clearRetry(state);
   if (isActiveSession) {
-    messages.value = [...state.messages];
+    syncMessagesToView(state);
     isProcessing.value = false;
     msgStore.setMessages(sessionId, messages.value);
   }
@@ -1105,7 +1121,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       }
       state.isProcessing = true;
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         isProcessing.value = true;
         msgStore.setMessages(sessionId, messages.value);
       }
@@ -1161,7 +1177,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         l.thoughtDuration = p.duration;
       }
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1202,7 +1218,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       const lt = ensureAgentMsg(state);
       lt.content = state.activeContent;
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1253,7 +1269,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         });
       }
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1299,7 +1315,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         }
       }
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1319,7 +1335,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         },
       });
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1336,7 +1352,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         sessionId: currentSid,
       };
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
@@ -1397,7 +1413,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         store.sessions = [...store.sessions];
       }
       if (isActiveSession) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         isProcessing.value = false;
         msgStore.setMessages(sessionId, messages.value);
       }
@@ -1759,7 +1775,7 @@ async function handleSend() {
       const state = getSessionState(s.id);
       state.messages.push({role:"user",content:userDisplay});
       state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
-      messages.value = [...state.messages];
+      syncMessagesToView(state);
       msgStore.setMessages(s.id, [...state.messages]);
       saveConversationMessage(s.id, "user", userDisplay).catch(()=>{});
       return;
@@ -1770,7 +1786,7 @@ async function handleSend() {
     const sid = effectiveSessionId.value;
     const state = getSessionState(sid);
     state.messages.push({role:"user",content:userDisplay});
-    messages.value = [...state.messages];
+    syncMessagesToView(state);
     msgStore.setMessages(sid, [...state.messages]);
     saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
   }
@@ -1823,7 +1839,7 @@ async function handleSend() {
       state.messages.push({role:"agent",content:`Error:${err}`});
       state.isProcessing = false;
       if (store.activeSessionId === sessionId) {
-        messages.value = [...state.messages];
+        syncMessagesToView(state);
         isProcessing.value = false;
       }
       msgStore.setMessages(sessionId, [...state.messages]);
@@ -1935,7 +1951,7 @@ async function handleStop() {
       }
     }
     isProcessing.value = false;
-    messages.value = [...state.messages];
+    syncMessagesToView(state);
     msgStore.setMessages(sid, [...state.messages]);
     await store.stopSession(sid);
   }
