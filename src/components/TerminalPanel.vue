@@ -222,12 +222,35 @@ async function createTab(): Promise<TabState> {
   };
 }
 
-async function addTab() {
+/** Create a new tab and mount it. Accepts the init generation (from
+ *  `initForCwd`) so a spawn that completes AFTER a newer session switch can
+ *  abandon itself: it kills the freshly-spawned shell instead of pushing a
+ *  zombie tab for the wrong directory (which previously made the terminal show
+ *  a fresh shell / lost history after a rapid session switch). Called without
+ *  an argument from the "+" button, where the user action is always valid. */
+async function addTab(myGen?: number): Promise<TabState | null> {
   const tab = await createTab();
+  if (myGen !== undefined && myGen !== initGeneration) {
+    // Superseded while the shell was spawning — kill it, don't mount it.
+    invoke("kill_terminal", { terminalId: tab.id }).catch(() => {});
+    return null;
+  }
   tabs.value.push(tab);
   activeTabIndex.value = tabs.value.length - 1;
+  spawnedCwds.add(tab.cwd);
   await nextTick();
-  await mountTerminal(tab);
+  if (myGen !== undefined && myGen !== initGeneration) {
+    // Superseded during the frame — undo the push so no zombie tab survives.
+    tabs.value = tabs.value.filter((t) => t.id !== tab.id);
+    activeTabIndex.value = tabs.value.length - 1;
+    spawnedCwds.delete(tab.cwd);
+    invoke("kill_terminal", { terminalId: tab.id }).catch(() => {});
+    return null;
+  }
+  mountTerminal(tab, myGen).catch((err) => {
+    console.error("Failed to mount terminal:", err);
+  });
+  return tab;
 }
 
 /** Kill every backend terminal process and clear all local state for the
@@ -257,6 +280,14 @@ function closeTab(index: number) {
 
   tabs.value.splice(index, 1);
 
+  // Drop this tab from the directory's saved state so a later restore can't
+  // resurrect a tab whose backend shell was just killed.
+  const saved = directoryStates.get(tab.cwd);
+  if (saved) {
+    saved.tabs = saved.tabs.filter((t) => t.id !== tab.id);
+    if (saved.tabs.length === 0) directoryStates.delete(tab.cwd);
+  }
+
   if (tabs.value.length === 0) {
     activeTabIndex.value = -1;
   } else if (activeTabIndex.value >= tabs.value.length) {
@@ -273,8 +304,18 @@ function switchTab(index: number) {
   activeTabIndex.value = index;
   nextTick(() => {
     const tab = tabs.value[index];
-    if (tab) {
+    if (!tab) return;
+    if (tab.term) {
       setTimeout(() => tab.fitAddon?.fit(), 50);
+    } else if (!tab.unlisten) {
+      // A restored tab that hasn't been mounted yet (on restore only the active
+      // tab is mounted). Mount it lazily now that it's the visible tab — this
+      // writes its captured history back into a fresh xterm. Passing the
+      // current generation lets mountTerminal abandon itself (and unlisten) if
+      // a session switch happens while the listener is being attached.
+      mountTerminal(tab, initGeneration).catch((err) => {
+        console.error("Failed to mount terminal:", err);
+      });
     }
   });
 }
@@ -332,6 +373,13 @@ async function mountTerminal(tab: TabState, myGen?: number) {
     }).catch(() => {});
   });
 
+  // Keep the backend PTY's size in sync with the rendered xterm. Without this
+  // the shell stays at 80x24 and long lines wrap at 80 columns, causing
+  // re-wrap/re-render jank on every fit.
+  term.onResize(({ cols, rows }) => {
+    invoke("resize_terminal", { terminalId: tab.id, rows, cols }).catch(() => {});
+  });
+
   tab.term = term;
   tab.fitAddon = fitAddon;
 
@@ -382,8 +430,13 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   if (tab.pendingBuffer) {
     const history = tab.pendingBuffer;
     tab.pendingBuffer = undefined;
+    // Guard: the tab may have been disposed by teardownCurrentTabs while we
+    // awaited the listener (lazy-mount via switchTab has no caller generation
+    // bump) — writing into a disposed xterm would throw.
+    if (tab.term !== term) return;
     writeChunked(term, history, () => {
       historyDone = true;
+      if (tab.term !== term) return;
       for (const d of pendingOutput) term.write(d);
       pendingOutput.length = 0;
     });
@@ -455,13 +508,14 @@ async function initForCwd(cwd: string) {
       });
     }
   } else if (!spawnedCwds.has(cwd)) {
-    // Never spawned a shell for this directory — create one. The generation
-    // token guarantees this is the latest init (no concurrent double-spawn), so
-    // mark it as spawned right before addTab actually spawns the process.
+    // Never spawned a shell for this directory — create one. The directory is
+    // only marked as "spawned" once the shell actually exists (inside addTab),
+    // so an abandoned spawn (superseded by a newer switch while the shell was
+    // starting) can't leave the directory marked with neither a tab nor a saved
+    // state — which made later opens show an EMPTY terminal panel.
     await nextTick();
     if (myGen !== initGeneration) return;
-    spawnedCwds.add(cwd);
-    await addTab();
+    await addTab(myGen);
   }
 }
 
@@ -565,7 +619,7 @@ defineExpose({ killAll });
           </button>
         </button>
         <button
-          @click="addTab"
+          @click="addTab()"
           class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#484f58] hover:text-[#8b949e] hover:bg-white/[0.06] transition-colors shrink-0"
           title="New Terminal"
         >

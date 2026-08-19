@@ -278,6 +278,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
           ref="workspacePanelRef"
           v-show="isWorkspaceMode && activeDirectory"
           :show-terminal="showTerminal"
+          :visible="isWorkspaceMode && !!activeDirectory"
           :root-path="activeDirectory"
           @update:show-terminal="handleShowTerminalUpdate"
         />

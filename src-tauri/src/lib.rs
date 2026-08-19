@@ -217,9 +217,13 @@ pub fn run() {
             commands::telemetry_cmd::get_announcements,
             commands::telemetry_cmd::mark_announcement_read,
         ])
-        .on_window_event(|_, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let _ = commands::llama_cmd::stop_llama_server();
+                // Terminate terminal shells — otherwise they leak as orphaned
+                // processes after the app exits (each idle interactive shell
+                // can keep polling prompt state and burning CPU).
+                commands::term_cmd::kill_all_terminals(window.app_handle());
             }
         })
         .setup(|app| {

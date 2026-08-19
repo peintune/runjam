@@ -11,6 +11,11 @@ import { openInFinder } from "../api/app";
 
 const props = defineProps<{
   showTerminal: boolean;
+  /** Whether the whole workspace panel is actually visible (not v-show hidden).
+   *  The terminal only spawns/restores shells when it can be seen — spawning
+   *  for a hidden panel started a zsh for every visited session even though the
+   *  user never saw it, leaking shells and spiking CPU. */
+  visible: boolean;
   rootPath: string;
 }>();
 
@@ -222,7 +227,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
         <TerminalPanel
           ref="terminalPanelRef"
           :cwd="activeDirectory"
-          :active="showTerminal"
+          :active="showTerminal && visible"
           @close="emit('update:showTerminal', false)"
         />
       </div>

@@ -127,12 +127,32 @@ pub fn kill_terminal(
 
 #[tauri::command]
 pub fn resize_terminal(
-    _state: tauri::State<'_, Mutex<TerminalState>>,
-    _terminal_id: u32,
-    _rows: u16,
-    _cols: u16,
+    state: tauri::State<'_, Mutex<TerminalState>>,
+    terminal_id: u32,
+    rows: u16,
+    cols: u16,
 ) -> Result<(), String> {
-    Ok(())
+    let ts = state.lock().unwrap();
+    if let Some(slot) = ts.terminals.get(&terminal_id) {
+        slot.writer
+            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .map_err(|e| e.to_string())
+    } else {
+        Err(format!("Terminal {} not found", terminal_id))
+    }
+}
+
+/// Terminate every backend terminal shell. Called when the app window closes —
+/// without this, shells spawned for the terminal panel stay alive as orphaned
+/// processes (each interactive zsh may keep polling prompt state, burning CPU),
+/// and they accumulate across app restarts because the frontend module state
+/// (tabs/history) is wiped on launch, so the shells can never be reused.
+pub fn kill_all_terminals(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let ts = app.state::<Mutex<TerminalState>>();
+    // Dropping every master closes the PTY → SIGHUP to each shell. The read
+    // threads then observe read errors/EOF and exit.
+    ts.lock().unwrap().terminals.clear();
 }
 
 #[tauri::command]
