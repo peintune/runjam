@@ -43,6 +43,10 @@ const props = defineProps<{
   /** Compact mode: hide text labels in permission/model selectors to save
    *  horizontal space when the chat panel is narrowed by the file tree. */
   compact?: boolean;
+  /** 当前会话是否为可见会话。KeepAlive 保活的非活动 SessionView 仍在后台
+   *  接收 ACP chunk，但它的 ChatMessages 需要渲染轻量占位而不是整份消息
+   *  列表（避免多会话并行流式时主线程被隐藏重渲染吃满）。 */
+  active?: boolean;
   /** Session ID when using KeepAlive cache. When provided, this component
    *  is dedicated to a single session and won't watch store.activeSessionId. */
   sessionId?: string;
@@ -713,6 +717,10 @@ function scrollToBottom() {
 
 // Effective session ID: use prop in KeepAlive mode, store otherwise
 const effectiveSessionId = computed(() => props.sessionId || store.activeSessionId || '');
+
+// 可见性：KeepAlive 模式下只有当前渲染的实例（props.sessionId 等于活动会话）
+// 是可见的；无 props.sessionId（非 KeepAlive 旧路径）时本实例始终可见。
+const isActiveView = computed(() => !props.sessionId || store.activeSessionId === props.sessionId);
 
 // When using KeepAlive (props.sessionId provided), initialize on mount
 // and restore messages on reactivation without re-loading from DB.
@@ -2011,7 +2019,7 @@ watch(messages, (msgs) => {
       <div class="flex-1 relative min-h-0">
         <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
-            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" />
+            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" />
             <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
               <div class="flex items-center gap-2 text-gray-400">
                 <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>

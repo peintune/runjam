@@ -7,6 +7,7 @@ import {
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown, renderCached, clearStreamingCache } from "../composables/useMarkdown";
 import AgentIcon from "./AgentIcon.vue";
+import MessageContent from "./MessageContent.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { recordRender, recordMdParse } from "../lib/diag";
 
@@ -47,7 +48,7 @@ export interface Message {
 }
 
 // ═══ Props ═══
-const props = defineProps<{ messages: Message[]; agentId?: string }>();
+const props = defineProps<{ messages: Message[]; agentId?: string; active?: boolean }>();
 
 // ═══ Message Groups: consecutive agent messages merge into one bubble ═══
 const messageGroups = computed(() => {
@@ -222,6 +223,19 @@ watch(
   },
 );
 
+// 会话隐藏（active=false）时列表整个被 v-if 移除，observer 若还持着旧
+// 的（已卸载）placeholder 元素就会泄漏节点引用。断开后由 ensureGroup
+// 在重新可见时惰性重建。
+watch(
+  () => props.active,
+  (isActive) => {
+    if (isActive === false && visibilityObserver) {
+      visibilityObserver.disconnect();
+      visibilityObserver = null;
+    }
+  },
+);
+
 // ═══ Collapsing state — track EXPANDED, not collapsed (default: hidden) ═══
 const thinkingExpanded = ref<Set<number>>(new Set());
 const toolExpanded = ref<Set<string>>(new Set());
@@ -313,11 +327,18 @@ function stopTick() {
 }
 function startTick() {
   if (tickTimer) return;
-  tickTimer = setInterval(() => { now.value = Date.now(); }, 500);
+  // 1s 一拍（原来 500ms）：所有展示都是"秒"粒度（working Xs / Thinking • Xs），
+  // 1s 更新完全够用，还能少一半的全列表重渲染。
+  tickTimer = setInterval(() => { now.value = Date.now(); }, 1000);
 }
-watch(hasLiveActivity, (active) => {
-  if (active) startTick(); else stopTick();
-}, { immediate: true });
+// 仅当会话可见（active）且有实时内容时才 tick——后台隐藏会话不需要任何重渲染。
+watch(
+  [hasLiveActivity, () => props.active],
+  ([live, isActive]) => {
+    if (live && isActive !== false) startTick(); else stopTick();
+  },
+  { immediate: true },
+);
 
 onBeforeUnmount(() => {
   stopTick();
@@ -361,7 +382,13 @@ function startTypewriter(
     }
     const cur = displayMap[idx][field];
     if (cur.length < fullText.length) {
-      const chunk = 8 + Math.floor(Math.random() * 8);
+      // 自适应步长：剩余越长，每步揭示越多，总步数收敛到 ~40 步左右。
+      // 原先固定 8~16 字符/步，一条 10KB 的长消息要 tick 上千次，每次 tick
+      // 都触发整列表重渲染 + 对增长的切片做一次 markdown 解析——多会话并行
+      // 流式时这就是卡顿的主因。步长自适应后长消息只需 ~40 步，渲染与解析
+      // 开销下降约 20 倍，视觉上仍是从上到下流畅填充。
+      const remaining = fullText.length - cur.length;
+      const chunk = Math.max(8, Math.min(600, Math.ceil(remaining / 40)));
       displayMap[idx][field] = fullText.substring(
         0,
         Math.min(cur.length + chunk, fullText.length),
@@ -602,7 +629,9 @@ watch(
 
       // Only messages explicitly marked as processing get the typewriter effect.
       // Completed/historical messages (isProcessing: false or undefined) render instantly.
-      const isLive = m.isProcessing === true;
+      // 后台隐藏会话（active=false）不做打字机揭示：直接同步完整内容，既不跑
+      // interval 也不触发重渲染；切回可见时内容已就绪，无需回放。
+      const isLive = m.isProcessing === true && props.active !== false;
 
       if (isLive) {
         if (m.thinking && displayMap[i].thinking.length < m.thinking.length)
@@ -729,7 +758,13 @@ function truncateLabel(label: string, maxLen = 32): string {
 </script>
 
 <template>
-  <div ref="chatEl" class="space-y-6 py-2">
+  <!-- 后台隐藏会话（active=false）渲染轻量占位：不建 vnode 树、不调用
+       renderContent，ACP chunk 只触发上面的 watcher 同步 displayMap。
+       否则 KeepAlive 保活的每个后台会话都会在收到自己的 chunk 时对整份
+       消息列表做一次全量重渲染（vnode 重建在分离的 DOM 上进行），多个
+       会话并行流式时主线程就被这些隐藏渲染吃满。切回可见时 list 立即
+       渲染，markdown 有模块级缓存，秒出。 -->
+  <div v-if="props.active !== false" ref="chatEl" class="space-y-6 py-2">
     <!-- ── 历史折叠：头部组收进一个按钮，点击展开并锚定回原位 ── -->
     <button
       v-if="foldedHeadCount > 0"
@@ -978,27 +1013,13 @@ function truncateLabel(label: string, maxLen = 32): string {
               </div>
             </div>
 
-            <!-- Markdown Content for this message -->
-            <div
+            <!-- Markdown Content for this message（Memoized 子组件：html prop
+                 不变时不重设 innerHTML，避免每次重渲染都重新解析整段 HTML） -->
+            <MessageContent
               v-if="item.msg.content"
+              :html="renderContent(item.oi, item.msg)"
               :data-msg-content="item.oi"
               @click="handleContentClick"
-              class="md-content prose prose-base max-w-none
-                prose-p:text-[15px] prose-p:leading-[1.75] prose-p:text-[#1e1e2e] prose-p:my-2.5
-                prose-headings:text-[#111127] prose-headings:font-semibold prose-headings:tracking-tight
-                prose-h1:text-[22px] prose-h1:mt-6 prose-h1:mb-3
-                prose-h2:text-[18px] prose-h2:mt-5 prose-h2:mb-2.5
-                prose-h3:text-[15px] prose-h3:mt-4 prose-h3:mb-2
-                prose-blockquote:border-l-[3px] prose-blockquote:border-indigo-200 prose-blockquote:pl-4 prose-blockquote:my-4 prose-blockquote:text-[#4a4a6a] prose-blockquote:not-italic prose-blockquote:text-[14px]
-                prose-code:bg-[#f1f4f9] prose-code:text-[#c14a6b] prose-code:px-[5px] prose-code:py-[2px] prose-code:rounded-[4px] prose-code:text-[13px] prose-code:font-medium prose-code:before:content-none prose-code:after:content-none
-                prose-pre:bg-transparent prose-pre:p-0 prose-pre:m-0 prose-pre:rounded-none
-                prose-a:text-indigo-500 prose-a:no-underline hover:prose-a:underline prose-a:font-medium
-                prose-strong:text-[#111127] prose-strong:font-semibold
-                prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-li:leading-[1.75] prose-li:text-[15px] prose-li:text-[#1e1e2e]
-                prose-table:text-[13px] prose-th:border prose-th:border-[#e4e7ed] prose-th:bg-[#f8f9fc] prose-th:px-3 prose-th:py-2 prose-th:font-semibold prose-th:text-[#111127] prose-td:border prose-td:border-[#e4e7ed] prose-td:px-3 prose-td:py-2
-                prose-hr:my-5 prose-hr:border-[#e4e7ed]
-                prose-img:rounded-xl"
-              v-html="renderContent(item.oi, item.msg)"
             />
           </template>
 
@@ -1105,6 +1126,8 @@ function truncateLabel(label: string, maxLen = 32): string {
       </template>
     </template>
   </div>
+  <!-- 非活动会话的轻量占位（见上方注释） -->
+  <div v-else class="py-2" />
 </template>
 
 <style scoped>
