@@ -125,6 +125,13 @@ export function clearStreamingCache(): void {
   streamingMdCache.clear();
 }
 
+// ── Mermaid SVG 渲染缓存 ──
+// mermaid.run() 单图 100ms+（布局+排版），同一张图（同一段源码）在会话
+// 重挂载/重激活时会反复渲染。缓存 图源码 → SVG outerHTML，命中时直接注入，
+// 跳过 mermaid.run。只缓存成功渲染的结果（失败走 code-block fallback）。
+const mermaidSvgCache = new Map<string, string>();
+const MERMAID_SVG_CACHE_MAX = 50;
+
 export function renderCached(
   src: string,
   opts: RenderOptions = {},
@@ -245,7 +252,35 @@ export function useMarkdown() {
         },
       });
 
-      await mermaid.default.run({ nodes: mermaidEls });
+      // 命中缓存：直接注入 SVG，跳过 mermaid.run（主要成本）
+      const toRender: HTMLElement[] = [];
+      for (const el of mermaidEls) {
+        const raw = el.textContent || "";
+        const cached = mermaidSvgCache.get(raw);
+        const wrapper = el.closest(".mermaid-block");
+        if (cached && wrapper) {
+          wrapper.innerHTML = cached;
+        } else {
+          toRender.push(el);
+        }
+      }
+
+      if (toRender.length > 0) {
+        await mermaid.default.run({ nodes: toRender });
+        // 收集刚渲染的 SVG 入缓存（key = 图源码）
+        for (const el of toRender) {
+          const raw = el.textContent || "";
+          const wrapper = el.closest(".mermaid-block");
+          const svgEl = wrapper?.querySelector("svg");
+          if (svgEl) {
+            mermaidSvgCache.set(raw, svgEl.outerHTML);
+            if (mermaidSvgCache.size > MERMAID_SVG_CACHE_MAX) {
+              const oldest = mermaidSvgCache.keys().next().value;
+              if (oldest !== undefined) mermaidSvgCache.delete(oldest);
+            }
+          }
+        }
+      }
     } catch (err) {
       console.warn("[useMarkdown] Mermaid render failed, falling back to code block:", err);
       // Replace each mermaid element with a code-block fallback
