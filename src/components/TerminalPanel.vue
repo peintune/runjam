@@ -30,8 +30,9 @@ interface TabState {
   fitAddon: FitAddon | null;
   unlisten: UnlistenFn | null;
   resizeObserver: ResizeObserver | null;
-  /** Buffer text captured when the directory was switched away. Written into
-   *  the new Terminal on mount before the event listener is attached. */
+  /** Buffer text captured when a cached directory is LRU-evicted. Written into
+   *  the new Terminal on the cold path before the event listener is attached,
+   *  so history survives eviction even though the xterm was disposed. */
   pendingBuffer?: string;
 }
 
@@ -44,26 +45,38 @@ const containerEls = ref<Record<number, HTMLElement | null>>({});
 const tabsScrollEl = ref<HTMLElement | null>(null);
 
 // ═══════════════════════════════════════════════════
-// Module-level terminal persistence (per directory)
+// Terminal instance persistence (per directory)
 // ═══════════════════════════════════════════════════
 
+// 主路径：完整 xterm 实例的 LRU 缓存。切换目录/隐藏面板时整组 detach 入
+// 缓存（不 dispose、不 unlisten），后端进程与 listener 保活，xterm buffer
+// 持续累积；切回时 reattach DOM + fit，零重建、零历史写回。
+const LRU_MAX = 4;
+interface CachedDirectory {
+  tabs: TabState[];
+  activeIndex: number;
+  counter: number;
+  /** 最近使用时间戳，用于 LRU 淘汰最久未用的目录 */
+  lastUsed: number;
+}
+const directoryCache = new Map<string, CachedDirectory>();
+
+// 兜底路径：仅存元数据 + buffer 文本。LRU 淘汰时把实例降级成文本保存，
+// 之后再次切回走 restore + writeChunked 冷路径恢复历史（后端进程保留，
+// 只是前端 xterm 重建）。
 interface SavedTab {
   id: number;
   title: string;
   cwd: string;
-  /** Captured xterm buffer text at save time. Restored into the new Terminal
-   *  when this directory is shown again — without this, switching sessions
-   *  destroyed the xterm buffer (term.dispose()) and the historical output
-   *  was lost even though the backend shell process stayed alive. */
+  /** Captured xterm buffer text at eviction time. Restored into the new
+   *  Terminal on the cold path so history survives LRU eviction. */
   bufferText?: string;
 }
-
 interface SavedDirectoryState {
   tabs: SavedTab[];
   activeIndex: number;
   counter: number;
 }
-
 const directoryStates = new Map<string, SavedDirectoryState>();
 
 /** Write a large string to a terminal in chunks, letting xterm process each
@@ -117,23 +130,97 @@ function captureBufferText(term: Terminal): string {
   return lines.join("\r\n").replace(/\r\n+$/, "");
 }
 
-/** Save current tabs metadata (incl. buffer text) for a directory WITHOUT
- *  killing backend processes */
-function saveDirectoryState(cwd: string) {
+// ═══════════════════════════════════════════════════
+// LRU instance cache
+// ═══════════════════════════════════════════════════
+
+/** 切走当前目录：不做 captureBufferText、不 dispose、不 unlisten；把每个
+ *  xterm 的 term.element 从 v-for 容器 detach 出来（否则随容器被 Vue 一起
+ *  移除），整组实例移入 LRU 缓存。后端进程与 listener 保活，xterm buffer
+ *  持续累积——切回时零重建、零历史写回。 */
+function cacheActiveDirectory(cwd: string) {
   if (!cwd || tabs.value.length === 0) return;
-  directoryStates.set(cwd, {
-    tabs: tabs.value.map((t) => ({
+  for (const t of tabs.value) {
+    t.term?.element?.remove();
+  }
+  directoryCache.set(cwd, {
+    tabs: tabs.value,
+    activeIndex: activeTabIndex.value,
+    counter: tabCounter,
+    lastUsed: Date.now(),
+  });
+  evictIfNeeded();
+}
+
+/** LRU 淘汰：缓存满时淘汰最久未用的目录——仅 dispose xterm DOM + unlisten，
+ *  后端进程保留（下次切回走冷路径 + take_terminal_pending 补历史）。与用户
+ *  显式关闭（kill_terminal + 清缓存）严格区分。 */
+function evictIfNeeded() {
+  while (directoryCache.size > LRU_MAX) {
+    let oldestKey: string | null = null;
+    let oldestTs = Infinity;
+    for (const [k, v] of directoryCache) {
+      if (v.lastUsed < oldestTs) {
+        oldestTs = v.lastUsed;
+        oldestKey = k;
+      }
+    }
+    if (!oldestKey) break;
+    evictDirectory(oldestKey);
+  }
+}
+
+function evictDirectory(cwd: string) {
+  const cached = directoryCache.get(cwd);
+  if (!cached) return;
+  directoryCache.delete(cwd);
+  // 降级为文本保存：capture 当前 buffer 到元数据缓存，保证淘汰后冷恢复
+  // 仍能拿到完整历史（后端 shell 进程本身保留，不 kill）。
+  const saved: SavedDirectoryState = {
+    tabs: cached.tabs.map((t) => ({
       id: t.id,
       title: t.title,
       cwd: t.cwd,
-      // Capture the live term's buffer if it's mounted; otherwise fall back to
-      // any pendingBuffer that hasn't been written yet (mountTerminal may not
-      // have run). This keeps history across a rapid switch-before-mount.
       bufferText: t.term ? captureBufferText(t.term) : t.pendingBuffer,
     })),
-    activeIndex: activeTabIndex.value,
-    counter: tabCounter,
-  });
+    activeIndex: cached.activeIndex,
+    counter: cached.counter,
+  };
+  directoryStates.set(cwd, saved);
+  for (const tab of cached.tabs) {
+    disposeTabFull(tab);
+  }
+}
+
+/** 缓存命中：把整组实例的 term.element 移回新的 v-for 容器并 fit。xterm
+ *  Terminal.open() 只调用一次，重新挂载只需移动 DOM——这是社区标准的
+ *  detach/reattach 做法。 */
+function reattachAllTabs(ts: TabState[]) {
+  const activeId = ts[activeTabIndex.value]?.id;
+  for (const t of ts) {
+    const el = containerEls.value[t.id];
+    if (!el || !t.term) continue;
+    if (t.term.element && t.term.element.parentElement !== el) {
+      el.appendChild(t.term.element);
+    }
+    // ResizeObserver 观察的是旧的 v-for 容器（已被销毁），重新观察新容器
+    t.resizeObserver?.disconnect();
+    if (t.resizeObserver) t.resizeObserver.observe(el);
+    // 切回后容器尺寸可能与离开时不同：只对当前激活 tab 重新 fit——隐藏
+    // tab 的容器是 display:none，fit 会测到 0 尺寸；切到它时 switchTab 会
+    // 再次 fit。xterm 6 canvas 渲染器在 fit 后自行重绘。
+    if (t.id !== activeId) continue;
+    const fitAddon = t.fitAddon;
+    setTimeout(() => {
+      if (t.term) {
+        try {
+          fitAddon?.fit();
+        } catch {
+          // fit 在 term 刚被 dispose 时会抛错，忽略即可
+        }
+      }
+    }, 50);
+  }
 }
 
 /** Restore tabs for a directory. Returns null if no saved state. Event
@@ -184,13 +271,6 @@ function disposeTabFull(tab: TabState) {
   tab.unlisten?.();
   tab.unlisten = null;
   disposeTabDOM(tab);
-}
-
-/** Save current tabs, then dispose all DOM + listeners */
-function teardownCurrentTabs() {
-  for (const tab of tabs.value) {
-    disposeTabFull(tab);
-  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -266,6 +346,9 @@ async function killAll() {
   tabs.value = [];
   activeTabIndex.value = -1;
   if (props.cwd) {
+    // 用户显式关闭整个终端：真 kill 后端进程 + 从两类缓存中删除该目录，
+    // 下次打开重新 spawn 全新 shell（与 LRU 淘汰的"仅 dispose DOM"严格区分）。
+    directoryCache.delete(props.cwd);
     directoryStates.delete(props.cwd);
     spawnedCwds.delete(props.cwd);
   }
@@ -287,6 +370,13 @@ function closeTab(index: number) {
   if (saved) {
     saved.tabs = saved.tabs.filter((t) => t.id !== tab.id);
     if (saved.tabs.length === 0) directoryStates.delete(tab.cwd);
+  }
+  // 同步 LRU 实例缓存（仅当该目录恰好在缓存中——正常情况下当前目录的
+  // 实例不在缓存，此分支为防御性处理）：移除被杀掉的 tab 实例。
+  const cachedDir = directoryCache.get(tab.cwd);
+  if (cachedDir) {
+    cachedDir.tabs = cachedDir.tabs.filter((t) => t.id !== tab.id);
+    if (cachedDir.tabs.length === 0) directoryCache.delete(tab.cwd);
   }
 
   if (tabs.value.length === 0) {
@@ -395,6 +485,12 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   const pendingOutput: (string | Uint8Array)[] = [];
 
   if (!tab.unlisten) {
+    // PTY 高频输出的 rAF 批处理：后端 emit 频率可能远高于渲染帧率，每个
+    // 事件同步一次 term.write 会频繁阻塞主线程（终端 CPU 占用高的来源之
+    // 一）。这里把一帧内到达的数据收集起来，合并成单次 write——全部为
+    // 字符串时直接 join，混合/二进制时编码为单个 Uint8Array，把每帧的
+    // write 次数压到 1。历史写回路径（writeChunked）不受影响。
+    let pendingBatch: { chunks: (string | Uint8Array)[]; raf: number } | null = null;
     tab.unlisten = await listen<number[] | string>(
       `terminal-data-${tab.id}`,
       (event) => {
@@ -406,7 +502,44 @@ async function mountTerminal(tab: TabState, myGen?: number) {
           pendingOutput.push(data);
           return;
         }
-        tab.term.write(data);
+        if (!pendingBatch) pendingBatch = { chunks: [], raf: 0 };
+        pendingBatch.chunks.push(data);
+        if (pendingBatch.raf === 0) {
+          // 本帧首个事件：先在回调外捕获 batch 引用（回调内引用外层的
+          // pendingBatch 会被 TS 判定为可能为 null），执行时置空以便下一帧
+          // 重新开批。此期间后续事件继续 push 进同一 batch，一并合写。
+          const frameBatch = pendingBatch;
+          frameBatch.raf = requestAnimationFrame(() => {
+            pendingBatch = null;
+            // tab 可能已被 dispose/替换（关闭、淘汰、快速切换）——写入一个
+            // 已 dispose 的 xterm 会抛错，先校验。
+            if (!tab.term || tab.term !== term) return;
+            if (frameBatch.chunks.length === 1) {
+              term.write(frameBatch.chunks[0]);
+              return;
+            }
+            let hasBinary = false;
+            for (const c of frameBatch.chunks) {
+              if (typeof c !== "string") { hasBinary = true; break; }
+            }
+            if (!hasBinary) {
+              term.write(frameBatch.chunks.join(""));
+              return;
+            }
+            const encoder = new TextEncoder();
+            const parts: Uint8Array[] = frameBatch.chunks.map((c) =>
+              typeof c === "string" ? encoder.encode(c) : c
+            );
+            const total = parts.reduce((s, p) => s + p.length, 0);
+            const merged = new Uint8Array(total);
+            let off = 0;
+            for (const p of parts) {
+              merged.set(p, off);
+              off += p.length;
+            }
+            term.write(merged);
+          });
+        }
       }
     );
   }
@@ -415,7 +548,7 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   // after listen() so nothing can fall between the drain and the listener: any
   // output produced from here on flows through the event channel above. Fixes
   // lost history when a session switch races the initial xterm mount (the tab
-  // had no term yet, so saveDirectoryState couldn't capture its buffer).
+  // had no term yet, so evictDirectory/冷路径 couldn't capture its buffer).
   let pendingData: Uint8Array | undefined;
   try {
     const raw = await invoke<number[] | null>("take_terminal_pending", {
@@ -430,8 +563,8 @@ async function mountTerminal(tab: TabState, myGen?: number) {
   // listener (or the pending drain), tear down what we just set up (the tab is
   // no longer current).
   if (myGen !== undefined && myGen !== initGeneration) {
-    // The tab may already have been disposed by teardownCurrentTabs. If term is
-    // still alive, dispose it; always unlisten to avoid leaking the listener.
+    // The tab may already have been disposed (closeTab/killAll/evict). If term
+    // is still alive, dispose it; always unlisten to avoid leaking the listener.
     if (tab.term === term) {
       tab.term = null;
       tab.fitAddon = null;
@@ -456,7 +589,7 @@ async function mountTerminal(tab: TabState, myGen?: number) {
     pendingOutput.length = 0;
   };
   if (hasHistory) {
-    // Guard: the tab may have been disposed by teardownCurrentTabs while we
+    // Guard: the tab may have been disposed (closeTab/killAll/evict) while we
     // awaited the listener (lazy-mount via switchTab has no caller generation
     // bump) — writing into a disposed xterm would throw.
     if (tab.term !== term) return;
@@ -539,6 +672,19 @@ async function maybeHintLightweightShell() {
 async function initForCwd(cwd: string) {
   const myGen = ++initGeneration;
   maybeHintLightweightShell();
+  // LRU 缓存命中：整组完整 xterm 实例直接取出并 reattach，零重建、
+  // 零历史写回（buffer/listener 一直保活）。缓存未命中才走冷路径。
+  const cached = directoryCache.get(cwd);
+  if (cached) {
+    directoryCache.delete(cwd);
+    tabs.value = cached.tabs;
+    activeTabIndex.value = cached.activeIndex;
+    tabCounter = cached.counter;
+    await nextTick();
+    if (myGen !== initGeneration) return; // superseded by a newer switch
+    reattachAllTabs(cached.tabs);
+    return;
+  }
   const restored = await restoreDirectoryState(cwd);
   if (myGen !== initGeneration) return; // superseded by a newer switch
   if (restored) {
@@ -577,12 +723,12 @@ watch(
     // Invalidate any in-flight init from the previous directory so a stale
     // async restore can't overwrite the new directory's tabs.
     initGeneration++;
-    // Save old directory's terminal state
+    // 切走：不做 captureBufferText、不 dispose、不 unlisten；整组实例
+    // detach 入 LRU 缓存。后端进程与 listener 保活，xterm buffer 持续
+    // 累积，切回时零重建、零历史写回。
     if (oldCwd) {
-      saveDirectoryState(oldCwd);
+      cacheActiveDirectory(oldCwd);
     }
-    // Tear down current DOM/listeners
-    teardownCurrentTabs();
     tabs.value = [];
     activeTabIndex.value = -1;
 
@@ -605,23 +751,25 @@ watch(
       // directory (and could double-spawn).
       if (props.cwd && tabs.value.length === 0) await initForCwd(props.cwd);
     } else {
-      // Panel hidden — persist tab metadata so re-opening restores it.
-      // (Backend processes stay alive; only the DOM/listeners are torn down.)
-      if (props.cwd) saveDirectoryState(props.cwd);
+      // 面板隐藏（v-show）：整组 detach 入 LRU 缓存，释放 xterm 渲染开销
+      // （隐藏状态持续收 PTY 输出是 CPU 占用高的来源之一）；后端进程保留、
+      // listener 保活，buffer 持续累积，重新打开时零重建。
+      if (props.cwd) cacheActiveDirectory(props.cwd);
+      tabs.value = [];
+      activeTabIndex.value = -1;
     }
   },
   { immediate: true }
 );
 
 onBeforeUnmount(() => {
-  // Save state (keep backend processes alive)
+  // 组件卸载：整组 detach 入 LRU 缓存（不 kill 后端进程）。
+  // 后端进程在用户显式关闭 tab/整个终端或应用退出时才终止。
   if (props.cwd) {
-    saveDirectoryState(props.cwd);
+    cacheActiveDirectory(props.cwd);
   }
-  // Tear down DOM + listeners
-  teardownCurrentTabs();
-  // Note: backend terminal processes are NOT killed here.
-  // They persist until the user explicitly closes a tab or the app exits.
+  tabs.value = [];
+  activeTabIndex.value = -1;
 });
 
 // Expose a way for the parent to terminate every terminal process (used by the

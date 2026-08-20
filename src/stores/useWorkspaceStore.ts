@@ -32,6 +32,10 @@ export interface Session {
   newlyCompleted: boolean;
   /** True when agent process is freshly started (after restart), needs history context */
   freshAgentProcess: boolean;
+  /** Total character count of the session's messages, persisted in the DB.
+   *  Lets the sidebar show every session's context size on load without
+   *  fetching that session's messages into the frontend. */
+  contextChars: number;
 }
 
 function generateId(): string {
@@ -60,6 +64,7 @@ function recordToSession(record: SessionRecord): Session {
     acpSessionId: record.acp_session_id || "",
     newlyCompleted: false,
     freshAgentProcess: false,
+    contextChars: record.context_chars || 0,
   };
 }
 
@@ -170,7 +175,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const session: Session = {
       id: sessionId, cli, cliDisplayName,
       title: title || cliDisplayName, directoryId, directory: dirPath || null, model: model || null, pinned: false, archived: false,
-      status: "running", pid: null, createdAt: now, lastActiveAt: now, unread: false, acpSessionId: "", newlyCompleted: false, freshAgentProcess: true,
+      status: "running", pid: null, createdAt: now, lastActiveAt: now, unread: false, acpSessionId: "", newlyCompleted: false, freshAgentProcess: true, contextChars: 0,
     };
     sessions.value.push(session);
     activeSessionId.value = session.id;

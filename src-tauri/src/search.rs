@@ -27,6 +27,10 @@ pub struct SessionRecord {
     pub created_at: String,
     pub last_active_at: Option<String>,
     pub acp_session_id: String,
+    /// Total character count of the session's messages, persisted so the
+    /// sidebar can show every session's context size without loading all
+    /// messages into the frontend.
+    pub context_chars: i64,
 }
 
 fn db_path() -> PathBuf {
@@ -70,6 +74,7 @@ pub fn init_db() {
         conn.execute("ALTER TABLE sessions ADD COLUMN acp_session_id TEXT DEFAULT ''", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT ''", []).ok();
         conn.execute("ALTER TABLE sessions ADD COLUMN last_active_at TEXT", []).ok();
+        conn.execute("ALTER TABLE sessions ADD COLUMN context_chars INTEGER DEFAULT 0", []).ok();
         // Backfill last_active_at = created_at for rows created before the
         // column existed, so the sidebar time display stays sensible.
         conn.execute(
@@ -86,6 +91,14 @@ pub fn init_db() {
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);"
+        ).ok();
+        // Backfill context_chars from already-saved messages so existing
+        // sessions show a context size before their next message is saved.
+        conn.execute(
+            "UPDATE sessions SET context_chars = COALESCE(
+                (SELECT SUM(LENGTH(content)) FROM messages WHERE session_id = sessions.id), 0
+             ) WHERE context_chars IS NULL OR context_chars = 0",
+            [],
         ).ok();
         // FTS5 virtual table + triggers (separate batch so earlier failures
         // don't prevent search from working)
@@ -109,13 +122,14 @@ pub fn init_db() {
     }
 }
 
-pub fn save_message(session_id: &str, role: &str, content: &str) {
-    if let Ok(conn) = get_conn() {
-        save_message_on(&conn, session_id, role, content);
-    }
+/// Saves a message and returns the session's updated context_chars so the
+/// caller can refresh the sidebar without re-querying the whole session.
+pub fn save_message(session_id: &str, role: &str, content: &str) -> i64 {
+    let Ok(conn) = get_conn() else { return 0 };
+    save_message_on(&conn, session_id, role, content)
 }
 
-pub(crate) fn save_message_on(conn: &Connection, session_id: &str, role: &str, content: &str) {
+pub(crate) fn save_message_on(conn: &Connection, session_id: &str, role: &str, content: &str) -> i64 {
     // Insert the message, then bump the session's last_active_at so the
     // sidebar time and ordering reflect the freshest activity (covers both
     // user-sent and agent-responded messages, since both go through here).
@@ -127,6 +141,25 @@ pub(crate) fn save_message_on(conn: &Connection, session_id: &str, role: &str, c
         "UPDATE sessions SET last_active_at = datetime('now','localtime') WHERE id = ?1",
         params![session_id],
     );
+    refresh_context_chars_on(conn, session_id)
+}
+
+/// Recomputes a session's `context_chars` from its stored messages and
+/// returns the new value. The SUM is recomputed (rather than incrementally
+/// added) so the stored value stays correct even if messages are later
+/// re-saved or deleted.
+pub(crate) fn refresh_context_chars_on(conn: &Connection, session_id: &str) -> i64 {
+    let _ = conn.execute(
+        "UPDATE sessions SET context_chars = COALESCE(
+            (SELECT SUM(LENGTH(content)) FROM messages WHERE session_id = ?1), 0
+         ) WHERE id = ?1",
+        params![session_id],
+    );
+    conn.query_row(
+        "SELECT COALESCE(context_chars, 0) FROM sessions WHERE id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    ).unwrap_or(0)
 }
 
 pub fn search_messages(query: &str, limit: usize) -> Vec<SearchResult> {
@@ -217,11 +250,12 @@ pub(crate) fn save_session_on(
     // later updates from save_session — for those we keep the existing
     // last_active_at (the COALESCE picks up the row's prior value).
     let result = conn.execute(
-        "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, last_active_at, archived, acp_session_id)
+        "INSERT OR REPLACE INTO sessions (id, cli, cli_display_name, title, directory, status, pid, pinned, created_at, last_active_at, archived, acp_session_id, context_chars)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                  COALESCE((SELECT created_at FROM sessions WHERE id = ?1), datetime('now', 'localtime')),
                  COALESCE((SELECT last_active_at FROM sessions WHERE id = ?1), datetime('now', 'localtime')),
-                 ?9, ?10)",
+                 ?9, ?10,
+                 COALESCE((SELECT context_chars FROM sessions WHERE id = ?1), 0))",
         params![id, cli, cli_display_name, title, directory, status, pid, pinned, archived, acp_session_id],
     );
     if let Err(e) = result {
@@ -236,7 +270,7 @@ pub fn get_sessions() -> Vec<SessionRecord> {
 
 pub(crate) fn get_sessions_on(conn: &Connection) -> Vec<SessionRecord> {
     let mut stmt = match conn.prepare(
-        "SELECT id, cli, cli_display_name, title, directory, model, status, pid, pinned, created_at, last_active_at, archived, acp_session_id
+        "SELECT id, cli, cli_display_name, title, directory, model, status, pid, pinned, created_at, last_active_at, archived, acp_session_id, context_chars
          FROM sessions
          ORDER BY pinned DESC, COALESCE(last_active_at, created_at) DESC"
     ) { Ok(s) => s, Err(e) => { rjlog!("[DB ERROR] prepare get_sessions failed: {}", e); return vec![]; } };
@@ -256,6 +290,7 @@ pub(crate) fn get_sessions_on(conn: &Connection) -> Vec<SessionRecord> {
             last_active_at: row.get(10)?,
             archived: row.get(11)?,
             acp_session_id: row.get(12)?,
+            context_chars: row.get(13)?,
         })
     });
 
@@ -368,7 +403,8 @@ mod tests {
                 last_active_at TEXT,
                 archived INTEGER DEFAULT 0,
                 acp_session_id TEXT DEFAULT '',
-                model TEXT DEFAULT ''
+                model TEXT DEFAULT '',
+                context_chars INTEGER DEFAULT 0
             );
             CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -421,6 +457,21 @@ mod tests {
         save_message_on(&conn, "s1", "user", "hi");
         let after = get_one_session_on(&conn, "s1").unwrap().last_active_at.unwrap();
         assert_ne!(before, after, "save_message should also touch the session");
+    }
+
+    #[test]
+    fn save_message_updates_context_chars() {
+        let conn = open_test_db();
+        save_session_on(
+            &conn, "s1", "claude", "Claude", "title", "/tmp", "running",
+            None, 0, 0, "",
+        );
+        // No messages yet → context_chars is 0.
+        assert_eq!(get_sessions_on(&conn)[0].context_chars, 0);
+        // Each save returns the recomputed total char count.
+        assert_eq!(save_message_on(&conn, "s1", "user", "hello"), 5);
+        assert_eq!(save_message_on(&conn, "s1", "agent", "world!"), 11);
+        assert_eq!(get_sessions_on(&conn)[0].context_chars, 11);
     }
 
     #[test]

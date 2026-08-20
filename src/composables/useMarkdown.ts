@@ -125,6 +125,13 @@ export function clearStreamingCache(): void {
   streamingMdCache.clear();
 }
 
+/** Returns true if `src` contains a fenced code block (``` or ~~~).
+ * 供智能打字机判定复用：含代码块的内容跳过逐字揭示，直接完整显示，
+ * 避免流式阶段对代码围栏做上千次不完整的 markdown 解析。 */
+export function containsCodeFence(src: string): boolean {
+  return /```|~~~/.test(src);
+}
+
 // ── Mermaid SVG 渲染缓存 ──
 // mermaid.run() 单图 100ms+（布局+排版），同一张图（同一段源码）在会话
 // 重挂载/重激活时会反复渲染。缓存 图源码 → SVG outerHTML，命中时直接注入，

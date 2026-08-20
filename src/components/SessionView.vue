@@ -57,6 +57,17 @@ const router = useRouter();
 const msgStore = useMessageStore();
 const agentStore = useAgentStore();
 const messages = ref<Message[]>([]);
+
+/** Persist a message to the backend, then sync the session's `contextChars`
+ *  so the sidebar shows an up-to-date context size for every session. */
+function persistMessage(sessionId: string, role: string, content: string) {
+  saveConversationMessage(sessionId, role, content)
+    .then((chars) => {
+      const s = store.sessions.find(x => x.id === sessionId);
+      if (s && typeof chars === "number") s.contextChars = chars;
+    })
+    .catch(() => {});
+}
 const unlisteners = new Map<string, UnlistenFn>();
 const isSessionLoading = ref(false);
 
@@ -705,13 +716,16 @@ function scrollToBottom() {
   // 用户手动点击"回到底部"（或切换会话）时恢复自动跟随
   stickToBottom.value = true;
   showScrollToBottom.value = false;
-  // 单次 rAF 设置即可：原 nextTick + rAF 双查会对超大 DOM 触发两次强制布局
-  // （读 scrollHeight + 写 scrollTop）。响应式更新在 rAF 回调前已 flush；
-  // 流式期间的持续跟随由 watch(messages) 负责。
-  requestAnimationFrame(() => {
-    if (messageContainer.value) {
-      messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
-    }
+  // nextTick 确保响应式更新（如 ChatMessages 从轻量占位重建完整列表、懒渲染
+  // 占位换真实内容）已 flush 到 DOM，再在下一帧读 scrollHeight —— 此时才是
+  // 真实高度，否则 scrollTop=scrollHeight 会落在历史中间。仅在 rAF 回调内
+  // 读一次布局，不会产生原"nextTick + rAF 双查"的双次强制布局。
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (messageContainer.value) {
+        messageContainer.value.scrollTop = messageContainer.value.scrollHeight;
+      }
+    });
   });
 }
 
@@ -733,12 +747,25 @@ onMounted(async () => {
 onActivated(() => {
   if (props.sessionId) {
     const state = getSessionState(props.sessionId);
-    // 后台会话可能继续收到 ACP 事件。建立同引用（Task 2）即可让新增消息
-    // 自动反映到视图；引用不同 = 首次激活或换会话，需滚动到底显示最新。
-    const firstTime = messages.value !== state.messages;
     syncMessagesToView(state);
     isProcessing.value = state.isProcessing;
-    if (firstTime) scrollToBottom();
+    // 切换会话默认显示最新对话：始终滚动到底。原 firstTime
+    // （messages.value !== state.messages）判断在"同引用"（syncMessagesToView
+    // 建立，之后原地 push 不换引用）下永远为 false，导致 KeepAlive 缓存恢复
+    // 时从不滚动到最新 —— 这是"切回大会话停在历史位置"的根因。
+    scrollToBottom();
+    // 已加载会话从缓存恢复时，ChatMessages 要从轻量占位（active=false 的
+    // v-else）重建完整列表，是同步渲染，大会话有明显卡顿 —— 先给一帧 loading
+    // 反馈，渲染就绪后关闭。首次挂载时 state.loaded 为 false，loading 由
+    // initSession 的异步加载负责，这里不抢，避免 loading 提前消失。
+    if (state.loaded) {
+      isSessionLoading.value = true;
+      nextTick(() => {
+        requestAnimationFrame(() => {
+          isSessionLoading.value = false;
+        });
+      });
+    }
   }
 });
 
@@ -751,16 +778,23 @@ async function initSession(sid: string) {
   syncMessagesToView(state);
   isProcessing.value = state.isProcessing;
   isSessionLoading.value = true;
-  if (!unlisteners.has(sid)) {
-    try {
-      const un = await listen<AcpPayload>(`acp:${sid}`, (e) => handleAcpEvent(sid, e.payload));
-      unlisteners.set(sid, un);
-    } catch {}
+  // 防闪烁：与加载并行计时，loading 至少展示一小段；加载较慢时已 resolve，
+  // 加载完成立即关闭，不会提前消失造成白屏（loading 现在覆盖整个消息区）。
+  const minShow = new Promise<void>((res) => setTimeout(res, 150));
+  try {
+    if (!unlisteners.has(sid)) {
+      try {
+        const un = await listen<AcpPayload>(`acp:${sid}`, (e) => handleAcpEvent(sid, e.payload));
+        unlisteners.set(sid, un);
+      } catch {}
+    }
+    await loadSessionMessages(sid);
+    restorePendingSend(sid);
+    scrollToBottom();
+  } finally {
+    await minShow;
+    isSessionLoading.value = false;
   }
-  await loadSessionMessages(sid);
-  restorePendingSend(sid);
-  scrollToBottom();
-  setTimeout(() => { isSessionLoading.value = false; }, 200);
 }
 
 /**
@@ -1100,7 +1134,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       // Start to begin a new bubble. Without saving here, only the last
       // message would be persisted (or none if activeContent was reset).
       if (state.activeContent && sessionId) {
-        saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
+        persistMessage(sessionId, "agent", state.activeContent);
       }
       state.messages.push({ role: "agent", content: "", startTime: Date.now(), isProcessing: true });
       state.activeThinking = ""; state.activeContent = ""; state.thoughtDuration = "";
@@ -1396,7 +1430,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       // empty here (already saved). If not, activeContent holds the last
       // message and we save it now.
       if (sessionId && state.activeContent) {
-        saveConversationMessage(sessionId, "agent", state.activeContent).catch(()=>{});
+        persistMessage(sessionId, "agent", state.activeContent);
       }
       // Mark session as idle (process still alive, waiting for next message)
       const sess = store.sessions.find(s => s.id === sessionId);
@@ -1768,7 +1802,7 @@ async function handleSend() {
         state.messages.push({role:"agent",content:`Error: Failed to restart session. ${err}`});
         syncMessagesToView(state);
         msgStore.setMessages(s.id, [...state.messages]);
-        saveConversationMessage(s.id, "user", userDisplay).catch(()=>{});
+        persistMessage(s.id, "user", userDisplay);
         return;
       }
       s.freshAgentProcess = true;
@@ -1793,7 +1827,7 @@ async function handleSend() {
     state.messages.push({role:"user",content:userDisplay});
     syncMessagesToView(state);
     msgStore.setMessages(sid, [...state.messages]);
-    saveConversationMessage(sid, "user", userDisplay).catch(()=>{});
+    persistMessage(sid, "user", userDisplay);
   }
 
   if (store.activeSession?.id) {
@@ -2020,12 +2054,16 @@ watch(messages, (msgs) => {
         <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
             <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" />
-            <div v-if="isSessionLoading && messages.length === 0" class="flex items-center justify-center py-8">
-              <div class="flex items-center gap-2 text-gray-400">
-                <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
-                <span class="text-[13px]">Loading...</span>
-              </div>
-            </div>
+          </div>
+        </div>
+
+        <!-- Loading overlay: 切换/加载会话时覆盖消息区。不能依赖
+             messages.length === 0 —— 已加载过的会话消息在内存（msgStore /
+             sessionStates），切回时 messages 非空，原条件永远不显示。 -->
+        <div v-if="isSessionLoading" class="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
+          <div class="flex items-center gap-2 text-gray-400">
+            <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
+            <span class="text-[13px]">Loading...</span>
           </div>
         </div>
 

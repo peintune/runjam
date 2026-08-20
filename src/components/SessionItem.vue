@@ -48,19 +48,37 @@ const dirLayout = computed(() => {
   return peekLayout(props.session.directoryId);
 });
 
-/** Context-size stats for the ACTIVE session, so the sidebar shows the same
- *  number as the session view's progress ring (message chars + input draft
- *  vs the model's context_window × 4). Hidden for archived/inactive rows. */
+/** Context-size stats for every visible session, so the sidebar shows the
+ *  same number as the session view's progress ring (message chars + input
+ *  draft vs the model's context_window × 4). Hidden for archived rows.
+ *
+ *  For sessions whose messages aren't loaded into the frontend, the total
+ *  comes from the DB-persisted `context_chars` (accurate right on load). For
+ *  the active session, whose messages ARE in memory, we compute live from the
+ *  message store so the number tracks streaming output the DB hasn't caught
+ *  up with yet, plus the live input draft. */
 const contextStats = computed(() => {
-  if (!props.active || props.archived) return null;
+  if (props.archived) return null;
   const messages = messageStore.getMessages(props.session.id);
   const model = agentStore.models.find(m => m.id === props.session.model);
   // Include the live input draft (as a length-only placeholder string) so
   // the total, ratio and color match the session view exactly.
+  const draft = props.active ? workspaceStore.activeDraftChars : 0;
+  if (props.active && messages.length > 0) {
+    // Active session: in-memory messages are the freshest source.
+    return computeContextStats(
+      messages,
+      " ".repeat(draft),
+      model?.context_window || undefined,
+    );
+  }
+  // Inactive session (or messages not yet loaded): use the DB-persisted
+  // char count so the row shows the context size immediately on load.
   return computeContextStats(
-    messages,
-    " ".repeat(workspaceStore.activeDraftChars),
+    [],
+    " ".repeat(draft),
     model?.context_window || undefined,
+    props.session.contextChars,
   );
 });
 

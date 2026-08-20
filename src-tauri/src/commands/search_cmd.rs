@@ -5,9 +5,11 @@ pub fn search_conversations(query: String) -> Vec<SearchResult> {
     search::search_messages(&query, 30)
 }
 
+/// Saves a conversation message and returns the session's updated
+/// `context_chars` so the frontend can refresh the sidebar's context size.
 #[tauri::command]
-pub fn save_conversation_message(session_id: String, role: String, content: String) {
-    search::save_message(&session_id, &role, &content);
+pub fn save_conversation_message(session_id: String, role: String, content: String) -> i64 {
+    search::save_message(&session_id, &role, &content)
 }
 
 #[tauri::command]

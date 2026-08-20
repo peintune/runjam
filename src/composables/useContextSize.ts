@@ -17,13 +17,18 @@ export interface ContextStats {
 
 /** Pure, non-reactive version of the context-size computation. Used by the
  *  sidebar (SessionItem) where each row computes its own stats from the
- *  message store + the session's model — no refs needed. */
+ *  message store + the session's model — no refs needed.
+ *
+ *  `baseChars` seeds the total with a pre-computed char count (e.g. the
+ *  session's `context_chars` persisted in the DB) for sessions whose
+ *  messages aren't loaded into the frontend. */
 export function computeContextStats(
   messages: Array<{ content?: string }>,
   inputText: string,
   modelContextWindow: number | undefined,
+  baseChars = 0,
 ): ContextStats {
-  let total = 0;
+  let total = baseChars || 0;
   for (const m of messages) {
     total += m.content?.length || 0;
   }

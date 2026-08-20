@@ -21,14 +21,21 @@ export interface SessionRecord {
   created_at: string;
   last_active_at: string | null;
   acp_session_id: string;
+  /** Total character count of the session's messages, persisted in the DB so
+   *  the sidebar can show every session's context size without loading all
+   *  messages into the frontend. */
+  context_chars: number;
 }
 
 export async function searchConversations(query: string): Promise<SearchResult[]> {
   return invoke<SearchResult[]>("search_conversations", { query });
 }
 
-export async function saveConversationMessage(sessionId: string, role: string, content: string): Promise<void> {
-  return invoke("save_conversation_message", { sessionId, role, content });
+/** Saves a conversation message and resolves with the session's updated
+ *  `context_chars` (persisted in the DB), so callers can refresh the
+ *  sidebar's context size immediately. */
+export async function saveConversationMessage(sessionId: string, role: string, content: string): Promise<number> {
+  return invoke<number>("save_conversation_message", { sessionId, role, content });
 }
 
 export async function getConversationMessages(sessionId: string): Promise<SearchResult[]> {

@@ -5,7 +5,7 @@ import {
   Wrench, MousePointerClick, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
-import { useMarkdown, renderCached, clearStreamingCache } from "../composables/useMarkdown";
+import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence } from "../composables/useMarkdown";
 import AgentIcon from "./AgentIcon.vue";
 import MessageContent from "./MessageContent.vue";
 import { invoke } from "@tauri-apps/api/core";
@@ -348,11 +348,29 @@ onBeforeUnmount(() => {
     if (t.content) clearInterval(t.content);
   });
   timerMap.clear();
+  if (msgsRafHandle !== null) {
+    cancelAnimationFrame(msgsRafHandle);
+    msgsRafHandle = null;
+  }
+  pendingMsgs = null;
   if (visibilityObserver) {
     visibilityObserver.disconnect();
     visibilityObserver = null;
   }
 });
+
+/** 智能打字机判定：仅当消息较短（≤1500 字符）且不含代码围栏时才逐字揭示。
+ * 长内容/含代码块的消息直接一次性写入 displayMap 完整显示——即使步长自适应，
+ * 超长文本仍会产生大量 tick 与整列表 diff，且代码围栏在流式半截状态下反复
+ * 触发高开销的 markdown 解析。 */
+const TYPING_MAX_CHARS = 1500;
+
+function shouldTypewriter(msg: Message): boolean {
+  const content = msg.content || "";
+  const thinking = msg.thinking || "";
+  if (content.length + thinking.length > TYPING_MAX_CHARS) return false;
+  return !containsCodeFence(content) && !containsCodeFence(thinking);
+}
 
 function startTypewriter(
   idx: number,
@@ -601,71 +619,139 @@ async function handleMermaidInContent(idx: number, msg: Message) {
 
 // ═══ Message list reactivity ═══
 let lastMsgsRef: Message[] | null = null;
+let msgsRafHandle: number | null = null;
+let pendingMsgs: Message[] | null = null;
+/** 已初始化且与 displayMap 完全同步的消息索引（非 live）。deep watch 每
+ * chunk 触发时，用该集合跳过历史消息的重复初始化热点，只完整处理真正有
+ * 变化的 live 消息。live 消息不进入集合，会话切换时整体清空。 */
+const knownIndices = new Set<number>();
+
+function processMessages(msgs: Message[]) {
+  if (msgs !== lastMsgsRef) {
+    lastMsgsRef = msgs;
+    knownIndices.clear();
+    // Remove entries for messages that no longer exist (e.g. session switch)
+    for (const k of Object.keys(displayMap)) {
+      if (Number(k) >= msgs.length) {
+        delete displayMap[Number(k)];
+        delete startTimes[Number(k)];
+        delete frozenDurations[Number(k)];
+      }
+    }
+    mermaidRenderedMessages.value.clear();
+    // Clear streaming caches on session switch — stale streaming slices
+    // from the previous session are never going to be requested again.
+    clearStreamingCache();
+    safeSliceCache.clear();
+    // Don't clear timers — they will naturally complete when content matches
+    // 会话切换恢复加速：预填尾部 ALWAYS_RENDER_TAIL 组为可见——首屏
+    // （视口+尾部）立即渲染真实内容而非 placeholder，IntersectionObserver
+    // 只负责后续历史的滚动懒加载，减少 placeholder→真实内容的首帧翻转。
+    const tailStart = Math.max(0, messageGroups.value.length - ALWAYS_RENDER_TAIL);
+    const prefill = new Set<number>();
+    for (let g = tailStart; g < messageGroups.value.length; g++) prefill.add(g);
+    visibleGroups.value = prefill;
+  }
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+
+    // Only messages explicitly marked as processing get the typewriter effect.
+    // Completed/historical messages (isProcessing: false or undefined) render instantly.
+    // 后台隐藏会话（active=false）不做打字机揭示：直接同步完整内容，既不跑
+    // interval 也不触发重渲染；切回可见时内容已就绪，无需回放。
+    const isLive = m.isProcessing === true && props.active !== false;
+
+    // knownIndices 快路径：已完成/历史消息且 displayMap 已同步时跳过重复
+    // 的初始化块（startTimes/frozenDurations/折叠/mermaid 判定）。live 消息
+    // 内容持续增长，必须完整处理，不进入该集合。
+    if (!isLive && knownIndices.has(i) &&
+        displayMap[i]?.content === (m.content || "") &&
+        displayMap[i]?.thinking === (m.thinking || "")) {
+      continue;
+    }
+    if (!displayMap[i]) displayMap[i] = { thinking: "", content: "" };
+    if (!startTimes[i]) startTimes[i] = { thinking: 0, content: 0 };
+    if (!frozenDurations[i]) frozenDurations[i] = { thinking: 0, content: 0 };
+
+    if (isLive) {
+      knownIndices.delete(i);
+      // 智能打字机分流：短消息保留逐字效果；长消息/含代码块的消息直接
+      // 一次性写入 displayMap 完整显示，跳过逐字打印，消除长文本的 tick
+      // 风暴与整列表 diff。渲染管线统一走 displayMap，后续 wasLive→
+      // clearStreamingCache 逻辑保持不变。
+      const typewriter = shouldTypewriter(m);
+      if (m.thinking && displayMap[i].thinking.length < m.thinking.length) {
+        if (typewriter) startTypewriter(i, m.thinking, "thinking", 16);
+        else displayMap[i].thinking = m.thinking;
+      }
+      if (m.content && displayMap[i].content.length < m.content.length) {
+        if (typewriter) startTypewriter(i, m.content, "content", 16);
+        else displayMap[i].content = m.content;
+      }
+    } else {
+      const wasLive = displayMap[i].content.length < (m.content?.length || 0) ||
+                      displayMap[i].thinking.length < (m.thinking?.length || 0);
+      // Message is no longer live — freeze any running durations
+      if (startTimes[i].thinking && !frozenDurations[i].thinking) {
+        frozenDurations[i].thinking = Date.now() - startTimes[i].thinking;
+      }
+      if (startTimes[i].content && !frozenDurations[i].content) {
+        frozenDurations[i].content = Date.now() - startTimes[i].content;
+      }
+      displayMap[i].thinking = m.thinking || "";
+      displayMap[i].content = m.content || "";
+      // Auto-collapse thinking that now has content (done phase)
+      if (m.content && thinkingExpanded.value.has(i)) {
+        thinkingExpanded.value.delete(i);
+      }
+      if (m.content && hasMermaid(m.content)) {
+        handleMermaidInContent(i, m);
+      }
+      // When a message finishes streaming, clear transient caches so stale
+      // streaming slices don't accumulate. The final content is cached in the
+      // shared module-level cache.
+      if (wasLive) {
+        clearStreamingCache();
+        safeSliceCache.clear();
+      }
+      // 内容已完整同步到 displayMap，标记为已知——后续无变化的 deep watch
+      // 对该消息走快路径跳过，只处理 live 消息。
+      knownIndices.add(i);
+    }
+  }
+}
+
 watch(
   () => props.messages,
   (msgs) => {
-    if (msgs !== lastMsgsRef) {
-      lastMsgsRef = msgs;
-      // Remove entries for messages that no longer exist (e.g. session switch)
-      for (const k of Object.keys(displayMap)) {
-        if (Number(k) >= msgs.length) {
-          delete displayMap[Number(k)];
-          delete startTimes[Number(k)];
-          delete frozenDurations[Number(k)];
-        }
-      }
-      mermaidRenderedMessages.value.clear();
-      // Clear streaming caches on session switch — stale streaming slices
-      // from the previous session are never going to be requested again.
-      clearStreamingCache();
-      safeSliceCache.clear();
-      // Don't clear timers — they will naturally complete when content matches
-    }
+    const sessionChanged = msgs !== lastMsgsRef;
+    // 流式过程中高频 chunk 会触发大量 deep watch。若存在正在流式的消息，
+    // 把全列表处理合并到 rAF：每帧至多一次，代替每 chunk 一次全列表遍历。
+    // 会话切换（引用变化）与"无任何 live 消息"（流式结束/历史消息）必须
+    // 立即处理：切换需即时清索引，结束态内容需即时落定，不被 rAF 延迟。
+    let hasLive = false;
     for (let i = 0; i < msgs.length; i++) {
-      const m = msgs[i];
-      if (!displayMap[i]) displayMap[i] = { thinking: "", content: "" };
-      if (!startTimes[i]) startTimes[i] = { thinking: 0, content: 0 };
-      if (!frozenDurations[i]) frozenDurations[i] = { thinking: 0, content: 0 };
-
-      // Only messages explicitly marked as processing get the typewriter effect.
-      // Completed/historical messages (isProcessing: false or undefined) render instantly.
-      // 后台隐藏会话（active=false）不做打字机揭示：直接同步完整内容，既不跑
-      // interval 也不触发重渲染；切回可见时内容已就绪，无需回放。
-      const isLive = m.isProcessing === true && props.active !== false;
-
-      if (isLive) {
-        if (m.thinking && displayMap[i].thinking.length < m.thinking.length)
-          startTypewriter(i, m.thinking, "thinking", 16);
-        if (m.content && displayMap[i].content.length < m.content.length)
-          startTypewriter(i, m.content, "content", 16);
-      } else {
-        const wasLive = displayMap[i].content.length < (m.content?.length || 0) ||
-                        displayMap[i].thinking.length < (m.thinking?.length || 0);
-        // Message is no longer live — freeze any running durations
-        if (startTimes[i].thinking && !frozenDurations[i].thinking) {
-          frozenDurations[i].thinking = Date.now() - startTimes[i].thinking;
-        }
-        if (startTimes[i].content && !frozenDurations[i].content) {
-          frozenDurations[i].content = Date.now() - startTimes[i].content;
-        }
-        displayMap[i].thinking = m.thinking || "";
-        displayMap[i].content = m.content || "";
-        // Auto-collapse thinking that now has content (done phase)
-        if (m.content && thinkingExpanded.value.has(i)) {
-          thinkingExpanded.value.delete(i);
-        }
-        if (m.content && hasMermaid(m.content)) {
-          handleMermaidInContent(i, m);
-        }
-        // When a message finishes streaming, clear transient caches so stale
-        // streaming slices don't accumulate. The final content is cached in the
-        // shared module-level cache.
-        if (wasLive) {
-          clearStreamingCache();
-          safeSliceCache.clear();
-        }
-      }
+      if (msgs[i].isProcessing === true) { hasLive = true; break; }
     }
+    if (sessionChanged || !hasLive) {
+      if (msgsRafHandle !== null) {
+        cancelAnimationFrame(msgsRafHandle);
+        msgsRafHandle = null;
+      }
+      pendingMsgs = null;
+      processMessages(msgs);
+      return;
+    }
+    pendingMsgs = msgs;
+    if (msgsRafHandle !== null) return; // 已有一帧待处理，丢弃本次重复调度
+    msgsRafHandle = requestAnimationFrame(() => {
+      msgsRafHandle = null;
+      if (pendingMsgs) {
+        const batch = pendingMsgs;
+        pendingMsgs = null;
+        processMessages(batch);
+      }
+    });
   },
   { deep: true },
 );
