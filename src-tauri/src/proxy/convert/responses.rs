@@ -232,7 +232,7 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
                 let converter = SseStreamConverter::new(
                     buf_reader,
-                    Box::new(make_responses_sse_converter(real_model)),
+                    Box::new(make_responses_sse_converter(real_model, reasoning_disabled)),
                 );
                 rjlog!("[PROXY] Responses→Chat: returning streaming response");
                 ProxyResponse::Stream { reader: Box::new(converter) }
@@ -242,7 +242,7 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                         if status >= 400 {
                             return ProxyResponse::Sync(StatusCode(status), resp_body);
                         }
-                        let converted = convert_chat_to_responses(&resp_body, &real_model, false);
+                        let converted = convert_chat_to_responses(&resp_body, &real_model, false, reasoning_disabled);
                         ProxyResponse::Sync(StatusCode(200), converted)
                     }
                     Err(e) => {
@@ -280,7 +280,8 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
 /// Convert Chat Completions response to Responses API format.
 /// Separates reasoning_content into a separate reasoning output item (matching
 /// the OpenAI Responses API output format that Codex ACP client expects).
-fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> String {
+/// `reasoning_disabled` 为 true 时剥离 reasoning_content，不生成 reasoning item。
+fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool, reasoning_disabled: bool) -> String {
     let resp: Value = match serde_json::from_str(chat_resp) { Ok(v) => v, Err(_) => return chat_resp.to_string() };
     let choice = &resp["choices"][0];
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
@@ -309,7 +310,8 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
     let mut output_items: Vec<Value> = vec![];
 
     // If the model returned reasoning_content, emit it as a separate reasoning item.
-    if !reasoning_content.is_empty() {
+    // reasoning_disabled 时剥离思考内容
+    if !reasoning_disabled && !reasoning_content.is_empty() {
         rjlog!("[PROXY] Non-stream: adding reasoning output_item ({} chars)", reasoning_content.len());
         output_items.push(serde_json::json!({
             "type": "reasoning",
@@ -377,7 +379,8 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool) -> Str
 ///   response.content_part.done
 ///   response.output_item.done
 ///   response.completed
-fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
+/// `reasoning_disabled` 为 true 时剥离 reasoning_content，不发 reasoning 事件。
+fn make_responses_sse_converter(model: String, reasoning_disabled: bool) -> impl FnMut(&str) -> Vec<u8> {
     use std::collections::HashMap;
     let response_id = format!("resp_{}", chrono::Utc::now().timestamp_millis());
     let reasoning_id = format!("rs_{}", chrono::Utc::now().timestamp_millis());
@@ -500,21 +503,24 @@ fn make_responses_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
             let choice = &chunk["choices"][0];
 
             // --- Reasoning / thinking ---
-            if let Some(reasoning) = choice["delta"]["reasoning_content"].as_str() {
-                if !reasoning_done && !msg_started {
-                    if !reasoning_started {
-                        reasoning_started = true;
-                        let _ = write!(result, "event: response.output_item.added\ndata: {}\n\n", serde_json::json!({
-                            "type": "response.output_item.added", "output_index": 0, "item": {
-                                "id": reasoning_id, "object": "realtime.item", "type": "reasoning",
-                                "status": "in_progress", "role": "assistant", "summary": []
-                            }
+            // reasoning_disabled 时剥离思考内容（不发 reasoning 事件）
+            if !reasoning_disabled {
+                if let Some(reasoning) = choice["delta"]["reasoning_content"].as_str() {
+                    if !reasoning_done && !msg_started {
+                        if !reasoning_started {
+                            reasoning_started = true;
+                            let _ = write!(result, "event: response.output_item.added\ndata: {}\n\n", serde_json::json!({
+                                "type": "response.output_item.added", "output_index": 0, "item": {
+                                    "id": reasoning_id, "object": "realtime.item", "type": "reasoning",
+                                    "status": "in_progress", "role": "assistant", "summary": []
+                                }
+                            }));
+                        }
+                        full_reasoning.push_str(reasoning);
+                        let _ = write!(result, "event: response.reasoning_text.delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "response.reasoning_text.delta", "item_id": reasoning_id, "output_index": 0, "content_index": 0, "delta": reasoning
                         }));
                     }
-                    full_reasoning.push_str(reasoning);
-                    let _ = write!(result, "event: response.reasoning_text.delta\ndata: {}\n\n", serde_json::json!({
-                        "type": "response.reasoning_text.delta", "item_id": reasoning_id, "output_index": 0, "content_index": 0, "delta": reasoning
-                    }));
                 }
             }
 
@@ -633,7 +639,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
         }).to_string();
-        let out = convert_chat_to_responses(&chat, "deepseek-v4", false);
+        let out = convert_chat_to_responses(&chat, "deepseek-v4", false, false);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["model"], "deepseek-v4");
         let items = v["output"].as_array().unwrap();
@@ -660,7 +666,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_chat_to_responses(&chat, "m", false)).unwrap();
+        let v: Value = serde_json::from_str(&convert_chat_to_responses(&chat, "m", false, false)).unwrap();
         let items = v["output"].as_array().unwrap();
         let fc = items.iter().find(|i| i["type"] == "function_call").expect("必须输出 function_call item");
         assert_eq!(fc["call_id"], "call_7");
@@ -672,6 +678,6 @@ mod tests {
     #[test]
     fn test_convert_chat_to_responses_invalid_json_passthrough() {
         // 非 JSON 输入原样返回（上游异常时的兜底行为）
-        assert_eq!(convert_chat_to_responses("not-json", "m", false), "not-json");
+        assert_eq!(convert_chat_to_responses("not-json", "m", false, false), "not-json");
     }
 }

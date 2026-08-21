@@ -49,6 +49,7 @@ export interface Message {
 
 // ═══ Props ═══
 const props = defineProps<{ messages: Message[]; agentId?: string; active?: boolean }>();
+const emit = defineEmits<{ (e: "contentUpdated"): void }>();
 
 // ═══ Message Groups: consecutive agent messages merge into one bubble ═══
 const messageGroups = computed(() => {
@@ -356,6 +357,10 @@ onBeforeUnmount(() => {
   if (visibilityObserver) {
     visibilityObserver.disconnect();
     visibilityObserver = null;
+  }
+  if (contentObserver) {
+    contentObserver.disconnect();
+    contentObserver = null;
   }
 });
 
@@ -766,6 +771,21 @@ watch(
 // ═══ DOM refs ═══
 const chatEl = ref<HTMLElement | null>(null);
 const copiedIndex = ref<number | null>(null);
+
+// ═══ 内容高度变化 → 通知 SessionView 跟随滚动 ═══
+// 流式生成中 SessionView 依赖本信号：仅当用户停留在底部附近时滚动到最新
+// 一行，保证"定位在最后一行就持续看到新内容"。用 ResizeObserver 而非轮询
+// /节流——它只在内容尺寸真实变化时回调，天然覆盖 typewriter 逐字揭示、
+// 长消息直写、mermaid/懒渲染渲染完成、图片加载等所有高度变化源。
+let contentObserver: ResizeObserver | null = null;
+watch(chatEl, (el) => {
+  contentObserver?.disconnect();
+  contentObserver = null;
+  if (el) {
+    contentObserver = new ResizeObserver(() => emit("contentUpdated"));
+    contentObserver.observe(el);
+  }
+});
 
 // ═══ Code-block copy via event delegation ═══
 function handleContentClick(e: MouseEvent) {

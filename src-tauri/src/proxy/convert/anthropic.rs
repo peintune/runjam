@@ -380,7 +380,7 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
                 let converter = SseStreamConverter::new(
                     buf_reader,
-                    Box::new(make_anthropic_sse_converter(model_name.to_string())),
+                    Box::new(make_anthropic_sse_converter(model_name.to_string(), reasoning_disabled)),
                 );
                 rjlog!("[PROXY] Anthropic→OpenAI: returning streaming response");
                 ProxyResponse::Stream { reader: Box::new(converter) }
@@ -394,7 +394,7 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                         rjlogd!("[CACHE DEBUG] Upstream usage: {}", serde_json::to_string(usage).unwrap_or_default());
                     }
                 }
-                let converted = convert_openai_to_anthropic(&resp_body, model_name);
+                let converted = convert_openai_to_anthropic(&resp_body, model_name, reasoning_disabled);
                 ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
@@ -502,7 +502,7 @@ fn forward_to_anthropic(body: &str) -> (StatusCode, String) {
     }
 }
 
-fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str) -> String {
+fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_disabled: bool) -> String {
     let resp: Value = match serde_json::from_str(openai_resp) { Ok(v) => v, Err(_) => return openai_resp.to_string() };
     let choice = &resp["choices"][0];
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
@@ -512,7 +512,9 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str) -> String {
     let output_tokens = resp["usage"]["completion_tokens"].as_u64().unwrap_or(0);
 
     let mut content_blocks: Vec<Value> = vec![];
-    if !reasoning_content.is_empty() {
+    // reasoning_disabled 时剥离思考内容，不生成 thinking block（否则即使关闭
+    // reasoning，思考型模型输出的 reasoning_content 仍会以 thought 形式显示）
+    if !reasoning_disabled && !reasoning_content.is_empty() {
         content_blocks.push(serde_json::json!({"type": "thinking", "thinking": reasoning_content}));
     }
     if !content.is_empty() {
@@ -553,7 +555,8 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str) -> String {
 
 /// Returns a closure that converts OpenAI Chat Completions SSE lines
 /// → Anthropic Messages API SSE format, line by line (for streaming).
-pub(crate) fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u8> {
+/// `reasoning_disabled` 为 true 时剥离上游 reasoning_content，不生成 thinking block。
+pub(crate) fn make_anthropic_sse_converter(model_name: String, reasoning_disabled: bool) -> impl FnMut(&str) -> Vec<u8> {
     use std::collections::HashMap;
     let msg_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
     let mut started = false;
@@ -671,21 +674,24 @@ pub(crate) fn make_anthropic_sse_converter(model_name: String) -> impl FnMut(&st
             let delta = &chunk["choices"][0]["delta"];
 
             // ---- Thinking / reasoning ----
-            if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                if text_block.is_none() && tool_blocks.is_empty() {
-                    if thinking_block.is_none() {
-                        let bi = next_block_idx; next_block_idx += 1;
-                        thinking_block = Some(bi);
-                        let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
-                            "type": "content_block_start", "index": bi,
-                            "content_block": {"type": "thinking", "thinking": ""}
+            // reasoning_disabled 时剥离思考内容（不生成 thinking block）
+            if !reasoning_disabled {
+                if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                    if text_block.is_none() && tool_blocks.is_empty() {
+                        if thinking_block.is_none() {
+                            let bi = next_block_idx; next_block_idx += 1;
+                            thinking_block = Some(bi);
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "thinking", "thinking": ""}
+                            }));
+                        }
+                        let bi = thinking_block.unwrap();
+                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_delta", "index": bi,
+                            "delta": {"type": "thinking_delta", "thinking": reasoning}
                         }));
                     }
-                    let bi = thinking_block.unwrap();
-                    let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
-                        "type": "content_block_delta", "index": bi,
-                        "delta": {"type": "thinking_delta", "thinking": reasoning}
-                    }));
                 }
             }
 
@@ -824,7 +830,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 11, "completion_tokens": 22}
         }).to_string();
-        let out = convert_openai_to_anthropic(&chat, "deepseek-v4");
+        let out = convert_openai_to_anthropic(&chat, "deepseek-v4", false);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["type"], "message");
         assert_eq!(v["stop_reason"], "tool_use", "tool_calls 结束必须映射为 tool_use");
@@ -846,9 +852,37 @@ mod tests {
             "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 2}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_anthropic(&chat, "m")).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_anthropic(&chat, "m", false)).unwrap();
         assert_eq!(v["stop_reason"], "end_turn");
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn test_convert_openai_to_anthropic_reasoning_disabled_strips_thinking() {
+        let chat = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "final answer",
+                    "reasoning_content": "internal chain-of-thought"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 10}
+        }).to_string();
+        // reasoning_disabled=true：必须剥离 thinking block
+        let out = convert_openai_to_anthropic(&chat, "m", true);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        let blocks = v["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1, "reasoning_disabled 时不能有 thinking block");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "final answer");
+        // reasoning_disabled=false：正常输出 thinking block
+        let out2 = convert_openai_to_anthropic(&chat, "m", false);
+        let v2: Value = serde_json::from_str(&out2).unwrap();
+        let blocks2 = v2["content"].as_array().unwrap();
+        assert_eq!(blocks2[0]["type"], "thinking");
+        assert_eq!(blocks2[0]["thinking"], "internal chain-of-thought");
     }
 }

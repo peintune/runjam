@@ -45,6 +45,10 @@ fn db_path() -> PathBuf {
 fn get_conn() -> Result<Connection> {
     let conn = Connection::open(db_path())?;
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    // 删除会话/保存消息时，正在流式写入的 agent 进程可能持有写锁；
+    // 默认 busy_timeout=0 会让 DELETE 立即报 "database is locked" 而失败，
+    // 表现为"删除会话不成功"。设置等待时间让 SQLite 等锁释放。
+    conn.busy_timeout(std::time::Duration::from_secs(10))?;
     Ok(conn)
 }
 

@@ -729,6 +729,21 @@ function scrollToBottom() {
   });
 }
 
+// 流式生成中内容持续长高：ChatMessages 在内容尺寸变化时发 contentUpdated
+// 信号，这里仅在用户停留在底部附近（stickToBottom）时跟随滚动，保证
+// "定位在最后一行就持续看到最新内容"。用户上翻查看历史时不打扰（不实时
+// 滚动，内容照常渲染，回到底部即见最新）。
+// 注意：不能用 watch(messages) —— 流式 chunk 通过 syncMessagesToView 保持
+// 同一数组引用、原地修改，浅监听数组引用变化在生成期间根本不会触发。
+// ResizeObserver 回调触发时本轮内容已渲染到 DOM，直接读 scrollHeight 即可。
+function onContentUpdated() {
+  // 用户刚滚动、onChatScroll 的 rAF 还没结算 stickToBottom 时（scrollCheckPending），
+  // 不强行拉回，避免打断用户正在进行的上翻操作；结算后若用户仍在底部会自然恢复跟随。
+  if (!stickToBottom.value || scrollCheckPending) return;
+  const el = messageContainer.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
 // Effective session ID: use prop in KeepAlive mode, store otherwise
 const effectiveSessionId = computed(() => props.sessionId || store.activeSessionId || '');
 
@@ -2107,7 +2122,7 @@ watch(messages, (msgs) => {
       <div class="flex-1 relative min-h-0">
         <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
-            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" />
+            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" @content-updated="onContentUpdated" />
           </div>
         </div>
 

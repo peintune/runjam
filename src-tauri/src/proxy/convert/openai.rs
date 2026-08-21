@@ -69,9 +69,9 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
                     let converter = SseStreamConverter::new(
                         buf_reader,
                         if is_llama_cpp {
-                            Box::new(make_llama_cpp_sse_converter(model_name_clone))
+                            Box::new(make_llama_cpp_sse_converter(model_name_clone, reasoning_disabled))
                         } else {
-                            Box::new(make_anthropic_sse_converter(model_name_clone))
+                            Box::new(make_anthropic_sse_converter(model_name_clone, reasoning_disabled))
                         },
                     );
                     rjlog!("[PROXY] OpenAI direct: returning streaming response is_llama={} in {:?}", is_llama_cpp, request_start.elapsed());
@@ -111,7 +111,7 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
     }
 }
 
-fn make_llama_cpp_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u8> {
+fn make_llama_cpp_sse_converter(model_name: String, reasoning_disabled: bool) -> impl FnMut(&str) -> Vec<u8> {
     use std::collections::HashMap;
     let msg_id = format!("msg_{}", chrono::Utc::now().timestamp_millis());
     let mut started = false;
@@ -204,21 +204,24 @@ fn make_llama_cpp_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
 
             let delta = &chunk["choices"][0]["delta"];
 
-            if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                if text_block.is_none() && tool_blocks.is_empty() {
-                    if thinking_block.is_none() {
-                        let bi = next_block_idx; next_block_idx += 1;
-                        thinking_block = Some(bi);
-                        let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
-                            "type": "content_block_start", "index": bi,
-                            "content_block": {"type": "thinking", "thinking": ""}
+            // reasoning_disabled 时剥离思考内容（不生成 thinking block）
+            if !reasoning_disabled {
+                if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                    if text_block.is_none() && tool_blocks.is_empty() {
+                        if thinking_block.is_none() {
+                            let bi = next_block_idx; next_block_idx += 1;
+                            thinking_block = Some(bi);
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "thinking", "thinking": ""}
+                            }));
+                        }
+                        let bi = thinking_block.unwrap();
+                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                            "type": "content_block_delta", "index": bi,
+                            "delta": {"type": "thinking_delta", "thinking": reasoning}
                         }));
                     }
-                    let bi = thinking_block.unwrap();
-                    let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
-                        "type": "content_block_delta", "index": bi,
-                        "delta": {"type": "thinking_delta", "thinking": reasoning}
-                    }));
                 }
             }
 
@@ -259,16 +262,23 @@ fn make_llama_cpp_sse_converter(model_name: String) -> impl FnMut(&str) -> Vec<u
                 let mut remaining = content.to_string();
                 while !remaining.is_empty() {
                     if in_think_tag {
+                        // reasoning_disabled 时丢弃 think 标签内的内容（不进入 think_buffer）
                         if let Some(end_pos) = remaining.find("<｜end_of_thought｜>") {
-                            think_buffer.push_str(&remaining[..end_pos]);
+                            if !reasoning_disabled {
+                                think_buffer.push_str(&remaining[..end_pos]);
+                            }
                             remaining = remaining[end_pos + "<｜end_of_thought｜>".len()..].to_string();
                             in_think_tag = false;
                         } else if let Some(end_pos) = remaining.find("</think>") {
-                            think_buffer.push_str(&remaining[..end_pos]);
+                            if !reasoning_disabled {
+                                think_buffer.push_str(&remaining[..end_pos]);
+                            }
                             remaining = remaining[end_pos + "</think>".len()..].to_string();
                             in_think_tag = false;
                         } else {
-                            think_buffer.push_str(&remaining);
+                            if !reasoning_disabled {
+                                think_buffer.push_str(&remaining);
+                            }
                             remaining.clear();
                         }
                     } else if let Some(start_pos) = remaining.find("<｜begin_of_thought｜>") {

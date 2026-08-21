@@ -201,13 +201,13 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
                 let converter = SseStreamConverter::new(
                     buf_reader,
-                    Box::new(make_gemini_sse_converter(model_name.to_string())),
+                    Box::new(make_gemini_sse_converter(model_name.to_string(), reasoning_disabled)),
                 );
                 rjlog!("[PROXY] Gemini: returning streaming response");
                 ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
                 let resp_body = response.into_string().unwrap_or_default();
-                let converted = convert_openai_to_gemini(&resp_body);
+                let converted = convert_openai_to_gemini(&resp_body, reasoning_disabled);
                 ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
@@ -254,14 +254,15 @@ fn forward_to_gemini(body: &str, path: &str) -> (StatusCode, String) {
     }
 }
 
-fn convert_openai_to_gemini(openai_resp: &str) -> String {
+fn convert_openai_to_gemini(openai_resp: &str, reasoning_disabled: bool) -> String {
     let resp: Value = match serde_json::from_str(openai_resp) { Ok(v) => v, Err(_) => return openai_resp.to_string() };
     let choice = &resp["choices"][0];
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
     let content = choice["message"]["content"].as_str().unwrap_or("");
 
     let mut parts: Vec<Value> = vec![];
-    if !reasoning_content.is_empty() {
+    // reasoning_disabled 时剥离思考内容（不生成 thought part）
+    if !reasoning_disabled && !reasoning_content.is_empty() {
         // Strip newlines from reasoning content to keep Gemini thinking clean.
         let reasoning_clean = reasoning_content.replace('\n', " ");
         parts.push(serde_json::json!({"text": reasoning_clean, "thought": true}));
@@ -298,7 +299,8 @@ fn convert_openai_to_gemini(openai_resp: &str) -> String {
 
 /// Returns a closure that converts OpenAI Chat Completions SSE lines
 /// → Gemini SSE format, line by line (for streaming).
-fn make_gemini_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
+/// `reasoning_disabled` 为 true 时剥离 reasoning_content，不生成 thought part。
+fn make_gemini_sse_converter(model: String, reasoning_disabled: bool) -> impl FnMut(&str) -> Vec<u8> {
     use std::collections::HashMap;
     let mut pending_tools: HashMap<usize, (String, String)> = HashMap::new();
     let mut has_pending_tools = false;
@@ -445,21 +447,24 @@ fn make_gemini_sse_converter(model: String) -> impl FnMut(&str) -> Vec<u8> {
             }
 
             // Reasoning — flush tools first, then emit thought
-            if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
-                let reasoning_clean = reasoning.replace('\n', " ");
-                if !reasoning_clean.trim().is_empty() {
-                    let event = serde_json::json!({
-                        "candidates": [{
-                            "content": {
-                                "parts": [{"text": reasoning_clean, "thought": true}],
-                                "role": "model"
-                            },
-                            "finishReason": null,
-                            "safetyRatings": []
-                        }]
-                    });
-                    let _ = write!(result, "data: {}\n\n", event);
+            // reasoning_disabled 时剥离思考内容（不生成 thought part）
+            if !reasoning_disabled {
+                if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                    flush_tools(&mut result, &mut pending_tools, &mut has_pending_tools);
+                    let reasoning_clean = reasoning.replace('\n', " ");
+                    if !reasoning_clean.trim().is_empty() {
+                        let event = serde_json::json!({
+                            "candidates": [{
+                                "content": {
+                                    "parts": [{"text": reasoning_clean, "thought": true}],
+                                    "role": "model"
+                                },
+                                "finishReason": null,
+                                "safetyRatings": []
+                            }]
+                        });
+                        let _ = write!(result, "data: {}\n\n", event);
+                    }
                 }
             }
 
@@ -507,7 +512,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat)).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, false)).unwrap();
         let parts = v["candidates"][0]["content"]["parts"].as_array().unwrap();
         // part 顺序：thought → functionCall → text
         assert_eq!(parts[0]["thought"], true, "reasoning_content 必须标记为 thought part");
@@ -527,7 +532,7 @@ mod tests {
             "choices": [{"message": {"role": "assistant", "content": "hello"}}],
             "usage": {}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat)).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, false)).unwrap();
         let parts = v["candidates"][0]["content"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["text"], "hello");
