@@ -1110,18 +1110,42 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
   }
 }
 
+// ── 高频 ACP 事件日志节流 ──
+// ACP chunk 是逐 token 的高频事件，Gemini 单轮可上万条。每 chunk 一次
+// console.log + JSON.stringify 会引发 WKWebView 主线程的字符串分配与
+// console I/O（unified-log syscalls），是"运行会话时 Web Content CPU 100%"
+// 的主因。现在默认静默：仅按节流窗口聚合打一条计数摘要；需要逐事件
+// 完整日志时在 URL 上加 ?debug=acp 打开（信息与之前一致，仅调试期）。
+const ACP_EVENT_LOG_THROTTLE_MS = 500;
+let lastAcpEventLogTime = 0;
+let acpEventLogCount = 0;
+const acpDebugEnabled = typeof window !== "undefined" &&
+  /[?&]debug=acp/.test(window.location.search);
+
+function logAcpEvent(sessionId: string, p: AcpPayload) {
+  if (acpDebugEnabled) {
+    console.log(`[ACP EVENT] ${sessionId.substring(0, 8)} type=${p.type}`, {
+      type: p.type,
+      content: p.content?.substring(0, 100),
+      thinking: p.type === 'thinking' ? p.content?.substring(0, 100) : undefined,
+      tool_name: p.tool_name,
+      tool_status: p.status,
+      input: p.input?.substring(0, 100),
+      output: p.output?.substring(0, 100),
+      stop_reason: p.stop_reason,
+      error: p.message,
+    });
+    return;
+  }
+  acpEventLogCount++;
+  const now = performance.now();
+  if (now - lastAcpEventLogTime < ACP_EVENT_LOG_THROTTLE_MS) return;
+  lastAcpEventLogTime = now;
+  console.log(`[ACP EVENT] ${sessionId.substring(0, 8)} type=${p.type} (${acpEventLogCount} events since last log)`);
+  acpEventLogCount = 0;
+}
+
 function handleAcpEventInner(sessionId: string, p: AcpPayload) {
-  const detail = {
-    type: p.type,
-    content: p.content?.substring(0, 100),
-    thinking: p.type === 'thinking' ? p.content?.substring(0, 100) : undefined,
-    tool_name: p.tool_name,
-    tool_status: p.status,
-    input: p.input?.substring(0, 100),
-    output: p.output?.substring(0, 100),
-    stop_reason: p.stop_reason,
-    error: p.message,
-  };
   const state = getSessionState(sessionId);
   const isActiveSession = store.activeSessionId === sessionId;
   // Any live event (thinking/text/tool, etc.) means the agent is still working —
@@ -1130,10 +1154,11 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   if (state.retry && p.type !== "finish" && p.type !== "error") {
     resetRetryDeadline(sessionId, state);
   }
-  // 仅活动会话打逐事件日志——每 chunk 的 console.log + JSON.stringify 在
-  // 主线程上是真实开销，多个后台会话并行流式时尤其明显（统计仍由 diag 记录）
+  // 仅活动会话打日志且经节流（见 logAcpEvent）——每 chunk 的 console.log
+  // + JSON.stringify 在 WKWebView 主线程上是真实开销，多个后台会话并行
+  // 流式时尤其明显（统计仍由 diag 记录）
   if (isActiveSession) {
-    console.log(`[ACP EVENT] ${sessionId.substring(0,8)} type=${p.type}`, JSON.stringify(detail));
+    logAcpEvent(sessionId, p);
   }
 
   switch (p.type) {
@@ -2035,12 +2060,28 @@ async function pickDirectory() {
   showDirMenu.value = false;
 }
 
-// Sync messages to message store for search
+// Sync messages to message store for search.
+// 流式 chunk 是原地 mutate（lt.content = ...），deep watch 每 chunk 触发；
+// 全量数组拷贝 + store 替换会引发搜索订阅方每次 chunk 的重算。用 rAF 把
+// 同步合并到每帧至多一次（60Hz 上限），高 chunk 频率时显著节省拷贝开销。
+let pendingSyncMsgs: Message[] | null = null;
+let pendingSyncSid = "";
+let syncRafHandle: number | null = null;
 watch(messages, (msgs) => {
   const sid = effectiveSessionId.value;
-  if (sid) {
-    msgStore.setMessages(sid, [...msgs]);
-  }
+  if (!sid) return;
+  pendingSyncMsgs = msgs;
+  pendingSyncSid = sid;
+  if (syncRafHandle !== null) return;
+  syncRafHandle = requestAnimationFrame(() => {
+    syncRafHandle = null;
+    if (pendingSyncMsgs) {
+      const batch = pendingSyncMsgs;
+      const batchSid = pendingSyncSid;
+      pendingSyncMsgs = null;
+      msgStore.setMessages(batchSid, [...batch]);
+    }
+  });
 }, { deep: true });
 </script>
 

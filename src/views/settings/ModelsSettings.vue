@@ -162,7 +162,8 @@ onMounted(() => {
   });
 
   listen<string>("llama_server_log", (event) => {
-    console.log("Llama server log:", event.payload);
+    // 不做 console.log：llama.cpp 的 INFO 日志可达每 token 一行，直接打在
+    // 主线程会放大 WebView console I/O；日志已进 serverLogs 供 UI 展示。
     if (startingServer.value) {
       serverLogs.value.push(event.payload);
       if (serverLogs.value.length > 100) {

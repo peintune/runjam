@@ -280,12 +280,22 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   async function batchDelete(ids: string[]) {
+    // Capture sessions before removal so we can stop their agent processes in
+    // the background. The list must update immediately regardless of how long
+    // the backend stop takes.
+    const toDelete = sessions.value.filter(s => ids.includes(s.id));
     sessions.value = sessions.value.filter(s => !ids.includes(s.id));
     if (activeSessionId.value && ids.includes(activeSessionId.value)) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
     for (const id of ids) {
       useMessageStore().removeSession(id);
+      const s = toDelete.find(s => s.id === id);
+      if (s && (s.status === "running" || s.status === "idle")) {
+        tauriStopSession(id).catch((err) => console.error("Failed to stop session:", err));
+      }
+    }
+    for (const id of ids) {
       try {
         await deleteSession(id);
       } catch (err) {
@@ -319,17 +329,23 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   }
 
   async function removeSession(id: string) {
-    // Terminate any still-running agent process for this session — otherwise the
-    // process keeps running and emitting events after the session is deleted.
+    // Capture the session before removal so we know whether its agent process
+    // still needs stopping. Removal MUST come first and must never wait on the
+    // backend stop — stop_session can block for a long time (or hang) when an
+    // agent process ignores SIGTERM, and awaiting it here made the session
+    // appear to "not delete" (nothing happened in the list).
     const delSession = sessions.value.find((s) => s.id === id);
-    if (delSession && (delSession.status === "running" || delSession.status === "idle")) {
-      try { await tauriStopSession(id); } catch (err) { console.error(err); }
-    }
     sessions.value = sessions.value.filter((s) => s.id !== id);
     if (activeSessionId.value === id) {
       activeSessionId.value = sessions.value[0]?.id ?? null;
     }
     useMessageStore().removeSession(id);
+    // Best-effort background cleanup: terminate any still-running agent
+    // process for this session — otherwise the process keeps running and
+    // emitting events after the session is deleted.
+    if (delSession && (delSession.status === "running" || delSession.status === "idle")) {
+      tauriStopSession(id).catch((err) => console.error("Failed to stop session:", err));
+    }
     try {
       await deleteSession(id);
     } catch (err) {

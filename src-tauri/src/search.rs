@@ -354,13 +354,19 @@ pub fn update_session_title(id: &str, title: &str) {
 
 pub fn delete_session(id: &str) -> Result<()> {
     let conn = get_conn()?;
+    delete_session_on(&conn, id)
+}
 
+/// Deletes a session and its related rows on a given connection (used by
+/// tests with an in-memory DB; the public wrapper opens the real DB).
+pub(crate) fn delete_session_on(conn: &Connection, id: &str) -> Result<()> {
     // Delete related data (best-effort, don't fail if any step errors)
     let _ = conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id]);
     let _ = conn.execute("DELETE FROM token_usage WHERE session_id = ?1", params![id]);
 
-    // Try to delete the session. If FOREIGN KEY still blocks us, temporarily
-    // disable FK enforcement so the session row is always removed.
+    // Try to delete the session. If FOREIGN KEY still blocks us (a table we
+    // don't know about references sessions), temporarily disable FK
+    // enforcement so the session row is always removed.
     if let Err(_) = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]) {
         conn.execute_batch("PRAGMA foreign_keys=OFF")?;
         let result = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]);
@@ -371,7 +377,7 @@ pub fn delete_session(id: &str) -> Result<()> {
         }
     }
 
-    // Force WAL checkpoint so data survives app restart
+    // Force WAL checkpoint so data survives app restart (no-op on in-memory)
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
     eprintln!("[delete_session] Deleted session: {}", id);
     Ok(())

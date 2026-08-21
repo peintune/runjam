@@ -421,6 +421,13 @@ function startTypewriter(
         delete timerMap.get(idx)![field];
       }
       frozenDurations[idx][field] = Date.now() - startTimes[idx][field];
+      // content 揭示完成时直接触发 mermaid 渲染——取代原 deep watcher
+      // 轮询（旧 watcher 每个 typewriter tick 都跑一遍 .map() 生成新数组
+      // 再做 deep 比较，是流式期间每 tick 的额外 O(n) 开销）。isTyping
+      // 检查会挡住"内容仍在流式增长"的中间态，最终完成时只渲染一次。
+      if (field === "content" && props.messages[idx]) {
+        void handleMermaidInContent(idx, props.messages[idx]!);
+      }
     }
   }, speed);
   existing[field] = timer;
@@ -750,24 +757,6 @@ watch(
         const batch = pendingMsgs;
         pendingMsgs = null;
         processMessages(batch);
-      }
-    });
-  },
-  { deep: true },
-);
-
-watch(
-  () => {
-    return props.messages.map((_m, i) => {
-      const full = props.messages[i]?.content || "";
-      const displayed = displayMap[i]?.content || "";
-      return displayed.length >= full.length && full.length > 0;
-    });
-  },
-  (completed) => {
-    completed.forEach((isComplete, i) => {
-      if (isComplete) {
-        handleMermaidInContent(i, props.messages[i]!);
       }
     });
   },

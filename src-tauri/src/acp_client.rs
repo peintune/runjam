@@ -2,7 +2,7 @@ use crate::acp::{AcpEvent, AcpMessage, PermissionOption};
 use crate::cost::tracker;
 use crate::db::connection::Database;
 use crate::node_util;
-use crate::rjlog;
+use crate::{rjlog, rjlogd};
 use crate::util::hidden_command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -142,7 +142,7 @@ fn filter_codex_metadata_warning(text: &str) -> &str {
         && text.contains("degrade performance")
         && text.contains("cause issues")
     {
-        rjlog!("[ACP DEBUG] Filtered codex model metadata warning: {}", text);
+        rjlogd!("[ACP DEBUG] Filtered codex model metadata warning: {}", text);
         return "";
     }
     text
@@ -154,7 +154,7 @@ fn filter_codex_metadata_warning(text: &str) -> &str {
 fn normalize_gemini_thought(text: &str) -> String {
     if text.contains("****") || text.contains('\n') {
         let cleaned = text.replace("****", " ").replace('\n', " ");
-        rjlog!("[ACP DEBUG] Normalized gemini thought (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
+        rjlogd!("[ACP DEBUG] Normalized gemini thought (orig {} chars, cleaned {} chars)", text.len(), cleaned.len());
         return cleaned;
     }
     text.to_string()
@@ -1114,7 +1114,7 @@ impl AcpClient {
                                     "agent_message_chunk" => {
                                         let text = filter_codex_metadata_warning(&get_content_text(&update.params.update)).to_string();
                                         if !text.is_empty() {
-                                            rjlog!("[ACP DEBUG] Agent message chunk: {} chars", text.len());
+                                            rjlogd!("[ACP DEBUG] Agent message chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                                 &session_id_clone, "0", "0",
                                                 AcpEvent::Text { content: text }
@@ -1122,7 +1122,7 @@ impl AcpClient {
                                         }
                                     }
                                     "agent_message_end" => {
-                                        rjlog!("[ACP DEBUG] Agent message end");
+                                        rjlogd!("[ACP DEBUG] Agent message end");
                                         // Gemini sends agent_message_chunk as full snapshots of each
                                         // message. Emit Start so the frontend pushes a new message
                                         // bubble and resets activeContent, preventing messages from
@@ -1144,7 +1144,7 @@ impl AcpClient {
                                         }
                                     }
                                     "agent_thought_end" => {
-                                        rjlog!("[ACP DEBUG] Agent thought end");
+                                        rjlogd!("[ACP DEBUG] Agent thought end");
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                             &session_id_clone, "0", "0",
                                             AcpEvent::Thinking { content: String::new(), status: "done".to_string(), duration: None }
@@ -1154,7 +1154,7 @@ impl AcpClient {
                                         let raw = get_content_text(&update.params.update);
                                         let text = normalize_gemini_thought(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
-                                            rjlog!("[ACP DEBUG] Thinking update: {} chars", text.len());
+                                            rjlogd!("[ACP DEBUG] Thinking update: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                                 &session_id_clone, "0", "0",
                                                 AcpEvent::Thinking { content: text, status: "thinking".to_string(), duration: None }
@@ -1164,7 +1164,7 @@ impl AcpClient {
                                     "message_chunk" => {
                                         let text = filter_codex_metadata_warning(&get_content_text(&update.params.update)).to_string();
                                         if !text.is_empty() {
-                                            rjlog!("[ACP DEBUG] Message chunk: {} chars", text.len());
+                                            rjlogd!("[ACP DEBUG] Message chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                                 &session_id_clone, "0", "0",
                                                 AcpEvent::Text { content: text }
@@ -1172,7 +1172,7 @@ impl AcpClient {
                                         }
                                     }
                                     "message_end" => {
-                                        rjlog!("[ACP DEBUG] Message end");
+                                        rjlogd!("[ACP DEBUG] Message end");
                                         // Same as agent_message_end: signal the frontend to start a
                                         // new message bubble so the next message_chunk doesn't append.
                                         let _ = app_clone2.emit(&event_name, &AcpMessage::new(
@@ -1189,7 +1189,7 @@ impl AcpClient {
                                         let cached_total = (cached_read + cached_write) as i64;
                                         
                                         // Debug: log the full update structure
-                                        rjlog!("[CACHE DEBUG] usage_update: used={}, input={}, output={}, cached_read={}, cached_write={}, full_update={}", 
+                                        rjlogd!("[CACHE DEBUG] usage_update: used={}, input={}, output={}, cached_read={}, cached_write={}, full_update={}", 
                                             used, input_tokens, output_tokens, cached_read, cached_write,
                                             serde_json::to_string(&update.params.update).unwrap_or_default());
                                         
@@ -1599,7 +1599,7 @@ impl AcpClient {
         };
 
         let json = serde_json::to_string(&request).map_err(|e| format!("Failed to serialize request: {}", e))?;
-        rjlog!("[ACP DEBUG] Sending request: {}", json);
+        rjlogd!("[ACP DEBUG] Sending request: {}", json);
 
         let mut stdin = self.stdin_writer.lock().map_err(|e| e.to_string())?;
         writeln!(&mut stdin, "{}", json).map_err(|e| format!("Failed to write to stdin: {}", e))?;
