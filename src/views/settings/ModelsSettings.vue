@@ -76,6 +76,15 @@ function isModelRunning(filename: string): boolean {
   return result;
 }
 
+const runningServerUrl = computed(() => {
+  const port = runningServerPort.value > 0 ? runningServerPort.value : 19090;
+  return `http://127.0.0.1:${port}`;
+});
+
+function openLocalServer() {
+  openUrl(runningServerUrl.value);
+}
+
 const showAddLocalModel = ref(false);
 const newLocalModelName = ref("");
 
@@ -704,6 +713,14 @@ const userAddedModels = computed(() => {
               <span v-if="isModelRunning(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
                 <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
               </span>
+              <a
+                v-if="isModelRunning(rm.filename)"
+                @click.prevent="openLocalServer"
+                class="flex items-center gap-0.5 text-[11px] text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-full transition-all duration-150 cursor-pointer"
+                title="Open in browser"
+              >
+                <ExternalLink :size="11" /> {{ runningServerUrl }}
+              </a>
               <span v-else-if="isModelInstalled(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                 <Check :size="11" /> Installed
               </span>
@@ -780,6 +797,14 @@ const userAddedModels = computed(() => {
                 <span v-if="isModelRunning(model.name)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
                   <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
                 </span>
+                <a
+                  v-if="isModelRunning(model.name)"
+                  @click.prevent="openLocalServer"
+                  class="flex items-center gap-0.5 text-[11px] text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-full transition-all duration-150 cursor-pointer"
+                  title="Open in browser"
+                >
+                  <ExternalLink :size="11" /> {{ runningServerUrl }}
+                </a>
                 <span v-else class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
                   <Check :size="11" /> Added
                 </span>

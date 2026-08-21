@@ -224,7 +224,7 @@ pub fn list_session_skills(cwd: &str, agent_type: &str) -> Vec<String> {
         return Vec::new();
     };
     let skills_dir = Path::new(cwd).join(&subdir);
-    rjlog!("[SKILL] list_session_skills: reading {:?} (agent={}, cwd={})", skills_dir, agent_type, cwd);
+    //rjlog!("[SKILL] list_session_skills: reading {:?} (agent={}, cwd={})", skills_dir, agent_type, cwd);
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&skills_dir) {
         for entry in entries.flatten() {

@@ -877,7 +877,7 @@ interface SessionState {
 // Max send attempts including the first try; failures auto-retry up to this.
 const RETRY_MAX = 3;
 const RETRY_DELAY_MS = 1000;
-const RETRY_TIMEOUT_MS = 60_000;
+const RETRY_TIMEOUT_MS = 30_000;
 
 const sessionStates = new Map<string, SessionState>();
 
@@ -1022,7 +1022,7 @@ function clearRetry(state: SessionState) {
  * last attempt — leaves the final error visible. Never leaves the UI stuck on
  * a bare spinner.
  */
-function handleSendFailure(sessionId: string, state: SessionState, errMsg: string) {
+function handleSendFailure(sessionId: string, state: SessionState, errMsg: string, isRealError = false) {
   const isActiveSession = store.activeSessionId === sessionId;
   state.isProcessing = false;
   state.thinkingStartTime = 0;
@@ -1036,11 +1036,16 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   }
 
   const retry = state.retry;
-  if (retry && retry.attempts < RETRY_MAX) {
+  // A real error reported by the agent (ACP error event) is FINAL — never
+  // auto-retry it, even if we're still within the retry budget. The upstream
+  // failure (e.g. 401 auth) won't fix itself and re-sending only spawns
+  // another round of silent retries inside the agent. Only no-activity
+  // timeouts are retryable.
+  if (!isRealError && retry && retry.attempts < RETRY_MAX) {
     const attempt = retry.attempts;
     state.messages.push({
       role: "agent",
-      content: `⚠️ Request failed (try ${attempt}/${RETRY_MAX}): ${errMsg}，${RETRY_DELAY_MS / 1000}s 后自动重试...`,
+      content: `⚠️ Request failed (try ${attempt}/${RETRY_MAX}): ${errMsg}，${RETRY_DELAY_MS / 1000}s retring ...`,
       isProcessing: true,
     });
     if (isActiveSession) {
@@ -1056,16 +1061,20 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
     return;
   }
 
-  // Final failure — surface the real error and give up retrying.
+  // Final failure — surface the real error and give up retrying. Persist it
+  // regardless of whether this session is currently active, so switching back
+  // to this session still shows the error (loadSessionMessages reads from DB).
+  const finalContent = retry ? `Error: ${errMsg}（已自动重试 ${retry.attempts} 次）` : `Error: ${errMsg}`;
   state.messages.push({
     role: "agent",
-    content: retry ? `Error: ${errMsg}（已自动重试 ${retry.attempts} 次）` : `Error: ${errMsg}`,
+    content: finalContent,
   });
   clearRetry(state);
+  persistMessage(sessionId, "agent", finalContent);
+  msgStore.setMessages(sessionId, state.messages as unknown as Message[]);
   if (isActiveSession) {
     syncMessagesToView(state);
     isProcessing.value = false;
-    msgStore.setMessages(sessionId, messages.value);
   }
 }
 
@@ -1445,9 +1454,13 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         msgStore.setMessages(sessionId, messages.value);
       }
       break;
-    case "error":
-      handleSendFailure(sessionId, state, p.message || "Unknown");
+    case "error": {
+      // Log unconditionally (even for background sessions) so a missed error
+      // shows up in devtools without requiring this session to be active.
+      console.log(`[ACP ERROR EVENT] ${sessionId.substring(0, 8)}:`, p.message);
+      handleSendFailure(sessionId, state, p.message || "Unknown", true);
       break;
+    }
   }
 }
 

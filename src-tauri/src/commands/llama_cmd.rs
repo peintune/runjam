@@ -268,8 +268,21 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     cmd.arg("-m").arg(&full_model_path)
         .arg("--port").arg(port.to_string())
         .arg("--host").arg("127.0.0.1")
-        .arg("--jinja")
-        .stdout(std::process::Stdio::piped())
+        .arg("--jinja");
+    // 使用系统全部 CPU 核心加速推理，并预留较大的上下文窗口
+    // （agent 系统提示词+工具定义可能很大，默认从模型加载的 context 可能不足）
+    if let Ok(n) = std::thread::available_parallelism() {
+        cmd.arg("-t").arg(n.get().to_string());
+    }
+    cmd.arg("-c").arg("32768");
+    // 关键性能参数：agent 会发送上万 token 的提示词，不开启 flash attention 时
+    // CPU 上每生成一个 token 都要对全部上下文做 O(n^2) 的注意力计算，
+    // 实测只有 0.4 t/s（21376 token 上下文）。开启后长上下文加速一个数量级以上。
+    cmd.arg("-fa").arg("on");
+    // KV cache 量化为 q8_0：32768 上下文的 KV cache 内存减半，加快长上下文推理
+    cmd.arg("-ctk").arg("q8_0");
+    cmd.arg("-ctv").arg("q8_0");
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     
     println!("[DEBUG] Starting llama-server: path={}, model={}, port={}", 

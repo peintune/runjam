@@ -36,6 +36,32 @@ macro_rules! rjlog {
     }};
 }
 
+/// Debug-level log: only emitted when RUNJAM_PROXY_DEBUG=1/true.
+/// 代理热路径（每条 SSE 行、每个请求 body 预览等）平时会刷爆日志文件并
+/// 浪费磁盘 I/O，默认关闭；排查协议问题时设环境变量开启。
+static DEBUG_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn debug_enabled() -> bool {
+    *DEBUG_ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("RUNJAM_PROXY_DEBUG").unwrap_or_default().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// Debug log gated on RUNJAM_PROXY_DEBUG. Use for hot-path/verbose logs
+/// (per-SSE-line traces, request body previews); keep errors and key
+/// lifecycle events on `rjlog!` so they are always recorded.
+#[macro_export]
+macro_rules! rjlogd {
+    ($($arg:tt)*) => {{
+        if $crate::log_util::debug_enabled() {
+            $crate::rjlog!($($arg)*);
+        }
+    }};
+}
+
 /// Write a raw string to the log file (no extra formatting).
 pub fn write_to_file(line: &str) {
     ensure_file();

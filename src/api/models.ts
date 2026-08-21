@@ -58,6 +58,14 @@ export async function getDownloadStatus(): Promise<DownloadStatus> {
 
 export const recommendedLocalModels = [
   { 
+    name: "unsloth/Qwen3-1.7B-GGUF", 
+    filename: "Qwen3-1.7B-Q4_K_M.gguf",
+    alias: "Qwen3 1.7B", 
+    size: "1.2GB", 
+    desc: "Qwen3 小模型，CPU 推理流畅，工具调用能力强",
+    hfRepo: "unsloth/Qwen3-1.7B-GGUF"
+  },
+  { 
     name: "deepreinforce-ai/Ornith-1.0-9B-GGUF", 
     filename: "ornith-1.0-9b-Q4_K_M.gguf",
     alias: "Ornith 1.0 9B", 

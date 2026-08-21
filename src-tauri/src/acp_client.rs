@@ -106,11 +106,11 @@ fn get_tool_name(w: &UpdateWrapper) -> String {
         if !name.is_empty() { return name.to_string(); }
     }
     // Debug: if still empty, log _meta structure
-    if let Some(ref meta) = w._meta {
-        rjlog!("[ACP DEBUG] get_tool_name: _meta present but no toolName found. _meta keys: {:?}", meta.as_object().map(|o| o.keys().collect::<Vec<_>>()));
-    } else {
-        rjlog!("[ACP DEBUG] get_tool_name: _meta is None, tool_name={:?}", w.tool_name);
-    }
+    // if let Some(ref meta) = w._meta {
+    //     rjlog!("[ACP DEBUG] get_tool_name: _meta present but no toolName found. _meta keys: {:?}", meta.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+    // } else {
+    //     rjlog!("[ACP DEBUG] get_tool_name: _meta is None, tool_name={:?}", w.tool_name);
+    // }
     String::new()
 }
 
@@ -1136,7 +1136,7 @@ impl AcpClient {
                                         let raw = get_content_text(&update.params.update);
                                         let text = normalize_gemini_thought(filter_codex_metadata_warning(&raw));
                                         if !text.is_empty() {
-                                            rjlog!("[ACP DEBUG] Agent thought chunk: {} chars", text.len());
+                                            //rjlog!("[ACP DEBUG] Agent thought chunk: {} chars", text.len());
                                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                                 &session_id_clone, "0", "0",
                                                 AcpEvent::Thinking { content: text, status: "thinking".to_string(), duration: None }
