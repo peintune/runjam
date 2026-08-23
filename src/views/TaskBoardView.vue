@@ -51,17 +51,19 @@ const sorted = computed(() => {
 interface ColumnDef {
   key: string;
   label: string;
-  statuses: string[];
+  predicate: (s: Session) => boolean;
   dot: string;
   archivedOnly?: boolean;
 }
 
+// 统一色板：running=蓝（进行中）、completed=绿（完成未读）、history=紫（已读）、
+// failed=红、archived=灰。
 const COLUMN_DEFS: ColumnDef[] = [
-  { key: "running", label: "Running", statuses: ["running"], dot: "bg-emerald-400 animate-blink" },
-  { key: "waiting", label: "Waiting / Idle", statuses: ["waiting", "idle"], dot: "bg-amber-400" },
-  { key: "completed", label: "Completed", statuses: ["stopped"], dot: "bg-sky-400" },
-  { key: "failed", label: "Failed", statuses: ["error"], dot: "bg-red-400" },
-  { key: "archived", label: "Archived", statuses: [], dot: "bg-gray-300", archivedOnly: true },
+  { key: "running", label: "Running", predicate: s => s.status === "running", dot: "bg-blue-400" },
+  { key: "completed", label: "Completed", predicate: s => s.status === "idle" && s.unread, dot: "bg-emerald-400" },
+  { key: "history", label: "History", predicate: s => s.status === "stopped" || (s.status === "idle" && !s.unread), dot: "bg-violet-400" },
+  { key: "failed", label: "Failed", predicate: s => s.status === "error", dot: "bg-red-400" },
+  { key: "archived", label: "Archived", predicate: s => !!s.archived, dot: "bg-gray-300", archivedOnly: true },
 ];
 
 const columns = computed(() =>
@@ -69,7 +71,7 @@ const columns = computed(() =>
     ...d,
     collapsed: collapsedCols.value.has(d.key),
     sessions: sorted.value.filter(s =>
-      d.archivedOnly ? !!s.archived : !s.archived && d.statuses.includes(s.status),
+      d.archivedOnly ? !!s.archived : !s.archived && d.predicate(s),
     ),
   })),
 );

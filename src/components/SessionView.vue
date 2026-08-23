@@ -1076,6 +1076,27 @@ function clearRetry(state: SessionState) {
   state.retry = null;
 }
 
+// 判定一轮"已结束"的回复是否实际失败。agent 在遇到硬错误（如 API 认证失败、
+// 401/403、上游错误、内部重试耗尽）时会把错误以普通文本形式输出，随后正常发
+// 送 finish 事件——若只看 finish 不看内容，会话会被标记为 idle（看板 Completed
+// 列），而用户实际看到的是失败。这里用强特征模式识别这类文本。启发式，覆盖
+// 常见 CLI（Claude Code 等）的错误输出格式。
+const TURN_ERROR_PATTERNS = [
+  /Failed to authenticate/i,
+  /Incorrect API key/i,
+  /invalid_api_key/i,
+  /authentication_error/i,
+  /Upstream \d{3}/i,
+  /Request failed \(try \d+\/\d+\)/i,
+];
+
+function isFailedTurn(state: SessionState): boolean {
+  const last = lastAgentMsg(state.messages);
+  const text = last?.content || state.activeContent || "";
+  if (!text) return false;
+  return TURN_ERROR_PATTERNS.some(re => re.test(text));
+}
+
 /**
  * Handle a failed send attempt. Shows the failure on the chat (with a "try
  * x/3" label), then either auto-retries after a short delay or — after the
@@ -1131,6 +1152,15 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   });
   clearRetry(state);
   persistMessage(sessionId, "agent", finalContent);
+  // Final failure (retries exhausted or a real ACP error): mark the session as
+  // error so the board shows it under "Failed" instead of leaving it stuck.
+  const sess = store.sessions.find(s => s.id === sessionId);
+  if (sess && (sess.status === 'running' || sess.status === 'idle')) {
+    sess.status = 'error';
+    sess.newlyCompleted = true;
+    store.sessions = [...store.sessions];
+    saveSession(sessionId, sess.cli, sess.cliDisplayName, sess.title, sess.directory || "", "error", sess.pid, sess.pinned ? 1 : 0, sess.archived ? 1 : 0, sess.acpSessionId).catch(() => {});
+  }
   msgStore.setMessages(sessionId, state.messages as unknown as Message[]);
   if (isActiveSession) {
     syncMessagesToView(state);
@@ -1526,12 +1556,21 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       if (sessionId && state.activeContent) {
         persistMessage(sessionId, "agent", state.activeContent);
       }
-      // Mark session as idle (process still alive, waiting for next message)
+      // Mark session as idle (process still alive, waiting for next message),
+      // or as error if this turn actually ended in a hard failure (e.g. auth /
+      // API error surfaced as plain text before the finish event).
       const sess = store.sessions.find(s => s.id === sessionId);
       if (sess && sess.status === 'running') {
-        sess.status = 'idle';
+        sess.status = isFailedTurn(state) ? 'error' : 'idle';
         sess.newlyCompleted = true;
+        // 回复完成未读语义：无论用户是否正打开着该会话，完成即标记为"新完成
+        // 未读"→ 看板 Completed 列。直到用户点击查看（selectSession 会置
+        // unread=false）才转入 History 列。若按 activeSessionId 判断，用户自己
+        // 发消息时（会话恒为 active）回复完成后会直接进 History，Completed 列
+        // 形同虚设。
+        sess.unread = true;
         store.sessions = [...store.sessions];
+        saveSession(sessionId, sess.cli, sess.cliDisplayName, sess.title, sess.directory || "", sess.status, sess.pid, sess.pinned ? 1 : 0, sess.archived ? 1 : 0, sess.acpSessionId).catch(() => {});
       }
       if (isActiveSession) {
         syncMessagesToView(state);

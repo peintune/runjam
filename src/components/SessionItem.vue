@@ -152,7 +152,6 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
             :title="contextTitle"
             class="inline-flex items-center gap-1 flex-shrink-0 ml-auto pl-1.5"
           >
-            <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :style="{ backgroundColor: contextStats.ringColor }" />
             <span class="tabular-nums" :style="{ color: contextStats.ringColor }">{{ contextLabel }}</span>
           </span>
         </p>
@@ -161,29 +160,23 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
 
     <!-- Status indicators -->
     <div v-if="!batch && !compact" class="flex items-center gap-1 flex-shrink-0">
-      <!-- Running → blinking green dot -->
+      <!-- Running → blinking blue dot -->
       <span
         v-if="session.status === 'running'"
-        class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0 animate-blink"
+        class="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0 animate-blink"
         title="Running"
       />
-      <!-- Idle → solid green dot (process alive, waiting for next message) -->
+      <!-- Completed (reply done, not yet viewed) → solid green dot -->
       <span
-        v-else-if="session.status === 'idle'"
+        v-else-if="session.status === 'idle' && session.unread"
         class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
-        title="Idle"
+        title="Completed"
       />
       <!-- Completed but not yet opened → solid green dot -->
       <span
         v-else-if="session.newlyCompleted && !active"
-        class="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0"
+        class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
         title="New"
-      />
-      <!-- Waiting -->
-      <span
-        v-else-if="session.status === 'waiting'"
-        class="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0"
-        title="Waiting"
       />
       <!-- No dot for stopped/error — just show terminal/file icons if any -->
       <!-- Explorer icon -->

@@ -51,16 +51,19 @@ const contextLabel = computed(() => `${fmt(contextStats.value.totalChars)}/${fmt
 const dirBase = computed(() => props.session.directory?.split("/").pop() || "Default directory");
 
 const statusMeta: Record<string, { label: string; dot: string; text: string; bg: string }> = {
-  running: { label: "Running", dot: "bg-emerald-400 animate-blink", text: "text-emerald-700", bg: "bg-emerald-50" },
-  waiting: { label: "Waiting", dot: "bg-amber-400", text: "text-amber-700", bg: "bg-amber-50" },
-  idle: { label: "Idle", dot: "bg-emerald-400", text: "text-emerald-700", bg: "bg-emerald-50" },
-  stopped: { label: "Completed", dot: "bg-sky-400", text: "text-sky-700", bg: "bg-sky-50" },
+  running: { label: "Running", dot: "bg-blue-400 animate-blink", text: "text-blue-700", bg: "bg-blue-50" },
+  idle: { label: "Completed", dot: "bg-emerald-400", text: "text-emerald-700", bg: "bg-emerald-50" },
+  stopped: { label: "History", dot: "bg-violet-400", text: "text-violet-700", bg: "bg-violet-50" },
   error: { label: "Failed", dot: "bg-red-400", text: "text-red-700", bg: "bg-red-50" },
 };
 
 const badge = computed(() => {
   if (props.session.archived) return { label: "Archived", dot: "bg-gray-300", text: "text-gray-500", bg: "bg-gray-100" };
-  return statusMeta[props.session.status] ?? { label: props.session.status, dot: "bg-gray-400", text: "text-gray-600", bg: "bg-gray-100" };
+  const s = props.session;
+  // idle 会话按已读/未读区分：未读（用户尚未打开）→ Completed；已读 → History，
+  // 与看板列划分保持一致。
+  if (s.status === "idle" && !s.unread) return statusMeta.stopped;
+  return statusMeta[s.status] ?? { label: s.status, dot: "bg-gray-400", text: "text-gray-600", bg: "bg-gray-100" };
 });
 
 function timeAgo(iso: string): string {

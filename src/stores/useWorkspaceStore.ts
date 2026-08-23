@@ -20,7 +20,7 @@ export interface Session {
    *  sessions (~/.runjam/session/{id}) are tracked correctly. */
   directory: string | null;
   model: string | null;
-  status: "running" | "idle" | "waiting" | "stopped" | "error";
+  status: "running" | "idle" | "stopped" | "error";
   pid: number | null;
   pinned: boolean;
   archived: boolean;
