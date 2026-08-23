@@ -2,7 +2,7 @@
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
-import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink } from "lucide-vue-next";
+import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink, LayoutDashboard } from "lucide-vue-next";
 import SessionItem from "./SessionItem.vue";
 import { openInFinder } from "../api/app";
 
@@ -114,6 +114,18 @@ function doRename(text: string) {
   renameId.value = null;
 }
 
+/** Open a session from the sidebar; leave the task-board route when needed. */
+function openSession(id: string) {
+  store.selectSession(id);
+  if (route.path !== "/") router.push("/");
+}
+
+/** Start a new session; leave the task-board route when needed. */
+function newSession() {
+  store.activeSessionId = null;
+  if (route.path !== "/") router.push("/");
+}
+
 function toggleSelect(id: string) {
   const next = new Set(selectedIds.value);
   if (next.has(id)) next.delete(id); else next.add(id);
@@ -170,10 +182,24 @@ function confirmDeleteAllArchived() {
     <!-- new session -->
     <div class="px-3 pb-3">
       <button
-        @click="store.activeSessionId = null"
+        @click="newSession"
         class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-gray-700 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
       >
         <Plus :size="17" /> New Session
+      </button>
+    </div>
+
+    <!-- task board -->
+    <div class="px-3 pb-3">
+      <button
+        @click="router.push('/board')"
+        :class="[
+          'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 cursor-pointer',
+          route.path === '/board' ? 'bg-gray-100 text-gray-900' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700',
+        ]"
+      >
+        <LayoutDashboard :size="15" />
+        Session Board
       </button>
     </div>
 
@@ -228,7 +254,7 @@ function confirmDeleteAllArchived() {
                 :batch="batchMode" :selected="selectedIds.has(s.id)"
                 :renaming="renameId === s.id"
                 :archived="false" :menuOpen="menuSessionId === s.id" :menuX="menuX" :menuY="menuY"
-                @select="store.selectSession(s.id)"
+                @select="openSession(s.id)"
                 @toggle-select="toggleSelect(s.id)"
                 @show-menu="(e: MouseEvent) => showMenu(e, s.id)"
                 @start-rename="startRename(s.id)"
@@ -264,7 +290,7 @@ function confirmDeleteAllArchived() {
             :batch="batchMode" :selected="selectedIds.has(s.id)"
             :renaming="renameId === s.id"
             :archived="false" :menuOpen="menuSessionId === s.id" :menuX="menuX" :menuY="menuY"
-            @select="store.selectSession(s.id)"
+            @select="openSession(s.id)"
             @toggle-select="toggleSelect(s.id)"
             @show-menu="(e: MouseEvent) => showMenu(e, s.id)"
             @start-rename="startRename(s.id)"
@@ -303,7 +329,7 @@ function confirmDeleteAllArchived() {
             :batch="batchMode" :selected="selectedIds.has(s.id)"
             :renaming="false"
             :menuOpen="menuSessionId === s.id" :menuX="menuX" :menuY="menuY"
-            @select="batchMode ? toggleSelect(s.id) : store.selectSession(s.id)"
+            @select="batchMode ? toggleSelect(s.id) : openSession(s.id)"
             @toggle-select="toggleSelect(s.id)"
             @show-menu="(e: MouseEvent) => showMenu(e, s.id)"
             @unarchive="store.unarchiveSession(s.id); menuSessionId = null"

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
+import { useRoute } from "vue-router";
 
 defineOptions({ name: "WorkspaceLayout" });
 import Sidebar from "./Sidebar.vue";
 import SessionView from "./SessionView.vue";
 import WorkspacePanel from "./WorkspacePanel.vue";
+import TaskBoardView from "../views/TaskBoardView.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import SearchButton from "./SearchButton.vue";
 import WindowControls from "./WindowControls.vue";
@@ -23,7 +25,11 @@ const sidebarHover = ref(false);
 const isWorkspaceMode = ref(false);
 
 const store = useWorkspaceStore();
+const route = useRoute();
 const { layout, switchDirectory, saveLayout } = useSessionLayout();
+
+/** True when rendering the task-board view (route /board) instead of a session. */
+const isBoard = computed(() => route.path === "/board");
 
 // Cached home directory for computing default session paths. The backend
 // uses ~/.runjam/session/{id} for sessions without a user-chosen directory;
@@ -276,7 +282,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
              resources persist across toggles. -->
         <WorkspacePanel
           ref="workspacePanelRef"
-          v-show="isWorkspaceMode && activeDirectory"
+          v-show="!isBoard && isWorkspaceMode && activeDirectory"
           :show-terminal="showTerminal"
           :visible="isWorkspaceMode && !!activeDirectory"
           :root-path="activeDirectory"
@@ -285,7 +291,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 
         <!-- Resize handle between workspace and chat -->
         <div
-          v-if="isWorkspaceMode && activeDirectory"
+          v-if="!isBoard && isWorkspaceMode && activeDirectory"
           class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
           :class="chatResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
           @mousedown="chatResize.startDrag"
@@ -294,17 +300,19 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         <!-- Chat / Session View -->
         <div
           class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] flex flex-col min-h-0"
-          :style="isWorkspaceMode && activeDirectory
+          :style="isWorkspaceMode && activeDirectory && !isBoard
             ? { width: chatResize.size.value + 'px' }
             : {}"
-          :class="!isWorkspaceMode || !activeDirectory ? 'flex-1' : ''"
+          :class="(!isWorkspaceMode || !activeDirectory || isBoard) ? 'flex-1' : ''"
         >
           <KeepAlive :max="20">
             <SessionView
+              v-if="!isBoard"
               :key="store.activeSessionId || '__new__'"
               :session-id="store.activeSessionId || ''"
               :compact="isWorkspaceMode && !!activeDirectory"
             />
+            <TaskBoardView v-else />
           </KeepAlive>
         </div>
       </div>

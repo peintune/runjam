@@ -58,17 +58,32 @@ const msgStore = useMessageStore();
 const agentStore = useAgentStore();
 const messages = ref<Message[]>([]);
 
+// 每个会话的 persistMessage 请求序号。连续保存（start 保存上一条 agent 消息、
+// finish 保存最后一条、handleSend 保存用户消息）会并发发出多个请求，后端返回的
+// 都是全量 SUM(context_chars)，但响应可能乱序到达——先发的请求后返回时会把较新
+// 的 contextChars 覆盖回旧值，导致侧栏数字短暂回跳。用序号只采纳最后一次请求的
+// 响应，丢弃迟到的旧响应。
+let contextCharCounter = 0;
+const contextCharSeq = new Map<string, number>();
+
 /** Persist a message to the backend, then sync the session's `contextChars`
  *  so the sidebar shows an up-to-date context size for every session. */
 function persistMessage(sessionId: string, role: string, content: string) {
+  const seq = ++contextCharCounter;
+  contextCharSeq.set(sessionId, seq);
   saveConversationMessage(sessionId, role, content)
     .then((chars) => {
+      // 已有更新的请求发出（旧响应迟到）时直接丢弃，避免回写过期值
+      if (contextCharSeq.get(sessionId) !== seq) return;
       const s = store.sessions.find(x => x.id === sessionId);
       if (s && typeof chars === "number") s.contextChars = chars;
     })
     .catch(() => {});
 }
 const unlisteners = new Map<string, UnlistenFn>();
+// initSession 里注册的 msgStore 同步 watcher（用于接回旧实例写入的首条用户
+// 消息），组件卸载时与 ACP 监听一并停止。
+const msgSyncStops = new Map<string, () => void>();
 const isSessionLoading = ref(false);
 
 // Scroll-to-bottom state
@@ -798,12 +813,35 @@ async function initSession(sid: string) {
   const minShow = new Promise<void>((res) => setTimeout(res, 150));
   try {
     if (!unlisteners.has(sid)) {
-      try {
-        const un = await listen<AcpPayload>(`acp:${sid}`, (e) => handleAcpEvent(sid, e.payload));
-        unlisteners.set(sid, un);
-      } catch {}
+      // 事件监听不能阻塞会话初始化：后端 agent 进程未启动时（新建会话、
+      // running:false）listen 可能一直挂起，若 await 会卡死整个 initSession，
+      // finally 永不执行、isSessionLoading 永远为 true，Loading 遮罩盖住消息区，
+      // 已入列的用户消息不可见（重启后 agent 已启动才能看到）。
+      listen<AcpPayload>(`acp:${sid}`, (e) => handleAcpEvent(sid, e.payload))
+        .then((un) => unlisteners.set(sid, un))
+        .catch(() => {});
     }
     await loadSessionMessages(sid);
+    // 新会话首条消息竞态：handleSend 运行在 KeepAlive 被替换前的旧实例
+    //（__new__ 页或上一个会话实例）中，首条用户消息 push 进旧实例私有的
+    // sessionStates（<script setup> 内声明 → 每个实例各一份），再写入跨实例
+    // 共享的 msgStore。本实例的 getSessionState 在 createSession 的 key 切换
+    // 瞬间创建（早于 handleSend 的写入），若只认自己那份状态，首条用户消息
+    // 会永久丢失——正是"新建会话后第一条消息不显示"的根因。这里监听
+    // msgStore 中本会话数组的替换并采用之；streaming 阶段 handleAcpEvent 的
+    // setMessages 传入同一引用（原地 push），不会触发，无循环。
+    const stopMsgSync = watch(
+      () => msgStore.getMessages(sid),
+      (msgs) => {
+        if (!msgs || msgs.length === 0) return;
+        const state = getSessionState(sid);
+        if (msgs === state.messages) return;
+        state.messages = msgs;
+        syncMessagesToView(state);
+      },
+      { immediate: true }
+    );
+    msgSyncStops.set(sid, stopMsgSync);
     restorePendingSend(sid);
     scrollToBottom();
   } finally {
@@ -844,7 +882,13 @@ function restorePendingSend(sid: string) {
 
 // Legacy watch: used when sessionId prop is not provided (no KeepAlive)
 watch(() => store.activeSessionId, async (newId) => {
-  if (props.sessionId) return; // Skip if using KeepAlive mode
+  // KeepAlive 模式下 props.sessionId 恒为字符串（含 __new__ 占位 ''）。
+  // 原守卫 `if (props.sessionId) return` 拦不住 ''：__new__ 实例在切换到
+  // 新会话时也会注册 acp:{sid} 监听，与真实实例的 initSession 监听重复，
+  // 导致同一 ACP 事件被处理两次（日志里 Received ACP session ID 出现两次）。
+  // 改为 `!== undefined`：只要传入过 prop（哪怕为空串）就交给
+  // onMounted/initSession 接管，本 watch 仅在真正的非 KeepAlive 用法下生效。
+  if (props.sessionId !== undefined) return;
   activeThinking.value = ""; activeContent.value = ""; thoughtDuration.value = "";
   inputText.value = "";
   mentionsMap.value = new Map();
@@ -855,10 +899,11 @@ watch(() => store.activeSessionId, async (newId) => {
     isProcessing.value = state.isProcessing;
     isSessionLoading.value = true;
     if (!unlisteners.has(newId)) {
-      try { 
-        const un = await listen<AcpPayload>(`acp:${newId}`, (e) => handleAcpEvent(newId, e.payload)); 
-        unlisteners.set(newId, un);
-      } catch {}
+      // 与 initSession 同理：listen 可能因后端进程未就绪而挂起，
+      // await 会卡住下面的 loadSessionMessages / loading 关闭。
+      listen<AcpPayload>(`acp:${newId}`, (e) => handleAcpEvent(newId, e.payload))
+        .then((un) => unlisteners.set(newId, un))
+        .catch(() => {});
     }
     await loadSessionMessages(newId);
     scrollToBottom();
@@ -1584,6 +1629,10 @@ onBeforeUnmount(() => {
     try { unlisten(); } catch {}
   }
   unlisteners.clear();
+  for (const stop of msgSyncStops.values()) {
+    try { stop(); } catch {}
+  }
+  msgSyncStops.clear();
   document.removeEventListener('click', closeDropdowns);
 });
 
@@ -1830,6 +1879,18 @@ async function handleSend() {
       showWarning(`Failed to start session: ${err}`);
       // Restore the input text so the user can retry.
       inputText.value = text;
+      // The session is kept (marked "error") so the UI stays on the session
+      // page; enqueue the user message (plus a visible error) so the first
+      // message of a brand-new session is never silently lost.
+      if (store.activeSessionId) {
+        const sid = store.activeSessionId;
+        const state = getSessionState(sid);
+        state.messages.push({ role: "user", content: userDisplay });
+        state.messages.push({ role: "agent", content: `Error: Failed to start session: ${err}`, isProcessing: false });
+        syncMessagesToView(state);
+        msgStore.setMessages(sid, [...state.messages]);
+        persistMessage(sid, "user", userDisplay);
+      }
       return;
     } finally {
       suppressSkillSync = false;

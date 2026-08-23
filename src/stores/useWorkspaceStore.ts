@@ -213,10 +213,14 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       }
     } catch (err) {
       console.error("Failed to start session:", err);
-      // Remove the placeholder session so the UI doesn't hang in "running" state.
-      sessions.value = sessions.value.filter(s => s.id !== sessionId);
-      if (activeSessionId.value === sessionId) {
-        activeSessionId.value = null;
+      // Keep the session (marked as failed) instead of rolling back: rolling
+      // back returns the UI to the "new session" page and silently drops the
+      // user's first message, which had nowhere to attach. Retrying a failed
+      // session will surface the startup error again via sendInput.
+      const s = sessions.value.find(s => s.id === sessionId);
+      if (s) {
+        s.status = "error";
+        saveSession(sessionId, s.cli, s.cliDisplayName, s.title, s.directory || "", "error", null, s.pinned ? 1 : 0, s.archived ? 1 : 0, s.acpSessionId).catch(() => {});
       }
       throw err; // Re-throw so callers (handleSend) can handle the failure.
     }

@@ -16,6 +16,11 @@ const router = createRouter({
       component: () => import("../views/CostsView.vue"),
     },
     {
+      path: "/board",
+      name: "board",
+      component: () => import("../components/WorkspaceLayout.vue"),
+    },
+    {
       path: "/settings",
       component: SettingsLayout,
       children: [
