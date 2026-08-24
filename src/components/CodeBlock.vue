@@ -52,7 +52,7 @@ async function handleCopy() {
       <button class="cb-copy-btn" @click="handleCopy">
         <Check v-if="copied" :size="12" />
         <Copy v-else :size="12" />
-        <span>{{ copied ? "Copied" : "Copy" }}</span>
+        <span>{{ copied ? $t("chat.copied") : $t("chat.copy") }}</span>
       </button>
     </div>
     <pre><code

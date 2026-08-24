@@ -62,7 +62,7 @@ watch(() => props.code, () => {
     <!-- Render target / error fallback -->
     <div v-if="renderError" class="mermaid-block-error">
       <AlertTriangle :size="14" />
-      <span>Mermaid render failed</span>
+      <span>{{ $t("mermaid.renderFailed") }}</span>
       <pre class="mermaid-block-code">{{ code }}</pre>
     </div>
     <div v-else ref="container" class="mermaid-block-svg" />

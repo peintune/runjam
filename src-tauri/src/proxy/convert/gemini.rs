@@ -4,11 +4,48 @@
 use crate::models_config::ModelEntry;
 use crate::rjlog;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
+use std::sync::{Mutex, OnceLock};
 
-use crate::proxy::common::{build_agent, extract_model_from_path, find_model, limit_tools_for_llama, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{build_agent, clamp_max_tokens, extract_model_from_path, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
+
+/// 按上游模型名缓存最近一次 reasoning_content。DeepSeek V3.2+ 等 thinking 端点
+/// 强制要求多轮对话把 reasoning_content 原样回传（"The reasoning_content in the
+/// thinking mode must be passed back to the API."），而 gemini-cli 的 Gemini 协议
+/// 在工具调用轮不会回传思考内容（thought part），因此 proxy 必须记住上次上游
+/// 返回的推理内容，在请求转换时补挂到 assistant 消息上。缓存键用上游模型名，
+/// 单会话串行场景下不会串扰。
+static LAST_REASONING_BY_MODEL: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn reasoning_cache() -> &'static Mutex<HashMap<String, String>> {
+    LAST_REASONING_BY_MODEL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_reasoning(model: &str, reasoning: &str) {
+    if reasoning.is_empty() {
+        return;
+    }
+    if let Ok(mut m) = reasoning_cache().lock() {
+        if m.get(model).map(|s| s.as_str()) != Some(reasoning) {
+            rjlog!("[PROXY] Gemini: cached reasoning_content for '{}' ({} chars)", model, reasoning.len());
+        }
+        m.insert(model.to_string(), reasoning.to_string());
+    }
+}
+
+fn recall_reasoning(model: &str) -> Option<String> {
+    reasoning_cache().lock().ok().and_then(|m| m.get(model).cloned())
+}
+
+/// 该上游端点是否强制要求回传 reasoning_content。目前只有 DeepSeek 官方 API
+/// 在 thinking 模式下强制校验（否则 400）；火山引擎 MiniMax 等不接受该输入字段
+/// （400 InvalidParameter）。默认不附加，新端点按需在此扩展。
+fn upstream_requires_reasoning_echo(base_url: &str) -> bool {
+    base_url.contains("deepseek.com")
+}
 
 pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &str, preferred_ids: Option<&[String]>, reasoning_disabled: bool) -> ProxyResponse {
     let req: Value = match serde_json::from_str(body) { Ok(v) => v, Err(e) => return ProxyResponse::Sync(StatusCode(400), format!("Invalid JSON: {}", e)) };
@@ -41,8 +78,15 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
 
     let target = find_model(models, model_name, preferred_ids);
 
+    // context_window 防御：小窗口模型收到远超能力的 max_output_tokens 会报 400
+    let max_output_tokens = if let Some(m) = &target {
+        clamp_max_tokens(max_output_tokens, m.context_window)
+    } else {
+        max_output_tokens
+    };
+
     let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
-        rjlog!("[PROXY] Gemini→OpenAI: model '{}' resolved id={} provider={} base_url={}", m.name, m.id, m.provider, m.api_base);
+        rjlog!("[PROXY] Gemini→OpenAI: model '{}' resolved id={} provider={} base_url={} max_output_tokens={}", m.name, m.id, m.provider, m.api_base, max_output_tokens);
         (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
     } else {
         let (s, b) = forward_to_gemini(body, path);
@@ -63,11 +107,23 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                 let role = content.get("role").and_then(|v| v.as_str()).unwrap_or("user");
                 let is_model = role == "model";
                 let mut text = String::new();
+                let mut reasoning = String::new();
                 let mut tool_calls: Vec<Value> = vec![];
 
                 for (pi, part) in parts.iter().enumerate() {
                     if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
-                        text.push_str(t);
+                        let is_thought = part.get("thought").and_then(|v| v.as_bool()).unwrap_or(false);
+                        if is_thought {
+                            // Gemini thought part = 上游模型的推理内容。绝不能混入 content：
+                            // Qwen 等 thinking 模型会校验并报 "reasoning_content must be
+                            // passed back to the API"。reasoning_disabled 时直接丢弃
+                            //（thinking 关闭后无需回传，混入 content 反而会被拒绝）。
+                            if !reasoning_disabled {
+                                reasoning.push_str(t);
+                            }
+                        } else {
+                            text.push_str(t);
+                        }
                     } else if let Some(fc) = part.get("functionCall") {
                         let name = fc["name"].as_str().unwrap_or("");
                         let args = fc["args"].to_string();
@@ -102,7 +158,26 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                     if !tool_calls.is_empty() {
                         msg["tool_calls"] = serde_json::json!(tool_calls);
                     }
-                    if !text.is_empty() || !tool_calls.is_empty() {
+                    // 思考内容回传分两类：
+                    // 1) gemini-cli 本轮带回了 thought part → 直接用请求里的 reasoning
+                    // 2) 工具调用轮 gemini-cli 不回传思考内容 → 用缓存的上游
+                    //    reasoning_content 补上（仅 DeepSeek 等强制回传的端点；
+                    //    MiniMax 等不接受该字段，400 InvalidParameter）
+                    // 注意：无论 reasoning_disabled 都回传——thinking 端点校验的是
+                    // 字段存在性，UI 关闭显示只是不生成 thought part，回传仍必须做。
+                    let echo = if !reasoning.is_empty() {
+                        Some(reasoning.clone())
+                    } else if upstream_requires_reasoning_echo(&base_url) {
+                        recall_reasoning(&model_name)
+                    } else {
+                        None
+                    };
+                    if let Some(r) = echo {
+                        if !r.is_empty() {
+                            msg["reasoning_content"] = serde_json::json!(r);
+                        }
+                    }
+                    if !text.is_empty() || !tool_calls.is_empty() || !reasoning.is_empty() {
                         openai_messages.push(msg);
                     }
                 } else if !text.is_empty() {
@@ -119,6 +194,10 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
             if let Some(decls) = tool.get("functionDeclarations").and_then(|v| v.as_array()) {
                 for decl in decls {
                     let name = decl["name"].as_str().unwrap_or("");
+                    if is_claude_only_tool(name) {
+                        rjlog!("[PROXY] Gemini→OpenAI: dropping Claude-only tool '{}' for third-party model", name);
+                        continue;
+                    }
                     let description = decl["description"].as_str().unwrap_or("");
                     // Gemini 的 functionDeclaration 可能没有 parameters 字段，
                     // 缺失/null 时用空对象 {}（OpenAI 兼容端点如火山引擎不接受 null）
@@ -126,14 +205,15 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                     if params.is_null() {
                         params = serde_json::json!({"type": "object", "properties": {}});
                     }
-                    openai_tools.push(serde_json::json!({
+                    // Bash 工具 schema 强化：确保 command 必填（见 common.rs harden_bash_tool）
+                    openai_tools.push(harden_bash_tool(&serde_json::json!({
                         "type": "function",
                         "function": {
                             "name": name,
                             "description": description,
                             "parameters": params
                         }
-                    }));
+                    })));
                 }
             }
         }
@@ -154,6 +234,9 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
     });
     if !openai_tools.is_empty() && support_tools {
         openai_body["tools"] = serde_json::json!(openai_tools);
+        // 第三方模型 Bash 调用规范：Gemini 转换路径不携带 system 消息，
+        // 由 helper 在 messages 最前插入引导（仅工具请求，普通聊天零开销）。
+        inject_bash_guidance(&mut openai_body);
     } else if !openai_tools.is_empty() && !support_tools {
         rjlog!("[PROXY] Gemini→OpenAI: model {} does not support tools, skipping tool definitions", real_model);
     }
@@ -207,7 +290,7 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                 ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
                 let resp_body = response.into_string().unwrap_or_default();
-                let converted = convert_openai_to_gemini(&resp_body, reasoning_disabled);
+                let converted = convert_openai_to_gemini(&resp_body, &model_name, reasoning_disabled);
                 ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
@@ -254,10 +337,12 @@ fn forward_to_gemini(body: &str, path: &str) -> (StatusCode, String) {
     }
 }
 
-fn convert_openai_to_gemini(openai_resp: &str, reasoning_disabled: bool) -> String {
+fn convert_openai_to_gemini(openai_resp: &str, model_name: &str, reasoning_disabled: bool) -> String {
     let resp: Value = match serde_json::from_str(openai_resp) { Ok(v) => v, Err(_) => return openai_resp.to_string() };
     let choice = &resp["choices"][0];
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
+    // 无论 reasoning_disabled 都缓存：thinking 端点（DeepSeek）多轮强制要求回传
+    remember_reasoning(model_name, reasoning_content);
     let content = choice["message"]["content"].as_str().unwrap_or("");
 
     let mut parts: Vec<Value> = vec![];
@@ -271,8 +356,9 @@ fn convert_openai_to_gemini(openai_resp: &str, reasoning_disabled: bool) -> Stri
     if let Some(tool_calls) = choice["message"].get("tool_calls").and_then(|v| v.as_array()) {
         for tc in tool_calls {
             let name = tc["function"]["name"].as_str().unwrap_or("");
-            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-            let args: Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+            let args_str = tool_call_args_str_tracked(&tc["function"]["arguments"], &name, "gemini non-streaming")
+                .unwrap_or_else(|| "{}".to_string());
+            let args: Value = serde_json::from_str(&args_str).unwrap_or(serde_json::json!({}));
             parts.push(serde_json::json!({"functionCall": {"name": name, "args": args}}));
         }
     }
@@ -440,13 +526,18 @@ fn make_gemini_sse_converter(model: String, reasoning_disabled: bool) -> impl Fn
                     let entry = pending_tools.entry(idx).or_insert_with(|| {
                         (tc["function"]["name"].as_str().unwrap_or("").to_string(), String::new())
                     });
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
-                        entry.1.push_str(args);
+                    if let Some(args) = tool_call_args_str_tracked(&tc["function"]["arguments"], &entry.0, "gemini streaming") {
+                        entry.1.push_str(&args);
                     }
                 }
             }
 
             // Reasoning — flush tools first, then emit thought
+            // 无论 reasoning_disabled 都缓存推理内容：thinking 端点（DeepSeek）
+            // 多轮强制要求回传，UI 关闭显示只是不生成 thought part，回传仍必须做。
+            if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                remember_reasoning(&model, reasoning);
+            }
             // reasoning_disabled 时剥离思考内容（不生成 thought part）
             if !reasoning_disabled {
                 if let Some(reasoning) = delta["reasoning_content"].as_str() {
@@ -512,7 +603,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, false)).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, "test-model", false)).unwrap();
         let parts = v["candidates"][0]["content"]["parts"].as_array().unwrap();
         // part 顺序：thought → functionCall → text
         assert_eq!(parts[0]["thought"], true, "reasoning_content 必须标记为 thought part");
@@ -532,7 +623,7 @@ mod tests {
             "choices": [{"message": {"role": "assistant", "content": "hello"}}],
             "usage": {}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, false)).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_gemini(&chat, "test-model", false)).unwrap();
         let parts = v["candidates"][0]["content"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["text"], "hello");

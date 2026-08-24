@@ -158,11 +158,11 @@ function confirmDeleteAllArchived() {
           <span class="text-[17px] font-semibold text-gray-90 0 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
         </div>
         <div class="flex items-center gap-1">
-          <button v-if="batchMode" @click="exitBatch" class="p-1.5 rounded-lg text-[11px] font-medium text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer">Cancel</button>
-          <button v-else @click="batchMode = true" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer" title="Select sessions">
+          <button v-if="batchMode" @click="exitBatch" class="p-1.5 rounded-lg text-[11px] font-medium text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer">{{ $t("common.cancel") }}</button>
+          <button v-else @click="batchMode = true" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer" :title="$t('sidebar.selectSessions')">
             <CheckSquare :size="15" />
           </button>
-          <button @click="viewMode = viewMode === 'comfortable' ? 'compact' : 'comfortable'" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer" :title="viewMode === 'comfortable' ? 'Compact view' : 'Comfortable view'">
+          <button @click="viewMode = viewMode === 'comfortable' ? 'compact' : 'comfortable'" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer" :title="viewMode === 'comfortable' ? $t('sidebar.compactView') : $t('sidebar.comfortableView')">
             <LayoutGrid :size="15" />
           </button>
         </div>
@@ -172,10 +172,10 @@ function confirmDeleteAllArchived() {
     <!-- batch action bar -->
     <div v-if="batchMode && selectedIds.size > 0" class="px-3 pb-2">
       <div class="flex items-center gap-1 bg-gray-100 rounded-xl px-2 py-1.5">
-        <span class="text-[12px] text-gray-500 ml-2 mr-auto">{{ selectedIds.size }} selected</span>
-        <button @click="batchPinSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-gray-600 hover:bg-gray-200 transition-colors cursor-pointer">Pin</button>
-        <button @click="batchArchiveSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-gray-600 hover:bg-gray-200 transition-colors cursor-pointer">Archive</button>
-        <button @click="batchDeleteSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-red-500 hover:bg-red-100 transition-colors cursor-pointer">Delete</button>
+        <span class="text-[12px] text-gray-500 ml-2 mr-auto">{{ $t("sidebar.selectedCount", { count: selectedIds.size }) }}</span>
+        <button @click="batchPinSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-gray-600 hover:bg-gray-200 transition-colors cursor-pointer">{{ $t("sidebar.pin") }}</button>
+        <button @click="batchArchiveSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-gray-600 hover:bg-gray-200 transition-colors cursor-pointer">{{ $t("sidebar.archive") }}</button>
+        <button @click="batchDeleteSelected" class="px-2.5 py-1 rounded-lg text-[12px] font-medium text-red-500 hover:bg-red-100 transition-colors cursor-pointer">{{ $t("sidebar.delete") }}</button>
       </div>
     </div>
 
@@ -185,7 +185,7 @@ function confirmDeleteAllArchived() {
         @click="newSession"
         class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-gray-700 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
       >
-        <Plus :size="17" /> New Session
+        <Plus :size="17" /> {{ $t("session.newSession") }}
       </button>
     </div>
 
@@ -199,7 +199,7 @@ function confirmDeleteAllArchived() {
         ]"
       >
         <LayoutDashboard :size="15" />
-        Session Board
+        {{ $t("sidebar.sessionBoard") }}
       </button>
     </div>
 
@@ -209,7 +209,7 @@ function confirmDeleteAllArchived() {
     <div class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4" @click="menuSessionId = null">
       <!-- batch mode hint -->
       <p v-if="batchMode && selectedIds.size === 0" class="px-3 py-8 text-center text-[12px] text-gray-400">
-        Click sessions to select
+        {{ $t("sidebar.clickToSelect") }}
       </p>
 
       <!-- Directory section header -->
@@ -219,7 +219,7 @@ function confirmDeleteAllArchived() {
           class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
         >
           <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': !collapsedDirectories }" />
-          <span class="text-[11px] font-medium text-gray-400">Directory</span>
+          <span class="text-[11px] font-medium text-gray-400">{{ $t("sidebar.directory") }}</span>
           <span class="text-[11px] text-gray-400 ml-auto">{{ grouped.groups.length }}</span>
         </button>
       </div>
@@ -241,7 +241,7 @@ function confirmDeleteAllArchived() {
                 </button>
                 <div v-if="dirMenuPath === g.path" class="absolute right-0 top-full mt-1 w-40 bg-white rounded-xl border border-gray-100 shadow-xl py-1.5 z-50">
                   <button @click.stop="openDirInFinder(g.path)" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors cursor-pointer">
-                    <ExternalLink :size="13" class="text-gray-400" /> Open in Finder
+                    <ExternalLink :size="13" class="text-gray-400" /> {{ $t("sidebar.openInFinder") }}
                   </button>
                 </div>
               </div>
@@ -269,7 +269,7 @@ function confirmDeleteAllArchived() {
                 class="w-full flex items-center gap-2 pl-5 py-1 rounded-lg text-[11px] text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors cursor-pointer"
               >
                 <ChevronRight :size="11" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': dirShowAll[g.path] }" />
-                <span>{{ dirShowAll[g.path] ? 'Collapse' : getDirHiddenCount(g.sessions, g.path) + ' older' }}</span>
+                <span>{{ dirShowAll[g.path] ? $t("sidebar.collapse") : $t("sidebar.older", { count: getDirHiddenCount(g.sessions, g.path) }) }}</span>
               </button>
             </div>
           </div>
@@ -279,7 +279,7 @@ function confirmDeleteAllArchived() {
       <div v-if="grouped.orphans.length > 0">
         <button @click="collapsedConversations = !collapsedConversations" class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer">
           <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': !collapsedConversations }" />
-          <span class="text-[11px] font-medium text-gray-400">Conversations</span>
+          <span class="text-[11px] font-medium text-gray-400">{{ $t("sidebar.conversations") }}</span>
           <span class="text-[11px] text-gray-400 ml-auto">{{ grouped.orphans.length }}</span>
         </button>
         <div v-if="!collapsedConversations" :class="viewMode === 'compact' ? 'space-y-0 mt-0.5' : 'space-y-0.5 mt-0.5'">
@@ -305,7 +305,7 @@ function confirmDeleteAllArchived() {
             class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] text-gray-400 hover:text-gray-500 hover:bg-gray-50 transition-colors cursor-pointer"
           >
             <ChevronRight :size="11" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': showAllOrphans }" />
-            <span>{{ showAllOrphans ? 'Collapse' : hiddenOrphanCount + ' older' }}</span>
+            <span>{{ showAllOrphans ? $t("sidebar.collapse") : $t("sidebar.older", { count: hiddenOrphanCount }) }}</span>
           </button>
         </div>
       </div>
@@ -318,9 +318,9 @@ function confirmDeleteAllArchived() {
         >
           <ChevronRight :size="13" class="transition-transform duration-150 flex-shrink-0" :class="{ 'rotate-90': showArchived }" />
           <Archive :size="13" class="flex-shrink-0" />
-          <span class="font-medium">Archived</span>
+          <span class="font-medium">{{ $t("sidebar.archived") }}</span>
           <span class="text-[11px] text-gray-400 ml-auto mr-2">{{ archivedSessions.length }}</span>
-          <button v-if="showArchived" @click.stop="confirmDeleteAllArchived" :class="confirmDeleteMode ? 'rounded-md text-[11px] bg-red-500 text-white hover:bg-red-600 cursor-pointer px-2 py-0.5' : 'p-1 rounded-md text-[11px] text-red-400 hover:bg-red-50 hover:text-red-500 transition-colors cursor-pointer'" :title="confirmDeleteMode ? 'Click again to confirm' : 'Delete all archived'">{{ confirmDeleteMode ? 'Sure?' : '🗑' }}</button>
+          <button v-if="showArchived" @click.stop="confirmDeleteAllArchived" :class="confirmDeleteMode ? 'rounded-md text-[11px] bg-red-500 text-white hover:bg-red-600 cursor-pointer px-2 py-0.5' : 'p-1 rounded-md text-[11px] text-red-400 hover:bg-red-50 hover:text-red-500 transition-colors cursor-pointer'" :title="confirmDeleteMode ? $t('sidebar.sure') : $t('sidebar.deleteAllArchived')">{{ confirmDeleteMode ? $t('sidebar.sure') : '🗑' }}</button>
         </button>
         <div v-if="showArchived" class="mt-0.5">
           <SessionItem
@@ -340,18 +340,18 @@ function confirmDeleteAllArchived() {
 
       <div v-if="store.sessions.length === 0" class="flex flex-col items-center justify-center py-16 text-gray-300">
         <Folder :size="32" class="mb-3 opacity-30" />
-        <p class="text-[13px] text-gray-400">No sessions yet</p>
-        <p class="text-[12px] text-gray-300 mt-1">Start a conversation to begin</p>
+        <p class="text-[13px] text-gray-400">{{ $t("sidebar.emptyState") }}</p>
+        <p class="text-[12px] text-gray-300 mt-1">{{ $t("sidebar.emptyHint") }}</p>
       </div>
     </div>
 
     <!-- footer -->
     <div class="border-t border-gray-100 px-3 py-3 space-y-0.5">
       <button @click="router.push('/costs')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/costs' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
-        <BarChart3 :size="17" /> Costs
+        <BarChart3 :size="17" /> {{ $t("sidebar.costs") }}
       </button>
       <button @click="router.push('/settings')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/settings' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
-        <Settings :size="17" /> Settings
+        <Settings :size="17" /> {{ $t("common.settings") }}
       </button>
     </div>
   </aside>

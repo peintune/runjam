@@ -92,14 +92,14 @@ function pick(action: () => void) {
           @click="pick(() => emit('new-file'))"
         >
           <FilePlus :size="13" class="text-gray-500" />
-          <span>New File</span>
+          <span>{{ $t("fs.newFile") }}</span>
         </button>
         <button
           class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 text-left"
           @click="pick(() => emit('new-folder'))"
         >
           <FolderPlus :size="13" class="text-gray-500" />
-          <span>New Folder</span>
+          <span>{{ $t("fs.newFolder") }}</span>
         </button>
         <div class="my-1 border-t border-gray-100"></div>
       </template>
@@ -111,7 +111,7 @@ function pick(action: () => void) {
           @click="pick(() => emit('rename'))"
         >
           <Pencil :size="13" class="text-gray-500" />
-          <span>Rename</span>
+          <span>{{ $t("fs.rename") }}</span>
         </button>
 
         <button
@@ -119,7 +119,7 @@ function pick(action: () => void) {
           @click="pick(() => emit('move-to'))"
         >
           <Move :size="13" class="text-gray-500" />
-          <span>Move to...</span>
+          <span>{{ $t("fs.moveTo") }}</span>
         </button>
 
         <!-- Open in Finder / Reveal in Finder: for folders it opens the folder;
@@ -129,7 +129,7 @@ function pick(action: () => void) {
           @click="pick(() => emit('open-in-finder'))"
         >
           <ExternalLink :size="13" class="text-gray-500" />
-          <span>Open in Finder</span>
+          <span>{{ $t("fs.openInFinder") }}</span>
         </button>
 
         <div class="my-1 border-t border-gray-100"></div>
@@ -139,7 +139,7 @@ function pick(action: () => void) {
           @click="pick(() => emit('delete'))"
         >
           <Trash2 :size="13" />
-          <span>Delete</span>
+          <span>{{ $t("common.delete") }}</span>
         </button>
       </template>
     </div>

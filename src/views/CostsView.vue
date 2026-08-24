@@ -3,6 +3,7 @@ import { onMounted, computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useCostStore } from "../stores/useCostStore";
 import { BarChart3, Zap, Folder, Calendar, MessageSquare, ArrowLeft, Database } from "lucide-vue-next";
+import { t } from "../i18n";
 import WindowControls from "../components/WindowControls.vue";
 
 const router = useRouter();
@@ -30,7 +31,7 @@ function fmtDate(d: string): string {
 }
 
 function shortDir(dir: string): string {
-  if (dir === "Unknown" || !dir) return "Unknown";
+  if (!dir || dir === "Unknown") return t("costs.unknown");
   const parts = dir.split("/");
   return parts[parts.length - 1] || dir;
 }
@@ -97,12 +98,12 @@ function donutSegments() {
 }
 
 // --- Days selector ---
-const dayOptions = [
-  { label: "7 days", value: 7 },
-  { label: "14 days", value: 14 },
-  { label: "30 days", value: 30 },
-  { label: "90 days", value: 90 },
-];
+const dayOptions = computed(() => [
+  { label: t("costs.days", { count: 7 }), value: 7 },
+  { label: t("costs.days", { count: 14 }), value: 14 },
+  { label: t("costs.days", { count: 30 }), value: 30 },
+  { label: t("costs.days", { count: 90 }), value: 90 },
+]);
 
 async function changeDays(d: number) {
   await store.setDays(d);
@@ -127,37 +128,37 @@ async function changeDays(d: number) {
                 class="flex items-center gap-1.5 px-2 py-1 -ml-2 rounded-lg text-[16px] font-medium text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors cursor-pointer"
               >
                 <ArrowLeft :size="17" />
-                Back
+                {{ $t("costs.back") }}
               </button>
             </div>
-            <h2 class="text-[20px] font-semibold text-gray-900 tracking-tight">Cost &amp; Token Tracking</h2>
-            <p class="text-[13px] text-gray-500 mt-0.5">Monitor AI usage across agents, projects, and sessions</p>
+            <h2 class="text-[20px] font-semibold text-gray-900 tracking-tight">{{ $t("costs.title") }}</h2>
+            <p class="text-[13px] text-gray-500 mt-0.5">{{ $t("costs.subtitle") }}</p>
           </div>
           <button
             @click="store.loadAll()"
             class="px-3 py-1.5 text-[12px] font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors cursor-pointer"
           >
-            Refresh
+            {{ $t("costs.refresh") }}
           </button>
         </div>
 
         <!-- Summary cards -->
         <div class="grid grid-cols-4 gap-4 mb-4">
           <div class="bg-white rounded-xl border border-gray-100 p-5">
-            <p class="text-[12px] text-gray-500 mb-1">Today</p>
-            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.today_tokens ?? 0) }} tokens</p>
+            <p class="text-[12px] text-gray-500 mb-1">{{ $t("costs.today") }}</p>
+            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ $t("costs.tokens", { count: fmtTokens(store.summary?.today_tokens ?? 0) }) }}</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-100 p-5">
-            <p class="text-[12px] text-gray-500 mb-1">This Week</p>
-            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.week_tokens ?? 0) }} tokens</p>
+            <p class="text-[12px] text-gray-500 mb-1">{{ $t("costs.thisWeek") }}</p>
+            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ $t("costs.tokens", { count: fmtTokens(store.summary?.week_tokens ?? 0) }) }}</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-100 p-5">
-            <p class="text-[12px] text-gray-500 mb-1">This Month</p>
-            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.month_tokens ?? 0) }} tokens</p>
+            <p class="text-[12px] text-gray-500 mb-1">{{ $t("costs.thisMonth") }}</p>
+            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ $t("costs.tokens", { count: fmtTokens(store.summary?.month_tokens ?? 0) }) }}</p>
           </div>
           <div class="bg-white rounded-xl border border-gray-100 p-5">
-            <p class="text-[12px] text-gray-500 mb-1">All Time</p>
-            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ fmtTokens(store.summary?.total_tokens ?? 0) }} tokens</p>
+            <p class="text-[12px] text-gray-500 mb-1">{{ $t("costs.allTime") }}</p>
+            <p class="text-[13px] font-medium text-gray-400 mt-1">{{ $t("costs.tokens", { count: fmtTokens(store.summary?.total_tokens ?? 0) }) }}</p>
           </div>
         </div>
 
@@ -165,39 +166,39 @@ async function changeDays(d: number) {
         <div class="bg-white rounded-xl border border-gray-100 p-5 mb-8">
           <div class="flex items-center gap-2 mb-4">
             <Database :size="16" class="text-indigo-500" />
-            <h3 class="text-[14px] font-medium text-gray-700">Cache Performance</h3>
-            <span class="text-[11px] text-gray-400 ml-1">KV Cache hits reduce costs by ~90%</span>
+            <h3 class="text-[14px] font-medium text-gray-700">{{ $t("costs.cachePerformance") }}</h3>
+            <span class="text-[11px] text-gray-400 ml-1">{{ $t("costs.cacheHint") }}</span>
           </div>
           <div class="grid grid-cols-3 gap-4">
             <div class="flex flex-col p-3 rounded-lg bg-indigo-50/50">
               <div class="flex items-center justify-between mb-1">
-                <span class="text-[11px] text-gray-500">Today</span>
+                <span class="text-[11px] text-gray-500">{{ $t("costs.today") }}</span>
                 <span class="text-[16px] font-semibold text-indigo-600">{{ todayCacheRate }}</span>
               </div>
               <div class="w-full bg-white rounded-full h-1.5 mt-1">
                 <div class="bg-indigo-500 h-1.5 rounded-full transition-all" :style="{ width: todayCacheRate }"></div>
               </div>
-              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.today_cached_tokens ?? 0) }} cached</span>
+              <span class="text-[10px] text-gray-400 mt-1">{{ $t("costs.cached", { count: fmtTokens(store.summary?.today_cached_tokens ?? 0) }) }}</span>
             </div>
             <div class="flex flex-col p-3 rounded-lg bg-emerald-50/50">
               <div class="flex items-center justify-between mb-1">
-                <span class="text-[11px] text-gray-500">This Week</span>
+                <span class="text-[11px] text-gray-500">{{ $t("costs.thisWeek") }}</span>
                 <span class="text-[16px] font-semibold text-emerald-600">{{ weekCacheRate }}</span>
               </div>
               <div class="w-full bg-white rounded-full h-1.5 mt-1">
                 <div class="bg-emerald-500 h-1.5 rounded-full transition-all" :style="{ width: weekCacheRate }"></div>
               </div>
-              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.week_cached_tokens ?? 0) }} cached</span>
+              <span class="text-[10px] text-gray-400 mt-1">{{ $t("costs.cached", { count: fmtTokens(store.summary?.week_cached_tokens ?? 0) }) }}</span>
             </div>
             <div class="flex flex-col p-3 rounded-lg bg-amber-50/50">
               <div class="flex items-center justify-between mb-1">
-                <span class="text-[11px] text-gray-500">All Time</span>
+                <span class="text-[11px] text-gray-500">{{ $t("costs.allTime") }}</span>
                 <span class="text-[16px] font-semibold text-amber-600">{{ totalCacheRate }}</span>
               </div>
               <div class="w-full bg-white rounded-full h-1.5 mt-1">
                 <div class="bg-amber-500 h-1.5 rounded-full transition-all" :style="{ width: totalCacheRate }"></div>
               </div>
-              <span class="text-[10px] text-gray-400 mt-1">{{ fmtTokens(store.summary?.total_cached_tokens ?? 0) }} cached</span>
+              <span class="text-[10px] text-gray-400 mt-1">{{ $t("costs.cached", { count: fmtTokens(store.summary?.total_cached_tokens ?? 0) }) }}</span>
             </div>
           </div>
         </div>
@@ -205,11 +206,11 @@ async function changeDays(d: number) {
         <div class="grid grid-cols-5 gap-6 mb-8">
           <!-- Agent distribution donut chart -->
           <div class="col-span-2 bg-white rounded-xl border border-gray-100 p-5">
-            <h3 class="text-[14px] font-medium text-gray-700 mb-4">By Agent</h3>
+            <h3 class="text-[14px] font-medium text-gray-700 mb-4">{{ $t("costs.byAgent") }}</h3>
             <div v-if="store.byAgent.length === 0" class="flex flex-col items-center justify-center py-10 text-gray-400">
               <BarChart3 :size="32" class="mb-2 opacity-40" />
-              <p class="text-[13px]">No data yet</p>
-              <p class="text-[11px] mt-1">Start a session to see usage</p>
+              <p class="text-[13px]">{{ $t("costs.noDataYet") }}</p>
+              <p class="text-[11px] mt-1">{{ $t("costs.startSessionHint") }}</p>
             </div>
             <div v-else class="flex items-center gap-5">
               <!-- SVG donut -->
@@ -241,7 +242,7 @@ async function changeDays(d: number) {
           <!-- Daily bar chart -->
           <div class="col-span-3 bg-white rounded-xl border border-gray-100 p-5">
             <div class="flex items-center justify-between mb-4">
-              <h3 class="text-[14px] font-medium text-gray-700">Daily Trend</h3>
+              <h3 class="text-[14px] font-medium text-gray-700">{{ $t("costs.dailyTrend") }}</h3>
               <div class="flex items-center gap-1">
                 <button
                   v-for="o in dayOptions" :key="o.value"
@@ -253,7 +254,7 @@ async function changeDays(d: number) {
             </div>
             <div v-if="store.byDay.length === 0" class="flex flex-col items-center justify-center py-10 text-gray-400">
               <Calendar :size="32" class="mb-2 opacity-40" />
-              <p class="text-[13px]">No daily data</p>
+              <p class="text-[13px]">{{ $t("costs.noDailyData") }}</p>
             </div>
             <div v-else>
               <!-- SVG bar chart -->
@@ -274,7 +275,7 @@ async function changeDays(d: number) {
                     class="transition-all duration-300"
                     opacity="0.85"
                   >
-                    <title>{{ d.date }}: {{ fmtTokens(d.total_tokens) }} tokens</title>
+                    <title>{{ d.date }}: {{ $t("costs.tokens", { count: fmtTokens(d.total_tokens) }) }}</title>
                   </rect>
                 </svg>
               </div>
@@ -292,10 +293,10 @@ async function changeDays(d: number) {
         <div class="flex items-center gap-1 mb-4 bg-white rounded-lg border border-gray-100 p-1 w-fit">
           <button
             v-for="tab in [
-              { id: 'day' as const, label: 'By Day', icon: Calendar },
-              { id: 'agent' as const, label: 'By Agent', icon: Zap },
-              { id: 'session' as const, label: 'By Session', icon: MessageSquare },
-              { id: 'directory' as const, label: 'By Project', icon: Folder },
+              { id: 'day' as const, label: $t('costs.byDay'), icon: Calendar },
+              { id: 'agent' as const, label: $t('costs.byAgent'), icon: Zap },
+              { id: 'session' as const, label: $t('costs.bySession'), icon: MessageSquare },
+              { id: 'directory' as const, label: $t('costs.byProject'), icon: Folder },
             ]"
             :key="tab.id"
             @click="activeTab = tab.id"
@@ -310,22 +311,22 @@ async function changeDays(d: number) {
         <!-- Breakdown tables -->
         <div class="bg-white rounded-xl border border-gray-100 overflow-hidden">
           <!-- Loading -->
-          <div v-if="store.loading" class="p-12 text-center text-[13px] text-gray-400">Loading...</div>
+          <div v-if="store.loading" class="p-12 text-center text-[13px] text-gray-400">{{ $t("costs.loading") }}</div>
 
           <!-- Empty state -->
           <div v-else-if="store.summary && store.summary.total_tokens === 0" class="p-12 text-center">
             <BarChart3 :size="36" class="mx-auto mb-3 text-gray-300" />
-            <p class="text-[14px] text-gray-500 font-medium mb-1">No usage data yet</p>
-            <p class="text-[12px] text-gray-400">Token tracking begins automatically when you start an AI session.</p>
+            <p class="text-[14px] text-gray-500 font-medium mb-1">{{ $t("costs.noUsageData") }}</p>
+            <p class="text-[12px] text-gray-400">{{ $t("costs.noUsageHint") }}</p>
           </div>
 
           <!-- By Day table -->
           <table v-else-if="activeTab === 'day'" class="w-full">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Date</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.date") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.tokensCol") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.cacheHit") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -345,10 +346,10 @@ async function changeDays(d: number) {
           <table v-else-if="activeTab === 'agent'" class="w-full">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.agent") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.tokensCol") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.cacheHit") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.sessions") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -374,12 +375,12 @@ async function changeDays(d: number) {
           <table v-else-if="activeTab === 'session'" class="w-full">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Session</th>
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Agent</th>
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Msgs</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.session") }}</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.agent") }}</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.project") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.tokensCol") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.cacheHit") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.msgs") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -410,10 +411,10 @@ async function changeDays(d: number) {
           <table v-else-if="activeTab === 'directory'" class="w-full">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">Project Directory</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Tokens</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Cache Hit</th>
-                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">Sessions</th>
+                <th class="text-left px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.projectDirectory") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.tokensCol") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.cacheHit") }}</th>
+                <th class="text-right px-5 py-3 text-[12px] font-medium text-gray-500">{{ $t("costs.sessions") }}</th>
               </tr>
             </thead>
             <tbody>

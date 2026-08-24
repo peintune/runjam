@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from "vue";
+import { t } from "../i18n";
 import type { Session } from "../stores/useWorkspaceStore";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useMessageStore } from "../stores/useMessageStore";
@@ -97,18 +98,21 @@ const contextLabel = computed(() => {
 const contextTitle = computed(() => {
   const s = contextStats.value;
   if (!s) return "";
-  return `Context: ${s.totalChars.toLocaleString()} / ${s.maxChars.toLocaleString()} chars`;
+  return t("sessionItem.contextTitle", {
+    used: s.totalChars.toLocaleString(),
+    max: s.maxChars.toLocaleString(),
+  });
 });
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("sessionItem.justNow");
+  if (mins < 60) return t("sessionItem.minutesAgo", { count: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t("sessionItem.hoursAgo", { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return t("sessionItem.daysAgo", { count: days });
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 watch(() => props.renaming, (v) => { if (v) editText.value = props.session.title || props.session.cliDisplayName; });
@@ -164,26 +168,26 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
       <span
         v-if="session.status === 'running'"
         class="w-1.5 h-1.5 rounded-full bg-blue-400 flex-shrink-0 animate-blink"
-        title="Running"
+        :title="$t('sessionItem.running')"
       />
       <!-- Completed (reply done, not yet viewed) → solid green dot -->
       <span
         v-else-if="session.status === 'idle' && session.unread"
         class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
-        title="Completed"
+        :title="$t('sessionItem.completed')"
       />
       <!-- Completed but not yet opened → solid green dot -->
       <span
         v-else-if="session.newlyCompleted && !active"
         class="w-1.5 h-1.5 rounded-full bg-emerald-400 flex-shrink-0"
-        title="New"
+        :title="$t('sessionItem.new')"
       />
       <!-- No dot for stopped/error — just show terminal/file icons if any -->
       <!-- Explorer icon -->
       <span
         v-if="dirLayout?.hasOpenFiles"
         class="p-0.5 rounded bg-gray-200 text-gray-700"
-        title="Explorer"
+        :title="$t('sessionItem.explorer')"
       >
         <FileText :size="11" />
       </span>
@@ -191,7 +195,7 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
       <span
         v-if="dirLayout?.hasTerminal"
         class="p-0.5 rounded bg-gray-200 text-gray-700"
-        title="Terminal"
+        :title="$t('sessionItem.terminal')"
       >
         <Terminal :size="11" />
       </span>
@@ -205,26 +209,26 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
       <div v-if="menuOpen" data-menu class="fixed z-50 w-40 bg-white rounded-xl border border-gray-100 shadow-xl py-1.5" :style="{ left: menuX + 'px', top: menuY + 'px' }">
         <template v-if="!archived">
           <button @click="emit('pin')" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors">
-            <Pin :size="13" class="text-gray-400" /> {{ session.pinned ? 'Unpin' : 'Pin to top' }}
+            <Pin :size="13" class="text-gray-400" /> {{ session.pinned ? $t("sessionItem.unpin") : $t("sessionItem.pinToTop") }}
           </button>
           <button @click="emit('start-rename')" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors">
-            <Pencil :size="13" class="text-gray-400" /> Rename
+            <Pencil :size="13" class="text-gray-400" /> {{ $t("sessionItem.rename") }}
           </button>
           <button @click="emit('archive')" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors">
-            <Archive :size="13" class="text-gray-400" /> Archive
+            <Archive :size="13" class="text-gray-400" /> {{ $t("sessionItem.archive") }}
           </button>
           <div class="mx-3 my-1 border-t border-gray-100" />
           <button @click="emit('delete')" class="w-full text-left px-3.5 py-2 text-[12px] text-red-500 hover:bg-red-50 flex items-center gap-2.5 transition-colors">
-            <Trash2 :size="13" /> Delete
+            <Trash2 :size="13" /> {{ $t("sessionItem.delete") }}
           </button>
         </template>
         <template v-else>
           <button @click="emit('unarchive')" class="w-full text-left px-3.5 py-2 text-[12px] text-gray-600 hover:bg-gray-50 flex items-center gap-2.5 transition-colors">
-            <RotateCcw :size="13" class="text-gray-400" /> Unarchive
+            <RotateCcw :size="13" class="text-gray-400" /> {{ $t("sessionItem.unarchive") }}
           </button>
           <div class="mx-3 my-1 border-t border-gray-100" />
           <button @click="emit('delete')" class="w-full text-left px-3.5 py-2 text-[12px] text-red-500 hover:bg-red-50 flex items-center gap-2.5 transition-colors">
-            <Trash2 :size="13" /> Delete
+            <Trash2 :size="13" /> {{ $t("sessionItem.delete") }}
           </button>
         </template>
       </div>

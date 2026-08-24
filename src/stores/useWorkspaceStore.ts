@@ -103,6 +103,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
    *  so the sidebar (SessionItem) can show the same context-size number the
    *  session view computes — the draft counts toward the context total. */
   const activeDraftChars = ref(0);
+  /** Reasoning 开关（true = 关闭推理）。提升到全局 store：WorkspaceLayout
+   *  用 `activeSessionId || '__new__'` 作 SessionView 的 key，新建会话 →
+   *  创建会话会销毁重建组件，组件内状态会复位（用户在新会话页开启的
+   *  reasoning 进会话页后丢失）。后端 set_reasoning_disabled 本身也是全局
+   *  代理设置，放 store 里跨组件实例共享与后端语义一致。 */
+  const noThinking = ref(false);
 
   const activeSession = computed(() =>
     sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
@@ -363,6 +369,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     activeSessionId,
     activeSession,
     activeDraftChars,
+    noThinking,
     loadSessions,
     createSession,
     selectSession,

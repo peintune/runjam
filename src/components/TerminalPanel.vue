@@ -7,6 +7,7 @@ import { X, Trash2, Plus, TerminalIcon } from "lucide-vue-next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useToast } from "../composables/useToast";
+import { t } from "../i18n";
 
 const props = defineProps<{
   cwd?: string;
@@ -661,7 +662,7 @@ async function maybeHintLightweightShell() {
     const mode = await invoke<string>("get_terminal_shell_mode");
     if (mode === "lightweight") {
       showWarning(
-        "Your shell config is heavy, so the terminal runs in lightweight mode to reduce CPU usage (rc files are not loaded)."
+        t("terminal.lightweightHint")
       );
     }
   } catch {
@@ -813,7 +814,7 @@ defineExpose({ killAll });
           <button
             @click.stop="closeTab(i)"
             class="w-[14px] h-[14px] flex items-center justify-center rounded hover:bg-white/[0.1] text-[#484f58] hover:text-[#c9d1d9]"
-            title="Close"
+            :title="$t('terminal.close')"
           >
             <X :size="8" />
           </button>
@@ -821,7 +822,7 @@ defineExpose({ killAll });
         <button
           @click="addTab()"
           class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#484f58] hover:text-[#8b949e] hover:bg-white/[0.06] transition-colors shrink-0"
-          title="New Terminal"
+          :title="$t('terminal.newTerminal')"
         >
           <Plus :size="13" />
         </button>
@@ -832,14 +833,14 @@ defineExpose({ killAll });
         <button
           @click="handleClear"
           class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-white/[0.08] transition-colors cursor-pointer"
-          title="Clear"
+          :title="$t('terminal.clear')"
         >
           <Trash2 :size="11.5" />
         </button>
         <button
           @click="emit('close')"
           class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-white/[0.08] transition-colors cursor-pointer"
-          title="Close"
+          :title="$t('terminal.close')"
         >
           <X :size="11.5" />
         </button>

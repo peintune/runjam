@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from "vue-router";
 import { ArrowLeft, Bot, Cpu, Info, Settings } from "lucide-vue-next";
+import type { TranslationKey } from "../i18n";
 import WindowControls from "./WindowControls.vue";
 
 const router = useRouter();
 const route = useRoute();
 
-const navItems = [
-  { path: "/settings/models", label: "Models", icon: Cpu },
-  { path: "/settings/agents", label: "Agents", icon: Bot },
-  { path: "/settings/general", label: "General", icon: Settings },
-  { path: "/settings/about", label: "About", icon: Info },
+const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] = [
+  { path: "/settings/models", labelKey: "settings.models", icon: Cpu },
+  { path: "/settings/agents", labelKey: "settings.agents", icon: Bot },
+  { path: "/settings/general", labelKey: "settings.general", icon: Settings },
+  { path: "/settings/about", labelKey: "settings.about", icon: Info },
 ];
 </script>
 
@@ -32,12 +33,12 @@ const navItems = [
             @click="router.push('/')"
             class="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors w-full cursor-pointer"
           >
-            <ArrowLeft :size="16" /> Back
+            <ArrowLeft :size="16" /> {{ $t("common.back") }}
           </button>
         </div>
         <div class="border-t border-gray-100 my-3 mx-4" />
         <div class="px-5 pb-3">
-          <h2 class="text-[15px] font-semibold text-gray-900 tracking-tight">Settings</h2>
+          <h2 class="text-[15px] font-semibold text-gray-900 tracking-tight">{{ $t("settings.title") }}</h2>
         </div>
         <nav class="flex-1 px-3 space-y-0.5">
           <button v-for="item in navItems" :key="item.path"
@@ -46,7 +47,7 @@ const navItems = [
               route.path === item.path ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']"
           >
             <component :is="item.icon" :size="18" />
-            {{ item.label }}
+            {{ $t(item.labelKey) }}
           </button>
         </nav>
       </aside>

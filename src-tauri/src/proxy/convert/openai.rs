@@ -6,7 +6,7 @@ use crate::rjlog;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{build_agent, find_model, limit_tools_for_llama, safe_truncate, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{apply_bash_tool_hardening, build_agent, clamp_max_tokens, find_model, inject_bash_guidance, limit_tools_for_llama, safe_truncate, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use super::anthropic::make_anthropic_sse_converter;
 use tiny_http::StatusCode;
 
@@ -26,7 +26,15 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
         let url = format!("{}/chat/completions", m.api_base.trim_end_matches('/'));
         
         let mut req_body: Value = serde_json::from_str(body).unwrap_or_default();
-        
+
+        // context_window 防御：小窗口模型收到远超能力的 max_tokens 会报 400
+        let orig_max = req_body["max_tokens"].as_u64().unwrap_or(4096);
+        let clamped = clamp_max_tokens(orig_max, m.context_window);
+        if clamped != orig_max {
+            req_body["max_tokens"] = serde_json::json!(clamped);
+            rjlog!("[PROXY] {}: reduced max_tokens from {} to context_window {}", m.name, orig_max, clamped);
+        }
+
         if is_llama_cpp {
             let current_max = req_body["max_tokens"].as_u64().unwrap_or(4096);
             if current_max > 2048 {
@@ -38,6 +46,21 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
                 if tools.len() > LLAMA_MAX_TOOLS {
                     rjlog!("[PROXY] OpenAI direct: limiting tools from {} to {} for llama.cpp", tools.len(), LLAMA_MAX_TOOLS);
                     req_body["tools"] = serde_json::json!(limit_tools_for_llama(tools, LLAMA_MAX_TOOLS));
+                }
+            }
+        }
+
+        // Bash 工具 schema 强化 + 系统提示引导：
+        // 第三方模型调用 Bash 时常漏掉必填的 command 参数（见 common.rs
+        // harden_bash_tool / inject_bash_guidance），仅在启用工具时生效。
+        {
+            let tools = req_body.get("tools").and_then(|v| v.as_array());
+            if let Some(tools) = tools {
+                if !tools.is_empty() {
+                    let mut list = req_body["tools"].as_array().cloned().unwrap_or_default();
+                    apply_bash_tool_hardening(&mut list);
+                    req_body["tools"] = serde_json::json!(list);
+                    inject_bash_guidance(&mut req_body);
                 }
             }
         }
@@ -247,7 +270,7 @@ fn make_llama_cpp_sse_converter(model_name: String, reasoning_disabled: bool) ->
                         }
                     }
 
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                    if let Some(args) = tool_call_args_str_tracked(&tc["function"]["arguments"], &entry.2, "openai streaming") {
                         let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
                             "type": "content_block_delta", "index": entry.0,
                             "delta": {"type": "input_json_delta", "partial_json": args}

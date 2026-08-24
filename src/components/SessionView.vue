@@ -22,6 +22,7 @@ import { submitFeedback } from "../api/telemetry";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 import { useContextSize } from "../composables/useContextSize";
+import { t, type TranslationKey } from "../i18n";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -142,6 +143,12 @@ let scrollCheckPending = false;
 function onChatScroll() {
   if (scrollCheckPending) return;
   scrollCheckPending = true;
+  // 用户一滚动就立即退出自动跟随，不等 rAF 结算：流式输出密集时，若仍保持
+  // stickToBottom=true 直到下一帧结算，窗口期内到达的 contentUpdated 会把用户
+  // 刚上翻的距离强制拉回底部（<100px 的滚动被吞掉、永远累积不起来），表现为
+  // "生成中滚不上去，一直在最后"。同步置 false 后，后续 contentUpdated 直接
+  // return，用户可自由上翻；rAF 结算时若已滚回底部附近再恢复跟随。
+  stickToBottom.value = false;
   requestAnimationFrame(() => {
     scrollCheckPending = false;
     const el = messageContainer.value;
@@ -456,9 +463,19 @@ function removeRecentDir(p: string) {
 const selectedMode = ref("assistant");
 const selectedPermissionMode = ref("ask_approval");
 const showPermissionDropdown = ref(false);
-const noThinking = ref(false);
+// noThinking 提升到全局 store：WorkspaceLayout 用 activeSessionId 作 key，
+// 新建会话 → 创建会话会销毁重建本组件，组件内状态会复位（新会话页开启的
+// reasoning 进会话页后丢失）。store 是模块级单例，跨实例共享。
+const noThinking = computed({
+  get: () => store.noThinking,
+  set: (v: boolean) => {
+    store.noThinking = v;
+  },
+});
 
-const placeholderText = "Ask anything — any question, any file, any code. Type @ to pick a file";
+// Translated at each (re)start of the typewriter effect so switching language
+// mid-session picks up the new placeholder.
+const placeholderText = () => t("input.placeholderFull");
 const typingPlaceholder = ref("");
 let typingIndex = 0;
 let typingInterval: ReturnType<typeof setInterval> | null = null;
@@ -475,8 +492,9 @@ function startTyping() {
   typingIndex = 0;
   typingPlaceholder.value = "";
   typingInterval = setInterval(() => {
-    if (typingIndex < placeholderText.length) {
-      typingPlaceholder.value += placeholderText[typingIndex];
+    const text = placeholderText();
+    if (typingIndex < text.length) {
+      typingPlaceholder.value += text[typingIndex];
       typingIndex++;
     } else {
       stopTyping();
@@ -557,28 +575,31 @@ const permissionModeOptions = [
   { id: "full_access" },
 ];
 
+// Values are TranslationKey names; gemini-cli keeps its short CLI flag names
+// as-is (they're not keys, so t() returns them unchanged).
 const permissionLabels: Record<string, Record<string, string>> = {
-  "claude-code": { read_only: "Plan Mode", ask_approval: "Accept Edits", approve_for_me: "Auto Mode", full_access: "Bypass Permissions" },
-  "codex-cli": { read_only: "Read Only", ask_approval: "Ask for approval", approve_for_me: "Approve for me", full_access: "Full Access" },
+  "claude-code": { read_only: "perm.plan", ask_approval: "perm.acceptEdits", approve_for_me: "perm.auto", full_access: "perm.bypass" },
+  "codex-cli": { read_only: "perm.readOnlyLabel", ask_approval: "perm.askApprovalLabel", approve_for_me: "perm.approveForMeLabel", full_access: "perm.fullAccessLabel" },
   "gemini-cli": { read_only: "plan", ask_approval: "auto_edit", approve_for_me: "auto", full_access: "yolo" },
 };
 
-const permissionDescriptions: Record<string, string> = {
-  read_only: "The agent can only read files and plan actions, but cannot make any changes.",
-  ask_approval: "The agent will ask for your confirmation before making any changes to files.",
-  approve_for_me: "The agent will automatically approve most actions, but may ask for critical changes.",
-  full_access: "The agent has full access to read and modify files without asking for approval.",
+const permissionDescriptions: Record<string, TranslationKey> = {
+  read_only: "perm.readOnly",
+  ask_approval: "perm.askApproval",
+  approve_for_me: "perm.approveForMe",
+  full_access: "perm.fullAccess",
 };
 
 const permissionModeLabel = computed(() => {
-  return permissionLabels[selectedAgentId.value]?.[selectedPermissionMode.value] || selectedPermissionMode.value;
+  const raw = permissionLabels[selectedAgentId.value]?.[selectedPermissionMode.value] || selectedPermissionMode.value;
+  return t(raw as TranslationKey);
 });
 
 const permissionDisplayLabels = computed(() => {
   return permissionModeOptions.map(o => ({
     ...o,
-    label: permissionLabels[selectedAgentId.value]?.[o.id] || o.id,
-    description: permissionDescriptions[o.id],
+    label: t((permissionLabels[selectedAgentId.value]?.[o.id] || o.id) as TranslationKey),
+    description: t(permissionDescriptions[o.id]),
   }));
 });
 
@@ -619,10 +640,10 @@ const feedbackError = ref("");
 const feedbackType = ref("bug");
 const feedbackContent = ref("");
 const feedbackEmail = ref("");
-const feedbackTypes = [
-  { id: "bug", label: "Bug Report" },
-  { id: "feature", label: "Feature Request" },
-  { id: "other", label: "Other" },
+const feedbackTypes: { id: string; labelKey: TranslationKey }[] = [
+  { id: "bug", labelKey: "session.feedbackBug" },
+  { id: "feature", labelKey: "session.feedbackFeature" },
+  { id: "other", labelKey: "session.feedbackOther" },
 ];
 
 function closeFeedback() {
@@ -932,12 +953,28 @@ interface SessionState {
     timer: ReturnType<typeof setTimeout> | null;
     deadlineTimer: ReturnType<typeof setTimeout> | null;
   } | null;
-}
+  /** True while a tool call is in flight (tool_call received, tool_result not
+   *  yet). Bash/long commands emit no ACP events while running — that's normal,
+   *  not a dead agent — so the no-activity timeout must not fire during this
+   *  window. Cleared on tool_result / finish / error / stop / new send. */
+   hasActiveTool: boolean;
+   /** True once the agent has emitted ANY non-terminal event this turn
+    *  (start / thinking / text / tool_call ...). Proves the agent is alive, so
+    *  the deadline switches from the tight "first response" timeout to the
+    *  generous active-phase timeout — a model digesting tool results and
+    *  planning the next step can legitimately go silent for minutes. */
+   hasStarted: boolean;
+   }
 
 // Max send attempts including the first try; failures auto-retry up to this.
 const RETRY_MAX = 3;
 const RETRY_DELAY_MS = 1000;
-const RETRY_TIMEOUT_MS = 30_000;
+// 初始阶段超时：发送后 agent 还没发出任何事件（start/thinking/tool_call...）
+// 达到该时长即视为失败（agent 没起来 / 连接异常）。60s 足够慢首 token 模型。
+const RETRY_TIMEOUT_MS = 60_000;
+// 活跃阶段超时：确认存活后（收到过任意事件），agent 消化工具结果、规划下一步、
+// 慢模型推理都可能长时间无事件，60s 会误杀正常调用 → 放宽到 10 分钟。
+const ACTIVE_TIMEOUT_MS = 600_000;
 
 const sessionStates = new Map<string, SessionState>();
 
@@ -957,6 +994,8 @@ function getSessionState(sessionId: string): SessionState {
       loaded: false,
       turnStartTime: 0,
       retry: null,
+      hasActiveTool: false,
+      hasStarted: false,
     };
     sessionStates.set(sessionId, state);
   }
@@ -1055,10 +1094,28 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
   const retry = state.retry;
   if (!retry) return;
   if (retry.deadlineTimer) clearTimeout(retry.deadlineTimer);
+  // 阶段化超时：
+  // - 工具在途（hasActiveTool）：完全不超时，无限续期直到 tool_result。
+  // - 已确认存活（hasStarted，收到过任意事件）：用宽松的 ACTIVE_TIMEOUT_MS，
+  //   因为 agent 消化工具结果、规划下一步、慢模型推理都可能长时间无事件——
+  //   这正是之前"工具执行成功了仍报 60s 超时"的误杀场景。
+  // - 初始阶段（未收到任何事件）：只要 agent 进程还活着（running/idle）就用
+  //   同样的 ACTIVE_TIMEOUT_MS——慢模型首 token、上游 429 排队、长上下文重放
+  //   都可能在首个事件之前就超过 60s，固定 60s 会再次误杀。只有进程也确认
+  //   不在（stopped/error）时才用 60s 快速失败，兜底"agent 没起来/连接失败"。
+  const sess = store.sessions.find((s) => s.id === sessionId);
+  const agentAlive =
+    !!sess && (sess.status === "running" || sess.status === "idle");
+  const timeout =
+    state.hasStarted || agentAlive ? ACTIVE_TIMEOUT_MS : RETRY_TIMEOUT_MS;
   retry.deadlineTimer = setTimeout(() => {
     retry.deadlineTimer = null;
-    handleSendFailure(sessionId, state, `Timed out waiting for a response (${RETRY_TIMEOUT_MS / 1000}s without activity)`);
-  }, RETRY_TIMEOUT_MS);
+    if (state.hasActiveTool) {
+      startRetryDeadline(sessionId, state);
+      return;
+    }
+    handleSendFailure(sessionId, state, `Timed out waiting for a response (${timeout / 1000}s without activity)`);
+  }, timeout);
 }
 
 /** Push the timeout back every time the agent emits an event. */
@@ -1105,6 +1162,9 @@ function isFailedTurn(state: SessionState): boolean {
  */
 function handleSendFailure(sessionId: string, state: SessionState, errMsg: string, isRealError = false) {
   const isActiveSession = store.activeSessionId === sessionId;
+  // 任何失败/超时都终止当前工具等待：工具要么已结束，要么这轮请求已放弃。
+  state.hasActiveTool = false;
+  state.hasStarted = false;
   state.isProcessing = false;
   state.thinkingStartTime = 0;
   for (const m of state.messages) {
@@ -1179,6 +1239,9 @@ function retrySend(sessionId: string, state: SessionState) {
   }
   state.isProcessing = true;
   state.turnStartTime = Date.now();
+  // 重试是新一轮请求：等新的首事件，恢复初始 60s 超时
+  state.hasActiveTool = false;
+  state.hasStarted = false;
   if (store.activeSessionId === sessionId) isProcessing.value = true;
   startRetryDeadline(sessionId, state);
   sendInput(sessionId, retry.lastText, undefined).catch((err: unknown) => {
@@ -1241,8 +1304,12 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   // Any live event (thinking/text/tool, etc.) means the agent is still working —
   // push back the no-activity timeout that backs the auto-retry loop. finish
   // and error are handled by their own branches.
-  if (state.retry && p.type !== "finish" && p.type !== "error") {
-    resetRetryDeadline(sessionId, state);
+  if (p.type !== "finish" && p.type !== "error") {
+    // 收到任意非终态事件 → agent 确认存活，超时切换到宽松的活跃阶段
+    state.hasStarted = true;
+    if (state.retry) {
+      resetRetryDeadline(sessionId, state);
+    }
   }
   // 仅活动会话打日志且经节流（见 logAcpEvent）——每 chunk 的 console.log
   // + JSON.stringify 在 WKWebView 主线程上是真实开销，多个后台会话并行
@@ -1366,6 +1433,13 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       } else {
         state.activeContent += (p.content||"");
       }
+      // 新一轮文本的开始（activeContent 为空，通常是被 tool_call 清空后）：
+      // 若最后一条 agent 消息是纯工具消息（有 toolCalls、无 content），push
+      // 新消息承载本段文本，避免文本落进工具消息形成混合气泡。
+      const lastForText = lastAgentMsg(state.messages);
+      if (!prev && lastForText && lastForText.toolCalls && lastForText.toolCalls.length > 0 && !lastForText.content) {
+        pushPhaseMessage(state, 'tool');
+      }
       const lt = ensureAgentMsg(state);
       lt.content = state.activeContent;
       if (isActiveSession) {
@@ -1374,6 +1448,13 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       }
       break;
     case "tool_call": {
+      // 有工具正在执行：等待 tool_result 期间豁免无活动超时（长命令正常静默）
+      state.hasActiveTool = true;
+      // 文本回复结束、转入工具调用：清空 activeContent，避免下一轮文本 chunk
+      // 追加到上一轮残留文本上（codex 在每轮文本与工具调用之间不发
+      // agent_message_end → 前端 start 事件不触发 → activeContent 不会自动
+      // 重置；不重置的话每轮文本都会叠加历史文本，形成"雪球式重复"）。
+      state.activeContent = "";
       // If the last message already has text content, push a new message for this tool
       const lastToolCheck = lastAgentMsg(state.messages);
       if (lastToolCheck && lastToolCheck.content) {
@@ -1426,6 +1507,8 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       break;
     }
     case "tool_result": {
+      // 工具返回，解除超时豁免；之后的静默按正常规则计时
+      state.hasActiveTool = false;
       // Use lastToolMsg to find the message that has toolCalls (not the last agent msg)
       // This ensures tool_result goes to the right message even if a new thinking
       // message was pushed after the tool_call
@@ -1510,6 +1593,8 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
     }
     case "finish":
       clearRetry(state);
+      state.hasActiveTool = false;
+      state.hasStarted = false;
       state.isProcessing = false;
       state.thinkingStartTime = 0;
       // Mark all agent messages in this turn as not processing
@@ -1556,6 +1641,11 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       if (sessionId && state.activeContent) {
         persistMessage(sessionId, "agent", state.activeContent);
       }
+      // 会话轮次结束：清空累积缓冲，防止残留到下一轮（下一轮 text chunk 会
+      // 追加到旧内容上形成雪球）。activeContent 已被 persistMessage 固化或
+      // 为空，重置是安全的。
+      state.activeContent = "";
+      state.activeThinking = "";
       // Mark session as idle (process still alive, waiting for next message),
       // or as error if this turn actually ended in a hard failure (e.g. auth /
       // API error surfaced as plain text before the finish event).
@@ -1977,6 +2067,10 @@ async function handleSend() {
     // optimistic local update here is what drives the immediate sidebar sort.
     store.touchSession(sid);
     const state = getSessionState(sid);
+    // 用户发起新一轮：清空上一轮的文本/思考累积缓冲（若 finish 未及时清，
+    // 这里兜底，防止新回复的 chunk 追加到旧文本上）。
+    state.activeContent = "";
+    state.activeThinking = "";
     state.messages.push({role:"user",content:userDisplay});
     syncMessagesToView(state);
     msgStore.setMessages(sid, [...state.messages]);
@@ -2034,6 +2128,9 @@ async function handleSend() {
     // attempts total. The timeout also catches agents that go silent without
     // ever reporting an error (otherwise the UI hangs on a bare spinner).
     const st = getSessionState(sessionId);
+    // 新一轮发送：清除上一轮的挂起工具标记（重试/新消息都会重新派发 tool_call）
+    st.hasActiveTool = false;
+    st.hasStarted = false;
     st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null };
     startRetryDeadline(sessionId, st);
     sendInput(sessionId, sendText, history).catch(err=>{
@@ -2067,6 +2164,16 @@ async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: stri
   if (used !== undefined && used !== sessionModel && s.status !== 'stopped' && s.status !== 'error') {
     console.log(`[MODEL-CHANGE] ${sessionId}: ${used ?? '(none)'} -> ${sessionModel}, restarting agent process`);
     try { await tauriStopSession(sessionId); } catch {}
+    // tauriStopSession 直接杀进程，不产生 finish 事件：若被杀时消息还在
+    // 处理中，其 isProcessing 会残留 true（hasLiveActivity 永远为 true，
+    // ChatMessages 持续重渲染/滚动）。重启前清干净。
+    const st = sessionStates.get(sessionId);
+    if (st) {
+      for (const m of st.messages) {
+        if (m.isProcessing === true) m.isProcessing = false;
+      }
+      syncMessagesToView(st);
+    }
     await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, sessionId, sessionModel, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
     s.status = 'running';
     s.freshAgentProcess = true;
@@ -2136,6 +2243,8 @@ async function handleStop() {
     const sid = effectiveSessionId.value;
     const state = getSessionState(sid);
     clearRetry(state);
+    state.hasActiveTool = false;
+    state.hasStarted = false;
     state.isProcessing = false;
     // Clear isProcessing on ALL agent messages, not just the last one. A
     // crashed/stopped session can leave earlier messages stuck at
@@ -2164,6 +2273,45 @@ async function handleStop() {
     await store.stopSession(sid);
   }
 }
+
+// 兜底清理残留的 live 标记。正常停止/完成路径（handleStop / finish /
+// handleSendFailure）都会清掉消息上的 isProcessing 与 running toolCalls；
+// 但存在不经过它们的停止路径（进程被外部 kill 后 finish 事件丢失、模型切换
+// 时 tauriStopSession 直接杀进程等），消息会残留 isProcessing=true，让
+// ChatMessages.hasLiveActivity 永远为 true：now tick 每 500ms 驱动全列表
+// 重渲染，"working Xs" 持续变化，配合 ResizeObserver→contentUpdated 表现为
+// "会话没在跑了，消息区却一直往下滚"。会话一被标记为 stopped/error 就立即
+// 兜底清理本实例缓存的状态（后台 KeepAlive 实例的 watch 同样存活，各自清理）。
+// 正常路径下这是 no-op（dirty=false），无副作用。
+watch(
+  () => store.sessions.map(s => `${s.id}:${s.status}`).join("\n"),
+  () => {
+    for (const s of store.sessions) {
+      if (s.status !== "stopped" && s.status !== "error") continue;
+      const state = sessionStates.get(s.id);
+      if (!state) continue;
+      let dirty = false;
+      for (const m of state.messages) {
+        if (m.isProcessing === true) {
+          m.isProcessing = false;
+          dirty = true;
+        }
+        if (m.toolCalls) {
+          for (const tc of m.toolCalls) {
+            if (tc.status === "started" || tc.status === "running") {
+              tc.status = "failed";
+              dirty = true;
+            }
+          }
+        }
+      }
+      if (dirty) {
+        syncMessagesToView(state);
+        msgStore.setMessages(s.id, [...state.messages]);
+      }
+    }
+  },
+);
 
 async function pickDirectory() {
   const selected = await open({ directory: true, multiple: false });
@@ -2232,7 +2380,7 @@ watch(messages, (msgs) => {
         <div v-if="isSessionLoading" class="absolute inset-0 flex items-center justify-center bg-white/70 z-10">
           <div class="flex items-center gap-2 text-gray-400">
             <div class="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin"></div>
-            <span class="text-[13px]">Loading...</span>
+            <span class="text-[13px]">{{ $t("session.loading") }}</span>
           </div>
         </div>
 
@@ -2241,7 +2389,7 @@ watch(messages, (msgs) => {
           v-if="showScrollToBottom"
           @click="scrollToBottom()"
           class="absolute bottom-6 left-1/2 -translate-x-1/2 w-9 h-9 rounded-full bg-white border border-gray-200 shadow-md flex items-center justify-center text-gray-500 hover:text-gray-700 hover:border-gray-300 hover:shadow-lg transition-all duration-200 cursor-pointer z-10"
-          title="Scroll to bottom"
+          :title="$t('session.scrollToBottom')"
         >
           <ArrowDown :size="16" />
         </button>
@@ -2262,8 +2410,8 @@ watch(messages, (msgs) => {
             @mouseenter="handleMouseEnterTrigger"
           >
             <div class="px-3 py-2 flex items-center justify-between border-b border-gray-100">
-              <span class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Messages</span>
-              <span class="text-[10px] text-gray-400">{{ userMessages.length }} items</span>
+              <span class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">{{ $t("board.messages") }}</span>
+              <span class="text-[10px] text-gray-400">{{ $t("session.itemsCount", { count: userMessages.length }) }}</span>
             </div>
             <button
               v-for="msg in userMessages"
@@ -2282,7 +2430,7 @@ watch(messages, (msgs) => {
               'relative flex flex-col items-center justify-center gap-1.5 py-3 px-1.5 rounded-l-xl bg-white/85 backdrop-blur-sm border border-r-0 border-gray-200 shadow-sm text-gray-500 hover:text-gray-800 hover:bg-white transition-all duration-200 cursor-pointer',
               showMessageList ? 'bg-white text-gray-800 shadow-md' : ''
             ]"
-            title="Message list"
+            :title="$t('session.messageList')"
             @mouseenter="handleMouseEnterTrigger"
           >
             <span
@@ -2320,7 +2468,7 @@ watch(messages, (msgs) => {
                       : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                     : 'text-gray-200 cursor-not-allowed',
                 ]"
-                title="Skills"
+                :title="$t('session.skills')"
               >
                 <Wand2 :size="13" />
               </button>
@@ -2332,7 +2480,7 @@ watch(messages, (msgs) => {
               class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
             >
               <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
-                <span class="text-[11px] font-medium text-gray-500">Skills ({{ selectedSkills.size }}/{{ availableSkills.length }})</span>
+                <span class="text-[11px] font-medium text-gray-500">{{ $t("session.skillsCount", { count: selectedSkills.size, total: availableSkills.length }) }}</span>
                 <button @click.stop="showSkillsPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
                   <X :size="12" />
                 </button>
@@ -2372,7 +2520,7 @@ watch(messages, (msgs) => {
                   v-if="attachedFiles.length > 0"
                   @click.stop="showAttachList = !showAttachList"
                   class="min-w-[18px] h-[18px] px-1 rounded-full bg-gray-200 text-gray-700 text-[11px] font-semibold flex items-center justify-center cursor-pointer hover:bg-gray-300 transition-colors flex-shrink-0"
-                  title="View attached files"
+                  :title="$t('session.viewAttachedFiles')"
                 >{{ attachedFiles.length }}</button>
 
                 <!-- Attachment list popover -->
@@ -2398,7 +2546,7 @@ watch(messages, (msgs) => {
                         <div class="text-[10px] text-gray-400 truncate">{{ f.path }}</div>
                       </div>
                       <span class="text-[10px] text-gray-400 flex-shrink-0">{{ formatFileSize(f.size) }}</span>
-                      <button @click="removeAttachedFile(f.path)" class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 cursor-pointer" title="Remove">
+                      <button @click="removeAttachedFile(f.path)" class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors flex-shrink-0 cursor-pointer" :title="$t('session.remove')">
                         <X :size="11" />
                       </button>
                     </div>
@@ -2437,14 +2585,14 @@ watch(messages, (msgs) => {
                     <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                     <Sparkles v-else :size="11" />
                     <span class="text-left" :class="props.compact ? 'hidden' : 'hidden md:inline'">
-                      <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || 'Select Model' }}</span>
+                      <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || $t('session.selectModel') }}</span>
                       <span v-if="selectedModelInfo && selectedModelInfo.alias"
                             class="text-[10px] text-gray-400 ml-1">{{ selectedModelInfo.name }}</span>
                     </span>
                     <ChevronDown :size="10" :class="props.compact ? 'hidden' : ''" />
                   </button>
                   <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
-                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Commercial Models</div>
+                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.commercialModels") }}</div>
                     <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
                       @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
@@ -2456,7 +2604,7 @@ watch(messages, (msgs) => {
                     </div>
                     <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
                       <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
-                        Local Models
+                        {{ $t("session.localModels") }}
                       </div>
                       <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
                         @click="isLocalModelRunning(model) ? handleModelSelect(model) : router.push('/settings/models')"
@@ -2467,16 +2615,16 @@ watch(messages, (msgs) => {
                           <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
                           <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
                         </div>
-                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">Start server</span>
+                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">{{ $t("session.startServer") }}</span>
                       </div>
                     </div>
                     <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
-                      No models configured
+                      {{ $t("session.noModels") }}
                     </div>
                   </div>
                 </div>
 
-                <button @click="noThinking = !noThinking" :disabled="isProcessing" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" title="Toggle reasoning mode">
+                <button @click="noThinking = !noThinking" :disabled="isProcessing" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" :title="$t('session.toggleReasoning')">
                   <Sparkles :size="14" />
                 </button>
 
@@ -2512,7 +2660,7 @@ watch(messages, (msgs) => {
                     class="absolute bottom-full right-0 mb-2 w-56 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50"
                   >
                     <div class="px-3 py-2 border-b border-gray-50 flex items-center justify-between">
-                      <span class="text-[11px] font-medium text-gray-500">Context size</span>
+                      <span class="text-[11px] font-medium text-gray-500">{{ $t("session.contextSize") }}</span>
                       <button @click="showContextPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
                         <X :size="12" />
                       </button>
@@ -2521,7 +2669,7 @@ watch(messages, (msgs) => {
                       <div class="text-[12px] text-gray-800 tabular-nums font-medium">
                         {{ contextCharCount.toLocaleString() }} / {{ contextMaxChars.toLocaleString() }}
                       </div>
-                      <div class="text-[10px] text-gray-400 mt-0.5">characters in this session</div>
+                      <div class="text-[10px] text-gray-400 mt-0.5">{{ $t("session.contextCharsLabel") }}</div>
                       <div
                         v-if="contextOverLimit"
                         class="mt-2 text-[11px] text-red-600 leading-snug"
@@ -2533,11 +2681,11 @@ watch(messages, (msgs) => {
                 </div>
 
                 <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel || contextOverLimit" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel && !contextOverLimit)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
-                  <Send :size="12" />Send
-                  <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
-                  <span v-else-if="contextOverLimit" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Context limit reached — start a new session</span>
+                  <Send :size="12" />{{ $t("input.send") }}
+                  <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
+                  <span v-else-if="contextOverLimit" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.contextLimitShort") }}</span>
                 </button>
-                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0"><Square :size="12" />Stop</button>
+                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0"><Square :size="12" />{{ $t("input.stop") }}</button>
               </div>
             </div>
           </div>
@@ -2551,7 +2699,7 @@ watch(messages, (msgs) => {
 
         <!-- Slogan -->
         <p v-if="hasAnyAgentInstalled && hasAnyModel && (!selectedAgent || selectedAgent.installed)" class="text-center text-[28px] font-semibold text-gray-800 mb-6 tracking-tight">
-          What are we building today?
+          {{ $t("session.whatBuilding") }}
         </p>
 
         <div class="flex justify-center mb-5">
@@ -2564,16 +2712,16 @@ watch(messages, (msgs) => {
             </template>
             <button v-else @click="router.push('/settings/agents')" class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium text-gray-400 hover:text-gray-600 transition-all duration-200 cursor-pointer">
               <Package :size="14" />
-              Install an Agent
+              {{ $t("session.installAnAgent") }}
             </button>
             <!-- More agents dropdown -->
             <div class="relative more-agents-selector">
               <button @click.stop="showMoreAgents = !showMoreAgents" class="flex items-center gap-1 px-3 py-2 rounded-xl text-[13px] font-medium text-gray-500 hover:text-gray-700 transition-all duration-200 cursor-pointer">
-                More
+                {{ $t("session.more") }}
                 <ChevronDown :size="10" :class="showMoreAgents ? 'rotate-180' : ''" class="transition-transform duration-150" />
               </button>
               <div v-if="showMoreAgents" class="absolute top-full left-0 mt-1 w-44 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 py-1">
-                <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Coming Soon</div>
+                <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.comingSoon") }}</div>
                 <button
                   v-for="agent in otherAgents"
                   :key="agent.id"
@@ -2592,27 +2740,27 @@ watch(messages, (msgs) => {
           <div class="w-12 h-12 mx-auto mb-3 rounded-xl bg-blue-100 flex items-center justify-center">
             <Package :size="24" class="text-blue-600" />
           </div>
-          <p class="text-[15px] font-semibold text-gray-800 mb-1">Welcome to RunJam</p>
+          <p class="text-[15px] font-semibold text-gray-800 mb-1">{{ $t("empty.welcome") }}</p>
           <p class="text-[13px] text-gray-500 mb-5 max-w-sm mx-auto leading-relaxed">
-            To start chatting with an AI agent, you need to install an agent and configure at least one model.
+            {{ $t("session.installPrompt") }}
           </p>
           <div class="flex items-center justify-center gap-3">
             <button @click="router.push('/settings/agents')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-blue-600 text-white hover:bg-blue-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
-              <Download :size="15" /> Install Agent
+              <Download :size="15" /> {{ $t("session.installAgentBtn") }}
             </button>
             <button @click="router.push('/settings/models?action=add')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
-              <Wand2 :size="15" /> Configure Model
+              <Wand2 :size="15" /> {{ $t("session.configureModel") }}
             </button>
           </div>
         </div>
 
         <!-- Selected agent not installed -->
         <div v-else-if="selectedAgent && !selectedAgent.installed" class="mb-5 p-5 rounded-2xl border border-amber-200 bg-amber-50 text-center">
-          <p class="text-[14px] font-semibold text-amber-800 mb-1">{{ selectedAgent.display_name }} is not installed</p>
-          <p class="text-[13px] text-amber-600 mb-1">Install it to start chatting with AI.</p>
-          <p v-if="!hasAnyModel" class="text-[12px] text-amber-500 mb-3">You'll also need to configure a model after installation.</p>
+          <p class="text-[14px] font-semibold text-amber-800 mb-1">{{ $t("session.notInstalled", { name: selectedAgent.display_name }) }}</p>
+          <p class="text-[13px] text-amber-600 mb-1">{{ $t("session.notInstalledHint") }}</p>
+          <p v-if="!hasAnyModel" class="text-[12px] text-amber-500 mb-3">{{ $t("session.needModelToo") }}</p>
           <button @click="router.push(`/settings/agents/${selectedAgentId}`)" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-amber-600 text-white hover:bg-amber-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
-            <Download :size="14" /> Install {{ selectedAgent.display_name }}
+            <Download :size="14" /> {{ $t("session.installName", { name: selectedAgent.display_name }) }}
           </button>
         </div>
 
@@ -2620,11 +2768,11 @@ watch(messages, (msgs) => {
         <div v-else-if="hasAnyAgentInstalled && !hasAnyModel" class="mb-5 p-4 rounded-2xl border border-purple-200 bg-purple-50 flex items-center gap-3">
           <Wand2 :size="18" class="text-purple-500 flex-shrink-0" />
           <div class="flex-1">
-            <p class="text-[13px] font-medium text-purple-800">No model configured yet</p>
-            <p class="text-[12px] text-purple-500">Add a model provider to start chatting.</p>
+            <p class="text-[13px] font-medium text-purple-800">{{ $t("session.noModelYet") }}</p>
+            <p class="text-[12px] text-purple-500">{{ $t("session.noModelHint") }}</p>
           </div>
           <button @click="router.push('/settings/models?action=add')" class="flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-purple-600 text-white hover:bg-purple-700 active:scale-[0.98] transition-all cursor-pointer">
-            Add Model
+            {{ $t("session.addModelBtn") }}
           </button>
         </div>
 
@@ -2653,7 +2801,7 @@ watch(messages, (msgs) => {
                     : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                   : 'text-gray-200 cursor-not-allowed',
               ]"
-              title="Skills"
+              :title="$t('session.skills')"
             >
               <Wand2 :size="13" />
             </button>
@@ -2665,7 +2813,7 @@ watch(messages, (msgs) => {
             class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
           >
             <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
-              <span class="text-[11px] font-medium text-gray-500">Skills ({{ selectedSkills.size }}/{{ availableSkills.length }})</span>
+              <span class="text-[11px] font-medium text-gray-500">{{ $t("session.skillsCount", { count: selectedSkills.size, total: availableSkills.length }) }}</span>
               <button @click.stop="showSkillsPopover = false" class="w-5 h-5 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 cursor-pointer transition-colors">
                 <X :size="12" />
               </button>
@@ -2770,14 +2918,14 @@ watch(messages, (msgs) => {
                   <img v-if="selectedModelInfo" :src="getProviderLogo(getProviderByName(selectedModelInfo.provider_name)?.id || 'custom')" :alt="selectedModelInfo.provider_name" class="w-4 h-4 object-contain" />
                   <Sparkles v-else :size="11" />
                   <span class="text-left hidden md:inline">
-                    <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || 'Select Model' }}</span>
+                    <span>{{ selectedModelInfo?.alias || selectedModelInfo?.name || $t('session.selectModel') }}</span>
                     <span v-if="selectedModelInfo && selectedModelInfo.alias" 
                           class="text-[10px] text-gray-400 ml-1">{{ selectedModelInfo.name }}</span>
                   </span>
                   <ChevronDown :size="10" />
                 </button>
                 <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
-                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Commercial Models</div>
+                    <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.commercialModels") }}</div>
                     <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
                       @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
@@ -2789,7 +2937,7 @@ watch(messages, (msgs) => {
                     </div>
                     <div v-if="modelList.some(m => m.provider === 'llama')" class="border-t border-gray-200 mt-1">
                       <div class="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1">
-                        Local Models
+                        {{ $t("session.localModels") }}
                       </div>
                       <div v-for="model in modelList.filter(m => m.provider === 'llama')" :key="model.id"
                         @click="isLocalModelRunning(model) ? handleModelSelect(model) : router.push('/settings/models')"
@@ -2800,11 +2948,11 @@ watch(messages, (msgs) => {
                           <div class="text-[12px] font-medium truncate">{{ model.alias || model.name }}</div>
                           <div v-if="model.alias" class="text-[10px] text-gray-400 truncate">{{ model.name }}</div>
                         </div>
-                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">Start server</span>
+                        <span v-if="!isLocalModelRunning(model)" class="text-[10px] text-gray-400">{{ $t("session.startServer") }}</span>
                       </div>
                     </div>
                     <div v-if="modelList.length === 0" class="px-3 py-4 text-center text-[12px] text-gray-400">
-                      No models configured
+                      {{ $t("session.noModels") }}
                     </div>
                     <div class="border-t border-gray-100">
                       <button
@@ -2812,20 +2960,20 @@ watch(messages, (msgs) => {
                       class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer font-medium"
                     >
                       <Plus :size="13" class="text-gray-400" />
-                      Add Model
+                      {{ $t("session.addModelBtn") }}
                     </button>
                   </div>
                 </div>
               </div>
 
               <!-- No thinking toggle -->
-              <button @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" title="Toggle reasoning mode">
+              <button @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" :title="$t('session.toggleReasoning')">
                 <Sparkles :size="14" />
               </button>
               <!-- Send button -->
               <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
-                <Send :size="12" />Send
-                <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">Please select a model</span>
+                <Send :size="12" />{{ $t("input.send") }}
+                <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
               </button>
             </div>
           </div>
@@ -2837,14 +2985,14 @@ watch(messages, (msgs) => {
               class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors cursor-pointer"
             >
               <Folder :size="13" />
-              <span v-if="!dirPath">work in a project</span>
+              <span v-if="!dirPath">{{ $t("session.workInProject") }}</span>
               <span v-else class="text-gray-700 font-medium">{{ dirPath.split('/').pop() }}</span>
             </button>
             <button
               v-if="dirPath"
               @click="dirPath = ''"
               class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-200/60 transition-colors cursor-pointer"
-              title="Clear project"
+              :title="$t('session.clearProject')"
             >
               <X :size="12" />
             </button>
@@ -2857,7 +3005,7 @@ watch(messages, (msgs) => {
             >
             <!-- Recent projects -->
             <div v-if="recentDirs.length > 0">
-              <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Recent Projects</div>
+              <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.recentProjects") }}</div>
               <div
                 v-for="d in recentDirs"
                 :key="d"
@@ -2876,7 +3024,7 @@ watch(messages, (msgs) => {
                 <button
                   @click.stop="removeRecentDir(d)"
                   class="p-1 rounded text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all flex-shrink-0 cursor-pointer"
-                  title="Remove"
+                  :title="$t('session.remove')"
                 >
                   <X :size="12" />
                 </button>
@@ -2889,7 +3037,7 @@ watch(messages, (msgs) => {
               class="w-full flex items-center gap-2 px-3 py-2 text-left text-[12px] text-gray-500 hover:bg-gray-50 transition-colors cursor-pointer"
             >
               <X :size="12" class="text-gray-400" />
-              No project
+              {{ $t("session.noProject") }}
             </button>
             <!-- Open a new folder -->
             <button
@@ -2897,7 +3045,7 @@ watch(messages, (msgs) => {
               class="w-full flex items-center gap-2 px-3 py-2 text-left text-[12px] text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer"
             >
               <FolderPlus :size="13" class="text-gray-400" />
-              Open a new folder...
+              {{ $t("session.openNewFolder") }}
             </button>
           </div>
         </div>
@@ -2908,7 +3056,7 @@ watch(messages, (msgs) => {
         <button
           @click="showFeedbackModal = true"
           class="inline-flex items-center justify-center w-9 h-9 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
-          title="Send feedback"
+          :title="$t('session.sendFeedback')"
         >
           <MessageCircle :size="15" />
         </button>
@@ -2938,7 +3086,7 @@ watch(messages, (msgs) => {
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
           <MessageCircle :size="16" class="text-gray-500" />
-          <span class="text-[15px] font-semibold text-gray-900">Send Feedback</span>
+          <span class="text-[15px] font-semibold text-gray-900">{{ $t("session.feedbackTitle") }}</span>
         </div>
         <button
           @click="closeFeedback"
@@ -2953,8 +3101,8 @@ watch(messages, (msgs) => {
           <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
             <Check :size="20" class="text-green-600" />
           </div>
-          <p class="text-[14px] font-medium text-gray-900">Thank you for your feedback!</p>
-          <p class="text-[12px] text-gray-400">We'll review it shortly.</p>
+          <p class="text-[14px] font-medium text-gray-900">{{ $t("session.feedbackThanks") }}</p>
+          <p class="text-[12px] text-gray-400">{{ $t("session.feedbackThanksDesc") }}</p>
         </div>
       </template>
 
@@ -2971,14 +3119,14 @@ watch(messages, (msgs) => {
                 : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50',
             ]"
           >
-            {{ t.label }}
+            {{ $t(t.labelKey) }}
           </button>
         </div>
 
         <textarea
           v-model="feedbackContent"
           rows="5"
-          placeholder="Describe your feedback..."
+          :placeholder="$t('session.feedbackPlaceholder')"
           class="w-full px-3 py-2.5 rounded-xl border text-[13px] text-gray-900 placeholder:text-gray-300 bg-white focus:outline-none transition-colors resize-none"
           :class="feedbackError ? 'border-red-300 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'"
           @input="feedbackError = ''"
@@ -3007,7 +3155,7 @@ watch(messages, (msgs) => {
             class="px-4 h-9 rounded-xl text-[13px] font-medium text-white transition-colors flex items-center gap-1.5"
             :class="feedbackContent.trim() && !feedbackSending ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
           >
-            {{ feedbackSending ? "Sending…" : "Submit" }}
+            {{ feedbackSending ? $t("session.feedbackSending") : $t("session.feedbackSubmit") }}
           </button>
         </div>
       </template>

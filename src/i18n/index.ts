@@ -1,70 +1,65 @@
-import { ref, watch } from "vue";
-import en from "./en";
-import zh from "./zh";
-import type { Locale } from "./en";
+import { reactive } from "vue";
+import en, { type TranslationKey } from "./locales/en";
+import zhCN from "./locales/zh-CN";
 
-export type Lang = "en" | "zh";
+export type Locale = "en-US" | "zh-CN";
 
-const STORAGE_KEY = "runjam-lang";
+const messages: Record<Locale, Record<TranslationKey, string>> = {
+  "en-US": en,
+  "zh-CN": zhCN,
+};
 
-function getBrowserLang(): Lang {
-  if (typeof window === "undefined") return "en";
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "zh" || stored === "en") return stored;
-  // Detect browser language
-  const nav = navigator.language.toLowerCase();
-  if (nav.startsWith("zh")) return "zh";
-  return "en";
+const STORAGE_KEY = "runjam.locale";
+
+function detectInitialLocale(): Locale {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved === "en-US" || saved === "zh-CN") return saved;
+  } catch {
+    // localStorage unavailable — fall through
+  }
+  // Default to the system language; fall back to English.
+  try {
+    const navLang = (navigator.language || "en-US").toLowerCase();
+    if (navLang.startsWith("zh")) return "zh-CN";
+  } catch {
+    // ignore
+  }
+  return "en-US";
 }
 
-const locales: Record<Lang, Locale> = { en, zh };
+/** Reactive locale singleton — reading `locale` inside templates/computed
+ *  tracks the dependency, so switching language re-renders automatically. */
+const state = reactive<{ locale: Locale }>({ locale: detectInitialLocale() });
 
-// Singleton reactive state
-const currentLang = ref<Lang>(getBrowserLang());
-
-watch(currentLang, (val) => {
-  localStorage.setItem(STORAGE_KEY, val);
-  // Update html lang attribute
-  document.documentElement.lang = val === "zh" ? "zh-CN" : "en";
-});
-
-// Initialize html lang attribute
-if (typeof document !== "undefined") {
-  document.documentElement.lang = currentLang.value === "zh" ? "zh-CN" : "en";
-}
-
-/**
- * Lightweight i18n composable.
- * Usage: const { t, lang, toggleLang } = useI18n()
- *        <span>{{ t('nav.features') }}</span>
- */
-export function useI18n() {
-  function t(key: string, params?: Record<string, string | number>): string {
-    const parts = key.split(".");
-    let value: any = locales[currentLang.value];
-    for (const part of parts) {
-      if (value == null) return key;
-      value = value[part];
+/** Translate a key. Params interpolate `{name}` placeholders. */
+export function t(key: TranslationKey, params?: Record<string, string | number>): string {
+  // Touch `state.locale` so callers that run inside Vue render effects
+  // (templates, computed) re-evaluate when the language changes.
+  const locale = state.locale;
+  let str: string = messages[locale][key] ?? messages["en-US"][key] ?? key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      str = str.split(`{${k}}`).join(String(v));
     }
-    if (typeof value !== "string") return key;
-    if (!params) return value;
-    // Replace {name}, {message} etc. with provided values. Missing params
-    // stay as-is so the bug is obvious in the UI rather than silently empty.
-    return value.replace(/\{(\w+)\}/g, (m, name) =>
-      name in params ? String(params[name]) : m
-    );
   }
-
-  function toggleLang() {
-    currentLang.value = currentLang.value === "en" ? "zh" : "en";
-  }
-
-  return {
-    t,
-    lang: currentLang,
-    toggleLang,
-  };
+  return str;
 }
 
-export { currentLang, locales };
-export type { Locale };
+/** The current locale (reactive). */
+export function currentLocale(): Locale {
+  return state.locale;
+}
+
+/** Switch the app language and persist the choice. */
+export function setLocale(locale: Locale): void {
+  state.locale = locale;
+  try {
+    localStorage.setItem(STORAGE_KEY, locale);
+  } catch {
+    // non-fatal
+  }
+}
+
+export type { TranslationKey };
+export default t;

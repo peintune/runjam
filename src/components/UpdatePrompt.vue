@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { installUpdate } from "../api/telemetry";
 import type { UpdateCheckResult } from "../api/telemetry";
 import { useMarkdown } from "../composables/useMarkdown";
+import { t } from "../i18n";
 
 const props = defineProps<{ result: UpdateCheckResult }>();
 defineEmits<{ close: [] }>();
@@ -32,7 +33,7 @@ async function onPrimaryAction() {
     try {
       await openUrl(props.result.downloadUrl);
     } catch {
-      error.value = "Failed to open download link";
+      error.value = t("update.openDownloadFailed");
     }
   }
 }
@@ -43,11 +44,11 @@ async function onPrimaryAction() {
     <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
       <div class="flex items-start justify-between gap-4">
         <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">
-          New version available {{ result.latestVersion }}
+          {{ $t("update.newVersion", { version: result.latestVersion ?? "" }) }}
         </h2>
         <button
           class="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          aria-label="Close"
+          :aria-label="$t('common.close')"
           @click="$emit('close')"
         >
           ✕
@@ -65,14 +66,14 @@ async function onPrimaryAction() {
           :disabled="installing"
           @click="$emit('close')"
         >
-          Later
+          {{ $t("update.later") }}
         </button>
         <button
           class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
           :disabled="installing"
           @click="onPrimaryAction"
         >
-          {{ installing ? "Downloading…" : result.action === "install" ? "Download and Install" : "Go to Download" }}
+          {{ installing ? $t("update.downloading") : result.action === "install" ? $t("update.downloadInstall") : $t("update.goToDownload") }}
         </button>
       </div>
     </div>

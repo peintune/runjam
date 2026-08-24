@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { homeDir } from "@tauri-apps/api/path";
 import { Columns3, FolderTree, ChevronRight, Folder, Clock, CalendarClock } from "lucide-vue-next";
+import type { TranslationKey } from "../i18n";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
 import { getCostBySession, type SessionCost } from "../api/costs";
 import TaskBoardCard from "../components/TaskBoardCard.vue";
@@ -33,8 +34,8 @@ function isDefaultDir(path: string): boolean {
 }
 
 const SORT_OPTIONS = [
-  { key: "lastActive", label: "Recent", icon: Clock },
-  { key: "created", label: "Created", icon: CalendarClock },
+  { key: "lastActive", labelKey: "board.sortRecent" as TranslationKey, icon: Clock },
+  { key: "created", labelKey: "board.sortCreated" as TranslationKey, icon: CalendarClock },
 ] as const;
 
 const sorted = computed(() => {
@@ -50,7 +51,7 @@ const sorted = computed(() => {
 
 interface ColumnDef {
   key: string;
-  label: string;
+  labelKey: TranslationKey;
   predicate: (s: Session) => boolean;
   dot: string;
   archivedOnly?: boolean;
@@ -58,12 +59,25 @@ interface ColumnDef {
 
 // 统一色板：running=蓝（进行中）、completed=绿（完成未读）、history=紫（已读）、
 // failed=红、archived=灰。
+// 各列 predicate 必须严格互斥——同一会话只能出现在一个列。若 running 分支与
+// completed/history 分支都命中（例如"用户正在查看的 idle 会话"），点击 history
+// 卡片后该卡片会同时出现在 running 列与 history 列。
+// running 列额外包含"用户当前正在查看的 idle 会话"，但仅限未读（刚完成一轮、
+// 进程还活着、用户仍在它的上下文里，可继续对话），语义上就是"进行中"——
+// 否则用户点开生成中的会话，等它完成后回到看板，会看到它掉进已读 History，
+// 与"还在 running"的直觉不符。已读 idle 会话属于历史：用户点开它只是查看
+// 历史，不应被划进 running，故 activeSessionId 命中但已读时仍留在 history 列。
 const COLUMN_DEFS: ColumnDef[] = [
-  { key: "running", label: "Running", predicate: s => s.status === "running", dot: "bg-blue-400" },
-  { key: "completed", label: "Completed", predicate: s => s.status === "idle" && s.unread, dot: "bg-emerald-400" },
-  { key: "history", label: "History", predicate: s => s.status === "stopped" || (s.status === "idle" && !s.unread), dot: "bg-violet-400" },
-  { key: "failed", label: "Failed", predicate: s => s.status === "error", dot: "bg-red-400" },
-  { key: "archived", label: "Archived", predicate: s => !!s.archived, dot: "bg-gray-300", archivedOnly: true },
+  {
+    key: "running",
+    labelKey: "board.columnRunning",
+    predicate: s => s.status === "running" || (s.status === "idle" && s.unread && store.activeSessionId === s.id),
+    dot: "bg-blue-400",
+  },
+  { key: "completed", labelKey: "board.columnCompleted", predicate: s => s.status === "idle" && s.unread && store.activeSessionId !== s.id, dot: "bg-emerald-400" },
+  { key: "history", labelKey: "board.columnHistory", predicate: s => s.status === "stopped" || (s.status === "idle" && !s.unread), dot: "bg-violet-400" },
+  { key: "failed", labelKey: "board.columnFailed", predicate: s => s.status === "error", dot: "bg-red-400" },
+  { key: "archived", labelKey: "board.columnArchived", predicate: s => !!s.archived, dot: "bg-gray-300", archivedOnly: true },
 ];
 
 const columns = computed(() =>
@@ -152,7 +166,7 @@ function handleDelete(id: string) {
   <div class="w-full h-full flex flex-col bg-gray-50 text-gray-900">
     <!-- slim toolbar -->
     <div class="flex items-center gap-3 px-4 py-3 flex-shrink-0">
-      <h1 class="text-[14px] font-semibold tracking-tight text-gray-800">Session Board</h1>
+      <h1 class="text-[14px] font-semibold tracking-tight text-gray-800">{{ $t("sidebar.sessionBoard") }}</h1>
       <div class="ml-auto flex items-center gap-2">
         <!-- view mode switch -->
         <div class="flex items-center bg-gray-100 rounded-xl p-1">
@@ -164,7 +178,7 @@ function handleDelete(id: string) {
             @click="viewMode = 'kanban'"
           >
             <Columns3 :size="14" />
-            Kanban
+            {{ $t("board.kanban") }}
           </button>
           <button
             :class="[
@@ -174,7 +188,7 @@ function handleDelete(id: string) {
             @click="viewMode = 'folder'"
           >
             <FolderTree :size="14" />
-            Directories
+            {{ $t("board.folder") }}
           </button>
         </div>
         <!-- sort switch -->
@@ -189,7 +203,7 @@ function handleDelete(id: string) {
             @click="sortKey = opt.key"
           >
             <component :is="opt.icon" :size="14" />
-            {{ opt.label }}
+            {{ $t(opt.labelKey) }}
           </button>
         </div>
       </div>
@@ -205,7 +219,7 @@ function handleDelete(id: string) {
         >
           <div class="flex items-center gap-2 px-3.5 py-3 flex-shrink-0">
             <span class="w-2 h-2 rounded-full flex-shrink-0" :class="col.dot" />
-            <span class="text-[12px] font-semibold text-gray-700">{{ col.label }}</span>
+            <span class="text-[12px] font-semibold text-gray-700">{{ $t(col.labelKey) }}</span>
             <span class="text-[11px] text-gray-400 ml-auto tabular-nums">{{ col.sessions.length }}</span>
             <button
               class="p-0.5 rounded hover:bg-gray-200/70 text-gray-400 transition-colors cursor-pointer"
@@ -226,7 +240,7 @@ function handleDelete(id: string) {
               @unarchive="store.unarchiveSession(s.id)"
               @delete="handleDelete(s.id)"
             />
-            <p v-if="col.sessions.length === 0" class="text-center text-[11px] text-gray-400 py-6">No sessions</p>
+            <p v-if="col.sessions.length === 0" class="text-center text-[11px] text-gray-400 py-6">{{ $t("board.empty") }}</p>
           </div>
         </div>
       </div>
@@ -236,12 +250,12 @@ function handleDelete(id: string) {
     <div v-else class="flex-1 overflow-y-auto px-6 pb-6 min-h-0">
       <div v-if="dirGroups.groups.length === 0 && dirGroups.orphans.length === 0" class="pt-24 text-center">
         <Folder :size="36" class="mx-auto mb-3 text-gray-300" />
-        <p class="text-[13px] text-gray-400">No sessions yet</p>
+        <p class="text-[13px] text-gray-400">{{ $t("sidebar.emptyState") }}</p>
         <button
           class="mt-3 px-4 py-2 rounded-xl bg-emerald-500 text-white text-[12px] font-medium hover:bg-emerald-600 transition-colors cursor-pointer"
           @click="router.push('/')"
         >
-          New session
+          {{ $t("board.newSession") }}
         </button>
       </div>
 
@@ -259,7 +273,7 @@ function handleDelete(id: string) {
           <span class="text-[13px] font-semibold text-gray-800 flex-shrink-0">{{ g.path.split("/").pop() || g.path }}</span>
           <span class="text-[11px] text-gray-400 truncate min-w-0" :title="g.path">{{ g.path }}</span>
           <span class="text-[11px] text-gray-400 ml-auto flex-shrink-0 tabular-nums">
-            {{ g.sessions.length }} sessions
+            {{ $t("board.sessions", { count: g.sessions.length }) }}
           </span>
         </button>
         <div v-if="!collapsedDirs.has(g.path)" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3 p-4">
@@ -288,8 +302,8 @@ function handleDelete(id: string) {
             :class="{ 'rotate-90': !collapsedDirs.has('__default__') }"
           />
           <Folder :size="15" class="text-gray-500 flex-shrink-0" />
-          <span class="text-[13px] font-semibold text-gray-800">Default directory</span>
-          <span class="text-[11px] text-gray-400 ml-auto flex-shrink-0 tabular-nums">{{ dirGroups.orphans.length }} sessions</span>
+          <span class="text-[13px] font-semibold text-gray-800">{{ $t("board.defaultDirectory") }}</span>
+          <span class="text-[11px] text-gray-400 ml-auto flex-shrink-0 tabular-nums">{{ $t("board.sessions", { count: dirGroups.orphans.length }) }}</span>
         </button>
         <div v-if="!collapsedDirs.has('__default__')" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3 p-4">
           <TaskBoardCard

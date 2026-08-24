@@ -252,13 +252,13 @@ defineExpose({ handleKeydown });
           ref="inputRef"
           v-model="query"
           @keydown="handleKeydown"
-          placeholder="Search files and folders..."
+          :placeholder="$t('mention.searchPlaceholder')"
           class="flex-1 text-[13px] bg-transparent outline-none placeholder:text-gray-400 text-gray-700"
         />
         <button
           @click="close"
           class="text-gray-400 hover:text-gray-600 text-[11px] flex-shrink-0 cursor-pointer"
-          title="Close (Esc)"
+          :title="$t('mention.closeEsc')"
         >
           Esc
         </button>
@@ -266,7 +266,7 @@ defineExpose({ handleKeydown });
 
       <!-- Loading state -->
       <div v-if="loading" class="px-3 py-8 text-center text-[12px] text-gray-400">
-        Loading files...
+        {{ $t("mention.loading") }}
       </div>
 
       <!-- Content -->
@@ -277,7 +277,7 @@ defineExpose({ handleKeydown });
           <div v-if="filteredRecent.length > 0">
             <div class="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50/50">
               <Clock :size="10" />
-              Recently Modified
+              {{ $t("mention.recentlyModified") }}
             </div>
             <button
               v-for="(entry, i) in filteredRecent"
@@ -306,17 +306,17 @@ defineExpose({ handleKeydown });
               class="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer"
               :class="activeTab === 'file' ? 'bg-gray-200 text-gray-800' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
             >
-              <File :size="11" /> Files
+              <File :size="11" /> {{ $t("mention.files") }}
             </button>
             <button
               @click="activeTab = 'folder'"
               class="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer"
               :class="activeTab === 'folder' ? 'bg-gray-200 text-gray-800' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
             >
-              <Folder :size="11" /> Folders
+              <Folder :size="11" /> {{ $t("mention.folders") }}
             </button>
             <span v-if="q" class="ml-auto text-[10px] text-gray-400">
-              {{ searching ? 'Searching...' : `${filteredTab.length} matches` }}
+              {{ searching ? $t('mention.searching') : $t('mention.matches', { count: filteredTab.length }) }}
             </span>
           </div>
 
@@ -340,12 +340,12 @@ defineExpose({ handleKeydown });
 
           <!-- Browse hint: tell users they can search for deeper files -->
           <div v-if="!q && filteredTab.length > 0" class="px-3 py-1.5 text-[10px] text-gray-400 text-center border-t border-gray-50">
-            Type to search all files and folders...
+            {{ $t("mention.typeToSearch") }}
           </div>
 
           <!-- Empty state -->
           <div v-if="flatList.length === 0 && !loading" class="px-3 py-8 text-center text-[12px] text-gray-400">
-            {{ q ? `No matches for "${query}"` : "No files found in this directory" }}
+            {{ q ? $t('mention.noMatches', { query }) : $t('mention.noFilesFound') }}
           </div>
         </div>
       </template>

@@ -8,7 +8,7 @@ use crate::rjlogd;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{build_agent, ensure_tool_calls_paired, find_model, limit_tools_for_llama, safe_truncate, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{apply_bash_tool_hardening, build_agent, clamp_max_tokens, ensure_tool_calls_paired, find_model, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, normalize_message_sequence, safe_truncate, tool_call_args_str, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
 
@@ -42,12 +42,17 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                         let call_id = item["call_id"].as_str().unwrap_or("");
                         // Skip function_calls whose output is missing — sending
                         // them would violate the API's tool_calls pairing rule.
-                        if !call_id.is_empty() && !output_call_ids.contains(call_id) {
-                            rjlog!("[PROXY] Responses→Chat: skipping orphaned function_call {} (no output)", call_id);
+                        // 空 call_id 也一并跳过：`"id": ""` 的 tool_call 会被
+                        // OpenAI 兼容端点（如火山引擎 ark）以 InvalidParameter 拒绝。
+                        if call_id.is_empty() || !output_call_ids.contains(call_id) {
+                            rjlog!("[PROXY] Responses→Chat: skipping orphaned function_call {:?} (no output or empty id)", call_id);
                             continue;
                         }
                         let name = item["name"].as_str().unwrap_or("");
-                        let arguments = item["arguments"].as_str().unwrap_or("");
+                        // 空参数（{} / "" / null）时兜底为合法 JSON `{}`——
+                        // `"arguments": ""` 不是合法 JSON，火山引擎 ark 等
+                        // OpenAI 兼容端点会以 InvalidParameter 拒绝。
+                        let arguments = tool_call_args_str(&item["arguments"]).unwrap_or_else(|| "{}".into());
                         let new_tc = serde_json::json!({
                             "id": call_id,
                             "type": "function",
@@ -58,17 +63,29 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                         // tool responses to follow the assistant message that emitted
                         // the tool_calls — separate assistant messages would violate
                         // this ordering and cause "insufficient tool messages" errors.
+                        // 同时与前一 assistant（含纯文本回复）合并：连续两个
+                        // assistant 消息（如 codex 先回复文本、紧接着发起工具调用）
+                        // 会让部分兼容端点（火山引擎 ark）报 InvalidParameter。
                         if let Some(last) = msgs.last_mut() {
-                            if last["role"].as_str() == Some("assistant") && last.get("tool_calls").is_some() {
+                            if last["role"].as_str() == Some("assistant") {
                                 if let Some(arr) = last["tool_calls"].as_array_mut() {
                                     arr.push(new_tc);
+                                    continue;
+                                } else {
+                                    // 纯文本 assistant 收到 tool_call → 合并 tool_calls
+                                    // 进同一消息（content 保留），避免相邻两个 assistant。
+                                    last["tool_calls"] = serde_json::json!([new_tc]);
                                     continue;
                                 }
                             }
                         }
                         msgs.push(serde_json::json!({
                             "role": "assistant",
-                            "content": "",
+                            // 纯工具调用的 assistant 无文本：用官方格式 `null` 而非
+                            // 空字符串 `""`（火山引擎 ark 等兼容端点对空字符串
+                            // content 的 assistant 消息会报 InvalidParameter；
+                            // Gemini/Claude 调用工具时常带文字所以未触发）。
+                            "content": null,
                             "tool_calls": [new_tc]
                         }));
                     }
@@ -87,8 +104,11 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                         }));
                     }
                     "reasoning" => {
-                        // codex 回传的推理项：无 role，且上游模型自己会推理，
-                        // 转成消息只会产生空的 user 消息导致上游校验失败。跳过。
+                        // codex 回传的推理项（无 role）：不转发。reasoning_content
+                        // 输入字段并非所有端点都接受——火山引擎 MiniMax-M3 会报
+                        // InvalidParameter；且大多数端点（含 qwen）不强制要求回传。
+                        // 只有 DeepSeek 官方 API 强制校验，而 codex 路径目前不面向
+                        // 该端点，因此这里直接跳过，避免向上游发送不被接受的字段。
                     }
                     _ => {
                         // Regular message items (message, developer, etc.)
@@ -140,12 +160,12 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
 
     // Find matching model in config
     let target = find_model(models, model_name, preferred_ids);
-    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
+    let (api_key, base_url, real_model, support_tools, context_window) = if let Some(m) = target {
         let masked_key = if m.api_key.len() > 8 {
             format!("{}...{}", &m.api_key[..4], &m.api_key[m.api_key.len()-4..])
         } else { m.api_key.clone() };
         rjlog!("[PROXY] Responses→Chat: Found model '{}' api_key={} base_url={}", m.name, masked_key, m.api_base);
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.context_window)
     } else {
         rjlog!("[PROXY] Responses→Chat: Model '{}' NOT FOUND in {} models. Available: {:?}",
             model_name, models.len(),
@@ -162,9 +182,18 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
         "messages": messages,
         "stream": stream,
     });
+    // Responses API 的 max_output_tokens → Chat 的 max_tokens，并用 context_window 限制
+    // 小窗口模型收到超大 max_tokens 会报 400。
+    let mot = req["max_output_tokens"].as_u64().unwrap_or(4096);
+    let clamped = clamp_max_tokens(mot, context_window);
+    if clamped != mot {
+        rjlog!("[PROXY] {}: reduced max_output_tokens from {} to context_window {}", real_model, mot, clamped);
+    }
+    chat_body["max_tokens"] = serde_json::json!(clamped);
     if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
         let mut chat_tools: Vec<Value> = tools.iter()
             .filter(|t| t["type"].as_str() == Some("function"))
+            .filter(|t| !is_claude_only_tool(t["name"].as_str().unwrap_or("")))
             .map(|t| {
                 // parameters 缺失/null 时用空对象 {}（OpenAI 兼容端点不接受 null）
                 let mut parameters = t.get("parameters").cloned().unwrap_or(serde_json::Value::Null);
@@ -175,7 +204,9 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                     "type": "function",
                     "function": {
                         "name": t["name"],
-                        "description": t.get("description").unwrap_or(&Value::Null),
+                        // description 缺失/null 时用空字符串：部分 OpenAI 兼容端点
+                        // （如 DashScope）对 null description 会报 InvalidParameter
+                        "description": t.get("description").and_then(|d| d.as_str()).unwrap_or(""),
                         "parameters": parameters,
                     }
                 })
@@ -189,6 +220,9 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                 .cmp(&b["function"]["name"].as_str().unwrap_or(""))
         });
 
+        // Bash 工具 schema 强化：确保 command 必填（见 common.rs harden_bash_tool）
+        apply_bash_tool_hardening(&mut chat_tools);
+
         if is_llama_cpp && chat_tools.len() > LLAMA_MAX_TOOLS {
             rjlog!("[PROXY] Responses→Chat: limiting tools from {} to {} for llama.cpp", chat_tools.len(), LLAMA_MAX_TOOLS);
             chat_tools = limit_tools_for_llama(&chat_tools, LLAMA_MAX_TOOLS);
@@ -196,8 +230,21 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
 
         if support_tools {
             chat_body["tools"] = serde_json::Value::Array(chat_tools);
+            // 第三方模型 Bash 调用规范（仅工具请求，普通聊天零开销）
+            inject_bash_guidance(&mut chat_body);
             if let Some(tc) = req.get("tool_choice") {
-                chat_body["tool_choice"] = tc.clone();
+                // Responses API 的 tool_choice 与 Chat API 格式不同：
+                //   Responses: {"type":"function","name":"x"}
+                //   Chat:      {"type":"function","function":{"name":"x"}}
+                // 直接透传会让 OpenAI 兼容端点（如 DashScope）报 InvalidParameter。
+                if let Some(name) = tc.get("name").and_then(|v| v.as_str()) {
+                    chat_body["tool_choice"] = serde_json::json!({
+                        "type": "function",
+                        "function": {"name": name}
+                    });
+                } else {
+                    chat_body["tool_choice"] = tc.clone();
+                }
             }
         } else {
             rjlog!("[PROXY] Responses→Chat: model {} does not support tools, skipping tool definitions", real_model);
@@ -210,12 +257,24 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
         chat_body["temperature"] = serde_json::json!(0.6);
     }
 
+    // 最终消息序列规范化：合并相邻 system/assistant（在 ensure_tool_calls_paired
+    // 之后调用，先配对、再合并）。Codex 历史重放 / 工具未完成时发起请求极易
+    // 产生相邻同 role 消息或重复的沙箱指令 system，兼容端点（火山引擎 ark）
+    // 会以 InvalidParameter 拒绝。
+    if let Some(msgs) = chat_body.get_mut("messages").and_then(|v| v.as_array_mut()) {
+        let norm = normalize_message_sequence(std::mem::take(msgs));
+        *msgs = norm;
+    }
+
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     rjlog!("[PROXY] Responses→Chat: POST {} (model={}, stream={})", url, real_model, stream);
 
     let request_body = chat_body.to_string();
-    rjlog!("[PROXY] Responses→Chat: body ({} chars) — model:{} messages:{}",
-        request_body.len(), real_model, messages.len());
+    let role_seq: Vec<&str> = chat_body["messages"].as_array()
+        .map(|a| a.iter().filter_map(|m| m["role"].as_str()).collect())
+        .unwrap_or_default();
+    rjlog!("[PROXY] Responses→Chat: body ({} chars) — model:{} messages:{} roles:[{}]",
+        request_body.len(), real_model, role_seq.len(), role_seq.join(","));
 
     let agent = build_agent();
     let resp = agent.post(&url)
@@ -254,6 +313,33 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
         Err(ureq::Error::Status(status, r)) => {
             let body = r.into_string().unwrap_or_default();
             rjlog!("[PROXY] Upstream HTTP {}: {}", status, safe_truncate(&body, 1000));
+            if status == 400 {
+                // 400 参数错误时 dump 请求体的消息骨架（每条 role / content 形态
+                // 与长度 / tool_calls 数量与名称 / tool_call_id），避免被超长
+                // system（Codex 沙箱指令）撑满 3000 字符截断而看不到问题消息。
+                if let Some(msgs) = chat_body["messages"].as_array() {
+                    let outline: Vec<String> = msgs.iter().enumerate().map(|(i, m)| {
+                        let role = m["role"].as_str().unwrap_or("?");
+                        let content = match m.get("content") {
+                            Some(Value::String(s)) => format!("str[{}]:{}", s.len(), safe_truncate(s, 60)),
+                            Some(Value::Array(a)) => format!("arr[{}]", a.len()),
+                            Some(Value::Null) | None => "none".to_string(),
+                            Some(v) => format!("{:?}", v).chars().take(60).collect::<String>(),
+                        };
+                        let tc_count = m.get("tool_calls").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                        let tc_names: Vec<&str> = m.get("tool_calls").and_then(|v| v.as_array())
+                            .map(|a| a.iter().filter_map(|t| t["function"]["name"].as_str()).collect())
+                            .unwrap_or_default();
+                        let tcid = m["tool_call_id"].as_str().unwrap_or("");
+                        format!("#{} {} | content={} | tool_calls={}{} | tc_id={}",
+                            i, role, content, tc_count,
+                            if tc_names.is_empty() { String::new() } else { format!("({})", tc_names.join(",")) },
+                            tcid)
+                    }).collect();
+                    rjlog!("[PROXY] HTTP 400 messages outline:\n{}", outline.join("\n"));
+                }
+                rjlog!("[PROXY] HTTP 400 request body preview: {}", safe_truncate(&request_body, 3000));
+            }
             // Pass 4xx through so agents fail fast instead of retrying a
             // permanent error (e.g. bad model name → endless 404s).
             // 错误类型按 Anthropic API 规范映射：401 → authentication_error，
@@ -327,7 +413,7 @@ fn convert_chat_to_responses(chat_resp: &str, model: &str, _stream: bool, reason
         for tc in tool_calls {
             let call_id = tc["id"].as_str().unwrap_or("");
             let name = tc["function"]["name"].as_str().unwrap_or("");
-            let arguments = tc["function"]["arguments"].as_str().unwrap_or("");
+            let arguments = tool_call_args_str_tracked(&tc["function"]["arguments"], &name, "responses non-streaming").unwrap_or_default();
             output_items.push(serde_json::json!({
                 "type": "function_call",
                 "id": format!("fc_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
@@ -438,7 +524,7 @@ fn make_responses_sse_converter(model: String, reasoning_disabled: bool) -> impl
         if data == "[DONE]" {
             close_reasoning(&mut result, &mut reasoning_started, &mut reasoning_done, &reasoning_id, &full_reasoning);
 
-            for (_, (fc_id, _, _, args)) in tool_items.drain() {
+            for (_, (fc_id, call_id, name, args)) in tool_items.drain() {
                 let oi = 1;
                 let _ = write!(result, "event: response.function_call_arguments.done\ndata: {}\n\n", serde_json::json!({
                     "type": "response.function_call_arguments.done", "output_index": oi, "item_id": fc_id
@@ -446,7 +532,11 @@ fn make_responses_sse_converter(model: String, reasoning_disabled: bool) -> impl
                 let _ = write!(result, "event: response.output_item.done\ndata: {}\n\n", serde_json::json!({
                     "type": "response.output_item.done", "output_index": oi, "item": {
                         "id": fc_id, "object": "realtime.item", "type": "function_call", "status": "completed",
-                        "call_id": "", "name": "", "arguments": args
+                        // 必须回传真实的 call_id / name：codex 用它构造 function_call_output，
+                        // 空 call_id 会让 codex 回传空 id，proxy 配对时产生孤儿 tool 消息
+                        // 并被丢弃，最终上游收到 tool_call_id 为空串的请求 → 400
+                        // InvalidParameter。
+                        "call_id": call_id, "name": name, "arguments": args
                     }
                 }));
             }
@@ -548,9 +638,9 @@ fn make_responses_sse_converter(model: String, reasoning_disabled: bool) -> impl
                         }
                     }
 
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
+                    if let Some(args) = tool_call_args_str_tracked(&tc["function"]["arguments"], &tc["function"]["name"].as_str().unwrap_or(""), "responses streaming") {
                         if let Some(entry) = tool_items.get_mut(&idx) {
-                            entry.3.push_str(args);
+                            entry.3.push_str(&args);
                         }
                         let _ = write!(result, "event: response.function_call_arguments.delta\ndata: {}\n\n", serde_json::json!({
                             "type": "response.function_call_arguments.delta", "output_index": tool_output_indices.get(&idx).copied().unwrap_or(0), "call_id": "", "delta": args

@@ -7,7 +7,7 @@ use crate::rjlogd;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{build_agent, ensure_tool_calls_paired, find_model, limit_tools_for_llama, safe_truncate, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{build_agent, clamp_max_tokens, ensure_tool_calls_paired, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, safe_truncate, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
 
@@ -137,6 +137,16 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
     // Find matching model in our config
     let target = find_model(models, model_name, preferred_ids);
 
+    // context_window 防御：部分小窗口模型（8K/16K）收到远超能力的 max_tokens
+    // （如 32000）会直接报 400。clamp 到模型配置的 context_window。
+    if let Some(m) = &target {
+        let clamped = clamp_max_tokens(max_tokens, m.context_window);
+        if clamped != max_tokens {
+            rjlog!("[PROXY] {}: reduced max_tokens from {} to context_window {}", m.name, max_tokens, clamped);
+            max_tokens = clamped;
+        }
+    }
+
     let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
         (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
     } else {
@@ -225,6 +235,13 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                             Some("tool_use") => {
                                 let id = block["id"].as_str().unwrap_or("");
                                 let name = block["name"].as_str().unwrap_or("");
+                                // 防死循环兜底：第三方模型偶发输出畸形工具调用（name/id 为空，
+                                // 日志里曾见 "No such tool available" 反复刷屏），直接丢弃，
+                                // 避免 CLI 报错后模型无意义重试。
+                                if name.is_empty() || id.is_empty() {
+                                    rjlog!("[PROXY] Dropping malformed tool_use (name='{}' id='{}') in history", name, id);
+                                    continue;
+                                }
                                 let arguments = block["input"].to_string();
                                 tool_calls.push(serde_json::json!({
                                     "id": id,
@@ -261,10 +278,17 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
     let is_llama_cpp = real_model.contains("llama-") || real_model.ends_with(".gguf");
 
     // Convert Anthropic tools format → OpenAI tools format
+    // 剥离 Claude 专属工具（WebFetch/WebSearch/AskUserQuestion，见 common.rs
+    // is_claude_only_tool）：第三方模型不理解其 schema，常生成空参数调用导致 CLI
+    // InputValidationError，甚至死循环重试。Claude 官方模型走 passthrough 不受影响。
     let mut openai_tools: Vec<Value> = vec![];
     if let Some(tools) = req.get("tools").and_then(|v| v.as_array()) {
         for tool in tools {
             let name = tool["name"].as_str().unwrap_or("");
+            if is_claude_only_tool(name) {
+                rjlog!("[PROXY] Anthropic→OpenAI: dropping Claude-only tool '{}' for third-party model", name);
+                continue;
+            }
             let description = tool["description"].as_str().unwrap_or("");
 
             let parameters = if is_llama_cpp {
@@ -283,14 +307,16 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                 params
             };
 
-            openai_tools.push(serde_json::json!({
+            // Bash 工具 schema 强化：确保 command 必填且描述明确（见 common.rs
+            // harden_bash_tool），缓解第三方模型生成缺 command 的调用。
+            openai_tools.push(harden_bash_tool(&serde_json::json!({
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": description,
                     "parameters": parameters
                 }
-            }));
+            })));
         }
     }
 
@@ -349,6 +375,12 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
             }
         }
         openai_body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+    }
+
+    // 第三方模型 Bash 调用规范：在 llama 分支之后统一注入，避免被上面的
+    // 紧凑提示词覆盖。仅当启用了工具时追加，普通聊天请求零开销。
+    if !openai_tools.is_empty() && support_tools {
+        inject_bash_guidance(&mut openai_body);
     }
 
     if reasoning_disabled {
@@ -525,8 +557,9 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_di
             let id = tc["id"].as_str().unwrap_or("");
             let name = tc["function"]["name"].as_str().unwrap_or("");
             // Parse arguments string into JSON Value
-            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-            let input: Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+            let args_str = tool_call_args_str_tracked(&tc["function"]["arguments"], &name, "anthropic non-streaming")
+                .unwrap_or_else(|| "{}".to_string());
+            let input: Value = serde_json::from_str(&args_str).unwrap_or(serde_json::json!({}));
             content_blocks.push(serde_json::json!({
                 "type": "tool_use", "id": id, "name": name, "input": input
             }));
@@ -704,7 +737,10 @@ pub(crate) fn make_anthropic_sse_converter(model_name: String, reasoning_disable
                     let idx = tc["index"].as_u64().unwrap_or(0) as usize;
                     let entry = tool_blocks.entry(idx).or_insert((0, false, String::new()));
 
-                    if let Some(id) = tc["id"].as_str() {
+                    // 上游流式 chunk 通常第一个带 id，但部分 OpenAI 兼容端点缺 id 或 id 为空串。
+                    // 此时若不发 content_block_start 就直接发 input_json_delta，CLI 端
+                    // "no content block at index" 解析失败。兜底：name 非空时用占位 id 补发 start。
+                    if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
                         if !entry.1 {
                             entry.1 = true;
                             let name = tc["function"]["name"].as_str().unwrap_or("");
@@ -716,13 +752,32 @@ pub(crate) fn make_anthropic_sse_converter(model_name: String, reasoning_disable
                                 "content_block": {"type": "tool_use", "id": id, "name": name, "input": {}}
                             }));
                         }
+                    } else if !entry.1 {
+                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        if !name.is_empty() {
+                            entry.1 = true;
+                            entry.2 = name.to_string();
+                            let bi = next_block_idx; next_block_idx += 1;
+                            entry.0 = bi;
+                            let placeholder_id = format!("toolu_rz_{}", bi);
+                            let _ = write!(result, "event: content_block_start\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_start", "index": bi,
+                                "content_block": {"type": "tool_use", "id": placeholder_id, "name": name, "input": {}}
+                            }));
+                            rjlog!("[PROXY] Streaming tool_calls without id: used placeholder '{}' for tool '{}'", placeholder_id, name);
+                        }
                     }
 
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
-                        let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
-                            "type": "content_block_delta", "index": entry.0,
-                            "delta": {"type": "input_json_delta", "partial_json": args}
-                        }));
+                    // 仅在 block 已 start 时转发 arguments，避免孤儿 delta 指向未 start 的 block。
+                    // 兼容 arguments 为 JSON 对象形态（部分兼容端点在流式下直接给对象），
+                    // 否则参数会被静默丢弃导致 CLI 报 "required parameter missing"。
+                    if entry.1 {
+                        if let Some(args) = tool_call_args_str_tracked(&tc["function"]["arguments"], &entry.2, "anthropic streaming") {
+                            let _ = write!(result, "event: content_block_delta\ndata: {}\n\n", serde_json::json!({
+                                "type": "content_block_delta", "index": entry.0,
+                                "delta": {"type": "input_json_delta", "partial_json": args}
+                            }));
+                        }
                     }
                 }
             }

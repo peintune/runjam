@@ -152,7 +152,7 @@ onMounted(() => {
         <div class="flex items-center justify-between px-5 pt-4 pb-3 border-b border-gray-100">
           <h3 class="text-[14px] font-semibold text-gray-900 flex items-center gap-2">
             <CornerDownRight :size="15" class="text-gray-500" />
-            Move to...
+            {{ $t("dialogs.moveTitle") }}
           </h3>
           <button
             @click="emit('cancel')"
@@ -165,7 +165,7 @@ onMounted(() => {
         <!-- Tree -->
         <div class="px-3 py-2 max-h-[280px] overflow-y-auto">
           <p class="px-2 py-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-            Select destination folder
+            {{ $t("dialogs.selectDest") }}
           </p>
           <div v-if="root" class="text-[12px]">
             <button
@@ -217,7 +217,7 @@ onMounted(() => {
                     <Folder :size="11" class="text-gray-500 flex-shrink-0" />
                     <span class="truncate">{{ grand.name }}</span>
                   </button>
-                  <p v-if="!child.children.length" class="px-2 py-0.5 text-[11px] text-gray-400">(empty)</p>
+                  <p v-if="!child.children.length" class="px-2 py-0.5 text-[11px] text-gray-400">{{ $t("dialogs.empty") }}</p>
                 </div>
               </div>
             </div>
@@ -230,14 +230,14 @@ onMounted(() => {
             @click="emit('cancel')"
             class="flex-1 px-4 py-2 rounded-lg text-[12px] font-medium text-gray-600 bg-white border border-gray-200 hover:bg-gray-100 transition-colors"
           >
-            Cancel
+            {{ $t("common.cancel") }}
           </button>
           <button
             @click="onConfirm"
             :disabled="!selected"
             class="flex-1 px-4 py-2 rounded-lg text-[12px] font-medium text-white bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
           >
-            Move
+            {{ $t("dialogs.moveConfirm") }}
           </button>
         </div>
       </div>

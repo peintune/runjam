@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onBeforeUnmount, reactive, computed } from "vue";
 import {
-  ChevronDown, ChevronRight, Clock, Check, Copy,
-  Wrench, MousePointerClick, FolderOpen,
+  ChevronDown, ChevronUp, ChevronRight, Clock, Check, Copy,
+  MousePointerClick, FolderOpen,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence } from "../composables/useMarkdown";
@@ -10,6 +10,7 @@ import AgentIcon from "./AgentIcon.vue";
 import MessageContent from "./MessageContent.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { recordRender, recordMdParse } from "../lib/diag";
+import { t } from "../i18n";
 
 const { safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
 
@@ -243,6 +244,11 @@ const toolExpanded = ref<Set<string>>(new Set());
 const respondedPermissions = ref<Set<string>>(new Set());
 const respondedInteractions = ref<Set<string>>(new Set());
 
+// 用户手动切换过的 thinking 索引。一旦用户主动点过（展开或收起），自动
+// 展开/折叠逻辑就不再干预该条 thought——否则流式 chunk 触发的 deep watch
+// 会反复把用户刚展开的历史 thought 折叠回去，表现为"没法展开，一直折叠"。
+const userToggledThinking = ref<Set<number>>(new Set());
+
 // Auto-expand thinking if its message has no content yet (still thinking phase)
 function shouldAutoExpandThinking(msg: Message): boolean {
   return !msg.content && !!msg.thinking;
@@ -254,18 +260,25 @@ watch(
     let hasActiveThinking = false;
     for (let i = 0; i < msgs.length; i++) {
       // Auto-expand thinking that hasn't reached content phase yet
-      if (shouldAutoExpandThinking(msgs[i])) {
+      // (skip thoughts the user explicitly toggled)
+      if (!userToggledThinking.value.has(i) && shouldAutoExpandThinking(msgs[i])) {
         thinkingExpanded.value.add(i);
         hasActiveThinking = true;
       }
     }
 
-    // When a new thought is active, collapse all previously completed thoughts
+    // When a new thought is active, collapse previously completed thoughts —
+    // but never ones the user explicitly toggled.
     if (hasActiveThinking) {
       for (let i = 0; i < msgs.length; i++) {
         const m = msgs[i];
         // Collapse completed thoughts (those that have both thinking and content)
-        if (m.content && m.thinking && thinkingExpanded.value.has(i)) {
+        if (
+          m.content &&
+          m.thinking &&
+          !userToggledThinking.value.has(i) &&
+          thinkingExpanded.value.has(i)
+        ) {
           thinkingExpanded.value.delete(i);
         }
       }
@@ -275,6 +288,7 @@ watch(
 );
 
 function toggleThinking(idx: number) {
+  userToggledThinking.value.add(idx);
   if (thinkingExpanded.value.has(idx)) thinkingExpanded.value.delete(idx);
   else thinkingExpanded.value.add(idx);
 }
@@ -282,6 +296,24 @@ function toggleToolCall(msgIdx: number, toolIdx: number) {
   const key = `${msgIdx}-${toolIdx}`;
   if (toolExpanded.value.has(key)) toolExpanded.value.delete(key);
   else toolExpanded.value.add(key);
+}
+
+// ═══ Tool detail log expansion — show FULL input/output on demand ═══
+// tc.input / tc.output can be multi-thousand-line logs (Bash output, errors).
+// Collapsed shows a 3-line preview; expanding renders the whole text inside an
+// internally scrollable region so huge logs don't blow up the message list.
+const logExpanded = ref<Set<string>>(new Set());
+function toggleLogDetail(key: string) {
+  if (logExpanded.value.has(key)) logExpanded.value.delete(key);
+  else logExpanded.value.add(key);
+}
+/** Treat text as "long" when it exceeds ~3 lines or 160 chars. */
+function isLongText(text?: string): boolean {
+  if (!text) return false;
+  return text.length > 160 || text.split("\n").length > 3;
+}
+function logLineCount(text?: string): number {
+  return text ? text.split("\n").length : 0;
 }
 
 // ═══ Typewriter / streaming state ═══
@@ -712,8 +744,9 @@ function processMessages(msgs: Message[]) {
       }
       displayMap[i].thinking = m.thinking || "";
       displayMap[i].content = m.content || "";
-      // Auto-collapse thinking that now has content (done phase)
-      if (m.content && thinkingExpanded.value.has(i)) {
+      // Auto-collapse thinking that now has content (done phase) — unless the
+      // user explicitly toggled it, in which case their choice wins.
+      if (m.content && !userToggledThinking.value.has(i) && thinkingExpanded.value.has(i)) {
         thinkingExpanded.value.delete(i);
       }
       if (m.content && hasMermaid(m.content)) {
@@ -799,9 +832,9 @@ function handleContentClick(e: MouseEvent) {
 
   const txt = code.textContent || "";
   navigator.clipboard.writeText(txt).then(() => {
-    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg><span>Copied</span>`;
+    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg><span>${t("chat.copied")}</span>`;
     setTimeout(() => {
-      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span>`;
+      btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>${t("chat.copy")}</span>`;
     }, 2000);
   });
 }
@@ -914,10 +947,10 @@ function truncateLabel(label: string, maxLen = 32): string {
             >
               <button
                 @click="toggleThinking(item.oi)"
-                class="flex items-center gap-1.5 text-[12px] font-medium mb-1.5 text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                class="flex items-center gap-1 px-1 py-0.5 text-[11px] font-normal text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
               >
-                <ChevronDown v-if="thinkingExpanded.has(item.oi)" :size="12" />
-                <ChevronRight v-else :size="12" />
+                <ChevronDown v-if="thinkingExpanded.has(item.oi)" :size="10" />
+                <ChevronRight v-else :size="10" />
                 <Clock :size="11" />
                 {{ thinkingLabel(item.msg, item.oi) }}
               </button>
@@ -928,7 +961,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                     if (el) thinkingRefs[item.oi] = el as HTMLElement;
                   }
                 "
-                class="text-[13px] text-gray-500 leading-relaxed max-h-40 overflow-y-auto rounded-xl p-3 bg-gray-50/70 border border-gray-100 whitespace-pre-wrap break-words font-mono"
+                class="px-1 py-0.5 text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
               >
                 {{ displayMap[item.oi]?.thinking || item.msg.thinking }}
                 <span
@@ -950,19 +983,17 @@ function truncateLabel(label: string, maxLen = 32): string {
               <div
                 v-for="(tc, ti) in item.msg.toolCalls"
                 :key="ti"
-                class="rounded-xl border border-gray-100 bg-gray-50/50 overflow-hidden"
               >
                 <button
                   @click="toggleToolCall(item.oi, ti)"
-                  class="w-full flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer"
+                  class="w-full flex items-center gap-1 px-1 py-0.5 text-[11px] font-normal text-gray-400 hover:text-gray-600 transition-colors cursor-pointer text-left"
                 >
                   <ChevronDown
                     v-if="toolExpanded.has(`${item.oi}-${ti}`)"
-                    :size="11"
+                    :size="10"
                   />
-                  <ChevronRight v-else :size="11" />
-                  <Wrench :size="12" />
-                  <span class="text-gray-500 flex-1 min-w-0 truncate">{{
+                  <ChevronRight v-else :size="10" />
+                  <span class="flex-1 min-w-0 truncate">{{
   tc.title ? (tc.title + (tc.toolName && tc.title !== tc.toolName ? ' · ' + tc.toolName : '')) : (tc.toolName || "Tool")
 }}</span>
                   <span
@@ -981,7 +1012,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                   <span
                     v-else-if="tc.status === 'failed' || tc.status === 'error'"
                     class="text-red-500 text-[11px]"
-                    >failed</span
+                    >{{ $t("chat.toolFailed") }}</span
                   >
                   <span
                     v-if="tc.durationMs"
@@ -1002,24 +1033,62 @@ function truncateLabel(label: string, maxLen = 32): string {
                     "
                     @click.stop="openInExplorer(extractFilePath(tc)!)"
                     class="ml-1 p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
-                    title="Open in file explorer"
+                    :title="$t('chat.openInExplorer')"
                   >
                     <FolderOpen :size="11" />
                   </button>
                 </button>
                 <!-- Tool call details (only when expanded) -->
                 <template v-if="toolExpanded.has(`${item.oi}-${ti}`)">
-                  <div
-                    v-if="tc.input"
-                    class="px-3 py-1.5 text-[12px] text-gray-600 bg-white/50 border-t border-gray-100 font-mono truncate"
-                  >
-                    {{ tc.input }}
+                  <div v-if="tc.input">
+                    <div
+                      class="px-1 py-0.5 text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-all"
+                      :class="
+                        logExpanded.has(`${item.oi}-${ti}-in`)
+                          ? 'max-h-[40vh] overflow-y-auto'
+                          : 'line-clamp-3'
+                      "
+                    >
+                      {{ tc.input }}
+                    </div>
+                    <button
+                      v-if="isLongText(tc.input)"
+                      @click="toggleLogDetail(`${item.oi}-${ti}-in`)"
+                      class="w-full px-1 py-0.5 text-[11px] text-gray-400 hover:text-gray-500 transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <ChevronUp v-if="logExpanded.has(`${item.oi}-${ti}-in`)" :size="11" />
+                      <ChevronDown v-else :size="11" />
+                      {{
+                        logExpanded.has(`${item.oi}-${ti}-in`)
+                          ? $t("chat.toolCollapse")
+                          : $t("chat.toolExpand", { count: logLineCount(tc.input) })
+                      }}
+                    </button>
                   </div>
-                  <div
-                    v-if="tc.output"
-                    class="px-3 py-1.5 text-[12px] text-gray-500 bg-gray-50/50 border-t border-gray-100 font-mono truncate"
-                  >
-                    {{ tc.output }}
+                  <div v-if="tc.output">
+                    <div
+                      class="px-1 py-0.5 text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-all"
+                      :class="
+                        logExpanded.has(`${item.oi}-${ti}-out`)
+                          ? 'max-h-[50vh] overflow-y-auto'
+                          : 'line-clamp-3'
+                      "
+                    >
+                      {{ tc.output }}
+                    </div>
+                    <button
+                      v-if="isLongText(tc.output)"
+                      @click="toggleLogDetail(`${item.oi}-${ti}-out`)"
+                      class="w-full px-1 py-0.5 text-[11px] text-gray-400 hover:text-gray-500 transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <ChevronUp v-if="logExpanded.has(`${item.oi}-${ti}-out`)" :size="11" />
+                      <ChevronDown v-else :size="11" />
+                      {{
+                        logExpanded.has(`${item.oi}-${ti}-out`)
+                          ? $t("chat.toolCollapse")
+                          : $t("chat.toolExpand", { count: logLineCount(tc.output) })
+                      }}
+                    </button>
                   </div>
                 </template>
               </div>
@@ -1178,7 +1247,7 @@ function truncateLabel(label: string, maxLen = 32): string {
               <span
                 v-if="group.items[group.items.length - 1].msg.cachedTokens && group.items[group.items.length - 1].msg.cachedTokens! > 0"
                 class="text-[12px] text-green-600 font-medium"
-                title="Cache hit"
+                :title="$t('chat.cacheHit')"
               >
                 ⚡ cache {{ formatTokens(group.items[group.items.length - 1].msg.cachedTokens!) }}
               </span>
@@ -1198,7 +1267,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                 )
               "
               class="msg-action-btn"
-              title="Copy message"
+              :title="$t('chat.copyMessage')"
             >
               <Check
                 v-if="

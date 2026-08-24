@@ -12,6 +12,7 @@ import { useToast } from "../composables/useToast";
 import FileContextMenu from "./FileContextMenu.vue";
 import MoveToDialog from "./MoveToDialog.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
+import { t } from "../i18n";
 
 const props = defineProps<{
   entry: FileEntry;
@@ -196,7 +197,7 @@ async function commitRename() {
     return;
   }
   if (next.includes("/") || next.includes("\\")) {
-    showError(`Invalid name: "${next}" contains a path separator`);
+    showError(t("fs.invalidName", { name: next }));
     return;
   }
   const target = `${parentOf(props.entry.path)}/${next}`;
@@ -209,13 +210,13 @@ async function commitRename() {
   } catch (err) {
     const msg = String(err);
     if (msg.includes("already exists")) {
-      showError(`"${next}" already exists`);
+      showError(t("fs.alreadyExists", { name: next }));
     } else if (msg.includes("itself or its descendant")) {
-      showError("Cannot move a folder into itself or its descendants");
+      showError(t("fs.cannotMoveIntoSelf"));
     } else if (msg.includes("outside the workspace")) {
-      showError("Path is outside the workspace");
+      showError(t("fs.outsideWorkspace"));
     } else {
-      showError(`Operation failed: ${msg}`);
+      showError(t("fs.operationFailed", { msg }));
     }
     // Keep the input open so the user can correct the name.
     renaming.value = true;
@@ -274,7 +275,7 @@ async function commitInlineNew() {
     return;
   }
   if (name.includes("/") || name.includes("\\")) {
-    ctx.error = `Invalid name: "${name}" contains a path separator`;
+    ctx.error = t("fs.invalidName", { name });
     return;
   }
   const target = `${props.entry.path}/${name}`;
@@ -285,7 +286,7 @@ async function commitInlineNew() {
       await createDir(target, props.rootPath ?? parentOf(props.entry.path));
     }
     inlineNew.value = null;
-    showSuccess(kind === "file" ? `Created ${name}` : `Created ${name}/`);
+    showSuccess(t("fs.created", { name }));
     // Reload the children of *this* dir with force=true so the newly created
     // entry appears immediately (the cache still holds the pre-create listing).
     children.value = await props.resolveChildren(props.entry.path, true);
@@ -296,7 +297,7 @@ async function commitInlineNew() {
   } catch (err) {
     const msg = String(err);
     if (msg.includes("already exists")) {
-      ctx.error = `"${name}" already exists`;
+      ctx.error = t("fs.alreadyExists", { name });
     } else {
       ctx.error = msg;
     }
@@ -355,13 +356,13 @@ async function handleMoveConfirm(destDir: string) {
   } catch (err) {
     const msg = String(err);
     if (msg.includes("already exists")) {
-      showError(`"${props.entry.name}" already exists`);
+      showError(t("fs.alreadyExists", { name: props.entry.name }));
     } else if (msg.includes("itself or its descendant")) {
-      showError("Cannot move a folder into itself or its descendants");
+      showError(t("fs.cannotMoveIntoSelf"));
     } else if (msg.includes("outside the workspace")) {
-      showError("Path is outside the workspace");
+      showError(t("fs.outsideWorkspace"));
     } else {
-      showError(`Operation failed: ${msg}`);
+      showError(t("fs.operationFailed", { msg }));
     }
   }
 }
@@ -374,8 +375,8 @@ const deleteConfirmOpen = ref(false);
 
 const deleteConfirmMessage = computed(() =>
   props.entry.is_dir
-    ? `Delete folder "${props.entry.name}" and all its contents? This cannot be undone.`
-    : `Delete "${props.entry.name}"? This cannot be undone.`
+    ? t("fs.deleteFolderMsg", { name: props.entry.name })
+    : t("fs.deleteFileMsg", { name: props.entry.name })
 );
 
 function openDeleteConfirm() {
@@ -387,17 +388,17 @@ async function performDelete() {
   deleteConfirmOpen.value = false;
   try {
     await deletePath(props.entry.path, props.rootPath ?? parentOf(props.entry.path));
-    showSuccess(`Deleted "${props.entry.name}"`);
+    showSuccess(t("fs.deleted", { name: props.entry.name }));
     // The parent listing changed — tell FileTree to reload it.
     emit("mutated", parentOf(props.entry.path));
   } catch (err) {
     const msg = String(err);
     if (msg.includes("workspace root")) {
-      showError("Cannot delete the workspace root");
+      showError(t("fs.cannotDeleteRoot"));
     } else if (msg.includes("outside the workspace")) {
-      showError("Path is outside the workspace");
+      showError(t("fs.outsideWorkspace"));
     } else {
-      showError(`Operation failed: ${msg}`);
+      showError(t("fs.operationFailed", { msg }));
     }
   }
 }
@@ -411,7 +412,7 @@ function openInFinderHere() {
     ? openInFinder(props.entry.path)
     : revealPath(props.entry.path);
   action.catch((err) => {
-    showError(`Operation failed: ${String(err)}`);
+    showError(t("fs.operationFailed", { msg: String(err) }));
   });
 }
 
@@ -508,7 +509,7 @@ onBeforeUnmount(() => {
           v-model="inlineNew.value"
           @keydown="onInlineNewKey"
           @blur="onInlineNewBlur"
-          :placeholder="'Enter name'"
+          :placeholder="$t('fs.enterName')"
           class="flex-1 text-[12px] px-1 py-0.5 border border-blue-300 rounded outline-none focus:border-blue-500"
         />
       </div>
@@ -521,7 +522,7 @@ onBeforeUnmount(() => {
       </p>
 
       <div v-if="children.length === 0 && !loadingChildren && !inlineNew" class="text-[11px] text-gray-400 pl-2 py-1" :style="{ paddingLeft: `${8 + (depth + 1) * 16 + 16}px` }">
-        (empty)
+        {{ $t("fs.empty") }}
       </div>
     </div>
 
@@ -553,10 +554,10 @@ onBeforeUnmount(() => {
     <!-- Delete confirm -->
     <ConfirmDialog
       :show="deleteConfirmOpen"
-      :title="'Delete file?'"
+      :title="$t('fs.deleteFile')"
       :message="deleteConfirmMessage"
-      :cancel-text="'Cancel'"
-      :confirm-text="'Delete'"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('common.delete')"
       @confirm="performDelete"
       @cancel="deleteConfirmOpen = false"
     />

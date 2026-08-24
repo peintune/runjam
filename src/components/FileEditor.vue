@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { readFileText, writeFile } from "../api/fs";
 import { openInFinder } from "../api/app";
 import { Loader, ExternalLink } from "lucide-vue-next";
+import { t } from "../i18n";
 
 const props = defineProps<{
   filePath: string;
@@ -96,7 +97,7 @@ async function loadFile() {
   try {
     const ext = props.filePath.split(".").pop() || "";
     if (isBinary(ext)) {
-      error.value = `Cannot open binary file (*.${ext}) in the text editor.`;
+      error.value = t("editor.cannotOpenBinary", { ext });
       loading.value = false;
       return;
     }
@@ -281,20 +282,20 @@ onBeforeUnmount(() => {
       <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-white z-10">
         <div class="flex items-center gap-2 text-gray-400">
           <Loader :size="16" class="animate-spin" />
-          <span class="text-[13px]">Loading file...</span>
+          <span class="text-[13px]">{{ $t("editor.loadingFile") }}</span>
         </div>
       </div>
       <!-- Error overlay -->
       <div v-else-if="error" class="absolute inset-0 flex items-center justify-center bg-white z-10">
         <div class="text-center max-w-sm">
           <p class="text-[13px] text-red-500 mb-2">{{ error }}</p>
-          <p class="text-[12px] text-gray-400 mb-4">This file might be binary or too large to open in the editor.</p>
+          <p class="text-[12px] text-gray-400 mb-4">{{ $t("editor.tooLargeHint") }}</p>
           <button
             @click="handleOpenExternally"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500 text-white text-[12px] font-medium hover:bg-blue-600 transition-colors cursor-pointer"
           >
             <ExternalLink :size="13" />
-            Open with system default app
+            {{ $t("editor.openWithDefault") }}
           </button>
         </div>
       </div>

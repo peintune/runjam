@@ -67,7 +67,7 @@ watch(() => props.filePath, loadFile, { immediate: true });
     <div class="flex-1 min-h-0 overflow-auto flex items-center justify-center bg-[#f8f9fb]">
       <div v-if="loading" class="flex items-center gap-2 text-gray-400">
         <Loader :size="16" class="animate-spin" />
-        <span class="text-[13px]">Loading...</span>
+        <span class="text-[13px]">{{ $t("editor.loading") }}</span>
       </div>
       <div v-else-if="error" class="flex flex-col items-center gap-2 text-gray-400">
         <FileWarning :size="32" class="text-red-300" />
@@ -80,7 +80,7 @@ watch(() => props.filePath, loadFile, { immediate: true });
         class="max-w-full max-h-full object-contain"
       />
       <div v-else class="text-[13px] text-gray-400">
-        Cannot preview this file type.
+        {{ $t("editor.cannotPreview") }}
       </div>
     </div>
   </div>

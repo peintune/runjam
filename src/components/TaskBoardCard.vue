@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Pin, Archive, Trash2, RotateCcw, Folder, FileText, Terminal, MessageSquare } from "lucide-vue-next";
+import { t } from "../i18n";
 import type { Session } from "../stores/useWorkspaceStore";
 import { useSessionLayout } from "../composables/useSessionLayout";
 import { computeContextStats } from "../composables/useContextSize";
 import { useAgentStore } from "../stores/useAgentStore";
+import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import AgentIcon from "./AgentIcon.vue";
 
 const props = defineProps<{
@@ -23,6 +25,7 @@ const emit = defineEmits<{
 
 const { peekLayout } = useSessionLayout();
 const agentStore = useAgentStore();
+const store = useWorkspaceStore();
 
 /** Directory-level layout info (file tree / terminal usage) for this session's
  *  bound directory. Comes from the localStorage layout snapshot (dir-level,
@@ -48,33 +51,41 @@ const fmt = (n: number) => {
 
 const contextLabel = computed(() => `${fmt(contextStats.value.totalChars)}/${fmt(contextStats.value.maxChars)}`);
 
-const dirBase = computed(() => props.session.directory?.split("/").pop() || "Default directory");
+const dirBase = computed(() => props.session.directory?.split("/").pop() || t("board.defaultDirectory"));
 
-const statusMeta: Record<string, { label: string; dot: string; text: string; bg: string }> = {
-  running: { label: "Running", dot: "bg-blue-400 animate-blink", text: "text-blue-700", bg: "bg-blue-50" },
-  idle: { label: "Completed", dot: "bg-emerald-400", text: "text-emerald-700", bg: "bg-emerald-50" },
-  stopped: { label: "History", dot: "bg-violet-400", text: "text-violet-700", bg: "bg-violet-50" },
-  error: { label: "Failed", dot: "bg-red-400", text: "text-red-700", bg: "bg-red-50" },
+const statusMeta: Record<string, { labelKey: Parameters<typeof t>[0]; dot: string; text: string; bg: string }> = {
+  running: { labelKey: "board.columnRunning", dot: "bg-blue-400 animate-blink", text: "text-blue-700", bg: "bg-blue-50" },
+  idle: { labelKey: "board.columnCompleted", dot: "bg-emerald-400", text: "text-emerald-700", bg: "bg-emerald-50" },
+  stopped: { labelKey: "board.columnHistory", dot: "bg-violet-400", text: "text-violet-700", bg: "bg-violet-50" },
+  error: { labelKey: "board.columnFailed", dot: "bg-red-400", text: "text-red-700", bg: "bg-red-50" },
 };
 
 const badge = computed(() => {
-  if (props.session.archived) return { label: "Archived", dot: "bg-gray-300", text: "text-gray-500", bg: "bg-gray-100" };
   const s = props.session;
-  // idle 会话按已读/未读区分：未读（用户尚未打开）→ Completed；已读 → History，
-  // 与看板列划分保持一致。
-  if (s.status === "idle" && !s.unread) return statusMeta.stopped;
-  return statusMeta[s.status] ?? { label: s.status, dot: "bg-gray-400", text: "text-gray-600", bg: "bg-gray-100" };
+  if (s.archived) return { label: t("board.columnArchived"), dot: "bg-gray-300", text: "text-gray-500", bg: "bg-gray-100" };
+  // 用户当前正在查看的 idle 会话（agent 进程还活着、刚完成一轮、且未读）→
+  // Running，与看板 running 列归一致；已读的 idle 会话属于历史（点开只是查看
+  // 历史，不划进 running），未读 → Completed，已读 → History。
+  const key =
+    s.status === "idle" && s.unread && store.activeSessionId === s.id
+      ? "running"
+      : s.status === "idle" && !s.unread
+        ? "stopped"
+        : s.status;
+  const m = statusMeta[key];
+  if (m) return { label: t(m.labelKey), dot: m.dot, text: m.text, bg: m.bg };
+  return { label: s.status, dot: "bg-gray-400", text: "text-gray-600", bg: "bg-gray-100" };
 });
 
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("sessionItem.justNow");
+  if (mins < 60) return t("sessionItem.minutesAgo", { count: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t("sessionItem.hoursAgo", { count: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return t("sessionItem.daysAgo", { count: days });
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 </script>
@@ -101,14 +112,14 @@ function timeAgo(iso: string): string {
       <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" @click.stop>
         <template v-if="!session.archived">
           <button
-            :title="session.pinned ? 'Unpin' : 'Pin to top'"
+            :title="session.pinned ? $t('board.unpin') : $t('board.pin')"
             class="p-1 rounded-md text-gray-400 hover:text-amber-500 hover:bg-gray-100 transition-colors cursor-pointer"
             @click="emit('pin')"
           >
             <Pin :size="12" />
           </button>
           <button
-            title="Archive"
+            :title="$t('board.archive')"
             class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
             @click="emit('archive')"
           >
@@ -117,7 +128,7 @@ function timeAgo(iso: string): string {
         </template>
         <template v-else>
           <button
-            title="Unarchive"
+            :title="$t('board.unarchive')"
             class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
             @click="emit('unarchive')"
           >
@@ -125,7 +136,7 @@ function timeAgo(iso: string): string {
           </button>
         </template>
         <button
-          title="Delete"
+          :title="$t('board.delete')"
           class="p-1 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors cursor-pointer"
           @click="emit('delete')"
         >
@@ -148,13 +159,13 @@ function timeAgo(iso: string): string {
     <div class="flex items-center gap-3 mt-2.5 pt-2.5 border-t border-gray-50 text-[11px] text-gray-500">
       <span
         class="inline-flex items-center gap-1 tabular-nums"
-        title="Context (chars, same as sidebar)"
+        :title="$t('board.contextTitle')"
         :style="{ color: contextStats.ringColor }"
       >
         <FileText :size="11" class="flex-shrink-0" />
         {{ contextLabel }}
       </span>
-      <span v-if="messageCount > 0" class="inline-flex items-center gap-1 text-gray-400" title="Messages">
+      <span v-if="messageCount > 0" class="inline-flex items-center gap-1 text-gray-400" :title="$t('board.messages')">
         <MessageSquare :size="11" class="flex-shrink-0" />
         {{ messageCount }}
       </span>
@@ -162,14 +173,14 @@ function timeAgo(iso: string): string {
         <span
           v-if="dirLayout?.hasOpenFiles"
           class="p-0.5 rounded bg-gray-100 text-gray-500"
-          title="Explorer"
+          :title="$t('sessionItem.explorer')"
         >
           <FileText :size="11" />
         </span>
         <span
           v-if="dirLayout?.hasTerminal"
           class="p-0.5 rounded bg-gray-100 text-gray-500"
-          title="Terminal"
+          :title="$t('sessionItem.terminal')"
         >
           <Terminal :size="11" />
         </span>

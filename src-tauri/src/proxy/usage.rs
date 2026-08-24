@@ -42,16 +42,27 @@ pub(crate) fn store_usage_for_latest(model: String, input_tokens: i64, output_to
 /// 并发场景下，多个会话可能共用同一批上游模型名（前端模型 id 与 agent 实际
 /// 请求的 model 名还可能不一致，如 deepseek-mrivjyj7 vs deepseek-v4-pro），
 /// 所以先按 model 精确匹配；匹配不到时取最近一条，避免单会话场景拿不到。
+/// 回退仅当 store 内所有记录都属于同一个 model 时才允许，否则会跨会话
+/// 把别的模型（别的并发会话）的 usage 挂到当前会话上。
 pub fn take_last_usage(model: &str) -> Option<(String, i64, i64, i64)> {
     let mut store = usage_store().lock().unwrap();
+    // 清理超过 5 分钟的旧记录
+    store.retain(|r| r.timestamp.elapsed() < std::time::Duration::from_secs(300));
     if store.is_empty() {
         return None;
     }
-    let idx = store.iter().rposition(|r| r.model == model)
-        .unwrap_or(store.len() - 1);
+    let idx = match store.iter().rposition(|r| r.model == model) {
+        Some(i) => i,
+        None => {
+            let first = store[0].model.clone();
+            if store.iter().all(|r| r.model == first) {
+                store.len() - 1
+            } else {
+                return None;
+            }
+        }
+    };
     let record = store.remove(idx);
-    // 清理超过 5 分钟的旧记录
-    store.retain(|r| r.timestamp.elapsed() < std::time::Duration::from_secs(300));
     Some((record.model, record.input_tokens, record.output_tokens, record.cached_tokens))
 }
 

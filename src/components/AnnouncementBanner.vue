@@ -17,7 +17,7 @@ defineEmits<{ close: [] }>();
     </div>
     <button
       class="shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-      aria-label="关闭"
+      :aria-label="$t('common.close')"
       @click="$emit('close')"
     >
       ✕

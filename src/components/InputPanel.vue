@@ -36,7 +36,7 @@ function handleSend() {
       <!-- textarea -->
       <textarea
         v-model="inputText"
-        placeholder="Ask anything..."
+        :placeholder="$t('input.askAnything')"
         rows="2"
         class="w-full px-4 pb-2 bg-transparent border-none outline-none resize-none text-[14px] text-gray-900 placeholder-gray-400 leading-relaxed"
         @keydown.enter.exact.prevent="handleSend"
@@ -46,7 +46,7 @@ function handleSend() {
       <div class="flex items-center justify-between px-4 pb-3">
         <button
           class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-200/50 transition-colors duration-150 cursor-pointer"
-          title="Attach file"
+          :title="$t('input.attachFile')"
         >
           <Paperclip :size="15" />
         </button>
@@ -65,7 +65,7 @@ function handleSend() {
     <div class="flex items-center gap-2 mt-2">
       <button class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-colors duration-150">
         <Folder :size="13" />
-        <span v-if="!dirPath" class="text-gray-400">Select project directory...</span>
+        <span v-if="!dirPath" class="text-gray-400">{{ $t("input.selectDir") }}</span>
         <span v-else class="text-gray-600">{{ dirPath.split('/').pop() }}</span>
       </button>
       <button

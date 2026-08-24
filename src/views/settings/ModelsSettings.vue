@@ -12,6 +12,7 @@ import type { AgentInfo } from "../../api/agents";
 import AgentIcon from "../../components/AgentIcon.vue";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import { useAgentStore } from "../../stores/useAgentStore";
+import { t } from "../../i18n";
 
 interface UIModel { 
   id: string; 
@@ -407,7 +408,7 @@ async function handleStartServer(filename: string) {
         serverStartFailed.value = false;
       } else {
         serverStartFailed.value = true;
-        serverFailureReason.value = serverFailureReason.value || "Failed to start server: Server did not respond within timeout";
+        serverFailureReason.value = serverFailureReason.value || t("models.startFailedTimeout");
         serverError.value = serverFailureReason.value;
       }
       startingServer.value = false;
@@ -450,7 +451,7 @@ async function handleStartServer(filename: string) {
     
   } catch (err: any) {
     console.error("Failed to start server:", err);
-    serverError.value = err.message || err || "Failed to start server";
+    serverError.value = err.message || err || t("models.startFailed");
     startingServer.value = false;
   }
 }
@@ -531,11 +532,11 @@ async function addModel() {
   nameError.value = "";
   apiKeyError.value = "";
   if (!newModel.value.name) {
-    nameError.value = "Model name is required";
+    nameError.value = t("models.modelNameRequired");
     return;
   }
   if (!newModel.value.apiKey) {
-    apiKeyError.value = "API key is required";
+    apiKeyError.value = t("models.apiKeyRequired");
     return;
   }
   const provider = getProviderById(newModel.value.provider) || providers[0];
@@ -601,12 +602,12 @@ function getAgentDisplayName(agentId: string): string {
 
 function getStatusText(): string {
   if (llamaServerStatus.value.startsWith("running")) {
-    return "Running";
+    return t("models.running");
   }
   if (llamaServerAvailable.value) {
-    return "Available";
+    return t("models.available");
   }
-  return "Not available";
+  return t("models.notAvailable");
 }
 
 function getStatusColor(): string {
@@ -653,8 +654,8 @@ const userAddedModels = computed(() => {
   <div class="max-w-3xl mx-auto p-8">
     <div class="mb-6 flex items-center justify-between">
       <div>
-        <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">Models</h2>
-        <p class="text-[13px] text-gray-500 mt-0.5">Configure LLM providers shared across all agents</p>
+        <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">{{ $t("models.title") }}</h2>
+        <p class="text-[13px] text-gray-500 mt-0.5">{{ $t("models.subtitle") }}</p>
       </div>
       <button
         @click="refreshModels"
@@ -662,7 +663,7 @@ const userAddedModels = computed(() => {
         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-all duration-150 cursor-pointer active:scale-[0.98]"
       >
         <RefreshCw :size="14" :class="{ 'animate-spin': refreshing }" />
-        {{ refreshing ? 'Refreshing...' : 'Refresh' }}
+        {{ refreshing ? $t('models.refreshing') : $t('models.refresh') }}
       </button>
     </div>
 
@@ -670,11 +671,11 @@ const userAddedModels = computed(() => {
       <div class="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
         <div class="text-amber-500">💡</div>
         <div class="flex-1">
-          <p class="text-[13px] font-medium text-amber-800">Llama.cpp server not available</p>
-          <p class="text-[12px] text-amber-600 mt-0.5">Please ensure llama-server binaries are present in the correct location</p>
+          <p class="text-[13px] font-medium text-amber-800">{{ $t("models.llamaNotAvailable") }}</p>
+          <p class="text-[12px] text-amber-600 mt-0.5">{{ $t("models.llamaNotAvailableDesc") }}</p>
         </div>
         <button @click="openUrl('https://github.com/ggerganov/llama.cpp')" class="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-[12px] font-medium hover:bg-amber-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
-          Download <ExternalLink :size="12" />
+          {{ $t("models.download") }} <ExternalLink :size="12" />
         </button>
       </div>
     </div>
@@ -683,17 +684,17 @@ const userAddedModels = computed(() => {
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2">
           <img :src="getProviderLogo('llama')" alt="Llama.cpp" class="w-5 h-5 object-contain" />
-          <span class="text-[15px] font-semibold text-gray-900">Local Models</span>
+          <span class="text-[15px] font-semibold text-gray-900">{{ $t("models.localModels") }}</span>
           <span :class="['w-2 h-2 rounded-full', getStatusColor()]"></span>
           <span class="text-[12px] text-gray-500">{{ getStatusText() }}</span>
         </div>
         <div class="flex items-center gap-2">
           <button @click="openLlamaModelsDir" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">
-            <FolderOpen :size="14" /> Open Folder
+            <FolderOpen :size="14" /> {{ $t("models.openFolder") }}
           </button>
           <button @click="showAddLocalModel = true"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
-            <Plus :size="12" /> Add Model
+            <Plus :size="12" /> {{ $t("models.addModel") }}
           </button>
         </div>
       </div>
@@ -712,18 +713,18 @@ const userAddedModels = computed(() => {
             <div class="flex items-center gap-2">
               <span class="text-[15px] font-medium text-gray-900 truncate">{{ rm.alias }}</span>
               <span v-if="isModelRunning(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
+                <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> {{ $t("models.running") }}
               </span>
               <a
                 v-if="isModelRunning(rm.filename)"
                 @click.prevent="openLocalServer"
                 class="flex items-center gap-0.5 text-[11px] text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-full transition-all duration-150 cursor-pointer"
-                title="Open in browser"
+                :title="$t('models.openInBrowser')"
               >
                 <ExternalLink :size="11" /> {{ runningServerUrl }}
               </a>
               <span v-else-if="isModelInstalled(rm.filename)" class="flex items-center gap-0.5 text-[11px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                <Check :size="11" /> Installed
+                <Check :size="11" /> {{ $t("models.installed") }}
               </span>
             </div>
             <p class="text-[12px] text-gray-400 mt-0.5">{{ rm.name }}</p>
@@ -747,7 +748,7 @@ const userAddedModels = computed(() => {
                 <template v-if="startingServer && !isModelRunning(rm.filename)">
                   <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
                     <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
-                    Starting...
+                    {{ $t("models.starting") }}
                   </span>
                 </template>
                 <template v-else-if="isModelRunning(rm.filename)">
@@ -755,7 +756,7 @@ const userAddedModels = computed(() => {
                     @click="handleStopServer"
                     class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
                   >
-                    <Square :size="12" /> Stop
+                    <Square :size="12" /> {{ $t("models.stop") }}
                   </button>
                 </template>
                 <template v-else>
@@ -764,11 +765,11 @@ const userAddedModels = computed(() => {
                     @click="handleStartServer(rm.filename)"
                     class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                   >
-                    <Play :size="12" /> Start
+                    <Play :size="12" /> {{ $t("models.start") }}
                   </button>
                 </template>
                 <span v-if="models.some(m => getFilename(m.name) === rm.filename && m.provider === 'llama')" class="flex items-center gap-1 text-[12px] text-emerald-600">
-                  <Check :size="12" /> Added
+                  <Check :size="12" /> {{ $t("models.added") }}
                 </span>
               </div>
             </template>
@@ -777,7 +778,7 @@ const userAddedModels = computed(() => {
                 @click="downloadModel(rm.hfRepo, rm.filename)"
                 class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
               >
-                <Download :size="12" /> Download
+                <Download :size="12" /> {{ $t("models.download") }}
               </button>
             </template>
           </div>
@@ -796,13 +797,13 @@ const userAddedModels = computed(() => {
               <div class="flex items-center gap-2">
                 <span class="text-[15px] font-medium text-gray-900 truncate">{{ model.alias || model.name }}</span>
                 <span v-if="isModelRunning(model.name)" class="flex items-center gap-0.5 text-[11px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                  <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Running
+                  <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span> {{ $t("models.running") }}
                 </span>
                 <a
                   v-if="isModelRunning(model.name)"
                   @click.prevent="openLocalServer"
                   class="flex items-center gap-0.5 text-[11px] text-blue-600 bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-full transition-all duration-150 cursor-pointer"
-                  title="Open in browser"
+                  :title="$t('models.openInBrowser')"
                 >
                   <ExternalLink :size="11" /> {{ runningServerUrl }}
                 </a>
@@ -817,7 +818,7 @@ const userAddedModels = computed(() => {
               <template v-if="startingServer && !isModelRunning(model.name)">
                 <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-200 text-gray-500">
                   <div class="w-3 h-3 border-2 border-gray-400 border-t-gray-700 rounded-full animate-spin"></div>
-                  Starting...
+                  {{ $t("models.starting") }}
                 </span>
               </template>
               <template v-else-if="isModelRunning(model.name)">
@@ -825,7 +826,7 @@ const userAddedModels = computed(() => {
                   @click="handleStopServer"
                   class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-red-500 text-white hover:bg-red-600 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
                 >
-                  <Square :size="12" /> Stop
+                  <Square :size="12" /> {{ $t("models.stop") }}
                 </button>
               </template>
               <template v-else>
@@ -834,12 +835,12 @@ const userAddedModels = computed(() => {
                   @click="handleStartServer(model.name)"
                   class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                 >
-                  <Play :size="12" /> Start
+                  <Play :size="12" /> {{ $t("models.start") }}
                 </button>
                 <button
                   @click="removeModel(model.id)"
                   class="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 active:scale-[0.98] transition-all duration-150 cursor-pointer"
-                  title="Remove model"
+                  :title="$t('models.removeModel')"
                 >
                   <Trash2 :size="14" />
                 </button>
@@ -857,12 +858,12 @@ const userAddedModels = computed(() => {
     <div v-if="commercialModels.length > 0 || (llamaServerAvailable && recommendedLocalModels.length > 0) || llamaModels.length > 0" class="space-y-2">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-2">
-          <span class="text-[15px] font-semibold text-gray-900">Commercial Models</span>
+          <span class="text-[15px] font-semibold text-gray-900">{{ $t("models.commercialModels") }}</span>
           <span class="text-[12px] text-gray-400">({{ commercialModels.length }})</span>
         </div>
         <button @click="showAdd = true; nameError = ''; apiKeyError = ''"
           class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
-          <Plus :size="15" /> Add Model
+          <Plus :size="15" /> {{ $t("models.addModel") }}
         </button>
       </div>
 
@@ -888,7 +889,7 @@ const userAddedModels = computed(() => {
                 model.protocol === 'openai_responses' ? 'bg-purple-50 text-purple-600 border-purple-200' :
                 'bg-green-50 text-green-600 border-green-200'
               ]">
-                {{ model.protocol === 'openai_chat' ? 'Chat' : model.protocol === 'openai_responses' ? 'Responses' : model.protocol }}
+                {{ model.protocol === 'openai_chat' ? $t('models.protocolChat') : model.protocol === 'openai_responses' ? $t('models.protocolResponses') : model.protocol }}
               </span>
             </p>
             <div class="flex items-center gap-2">
@@ -908,7 +909,7 @@ const userAddedModels = computed(() => {
               class="agent-dropdown-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 active:scale-[0.98] transition-all duration-150 cursor-pointer"
             >
               <Users :size="12" />
-              Agents: {{ model.assignedAgents.length }}
+              {{ $t("models.agentsCount", { count: model.assignedAgents.length }) }}
               <ChevronDown :size="12" />
             </button>
             <button @click="removeModel(model.id)"
@@ -924,11 +925,11 @@ const userAddedModels = computed(() => {
       <div class="w-14 h-14 rounded-2xl bg-gray-100 flex items-center justify-center mx-auto mb-4 text-[24px]">
         ⚡
       </div>
-      <h3 class="text-[15px] font-medium text-gray-700 mb-1">No models configured</h3>
-      <p class="text-[13px] text-gray-400 mb-4">Add a model to start using it in conversations</p>
+      <h3 class="text-[15px] font-medium text-gray-700 mb-1">{{ $t("models.noModels") }}</h3>
+      <p class="text-[13px] text-gray-400 mb-4">{{ $t("models.noModelsDesc") }}</p>
       <button @click="showAdd = true"
         class="px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">
-        Add your first model
+        {{ $t("models.addFirstModel") }}
       </button>
     </div>
 
@@ -939,7 +940,7 @@ const userAddedModels = computed(() => {
           :style="{ left: `${agentDropdownPosition.x}px`, top: `${agentDropdownPosition.y}px`, position: 'fixed', zIndex: 1000 }"
         >
           <div class="flex items-center justify-between px-3 py-2 border-b border-gray-100 mb-2">
-            <span class="text-[13px] font-semibold text-gray-900">Assign to Agents</span>
+            <span class="text-[13px] font-semibold text-gray-900">{{ $t("models.assignToAgents") }}</span>
             <button @click="showAgentDropdown = null" class="p-1 text-gray-400 hover:text-gray-600 cursor-pointer">
               <X :size="14" />
             </button>
@@ -973,7 +974,7 @@ const userAddedModels = computed(() => {
               </div>
             </div>
             <div v-if="agents.filter(a => a.installed).length === 0" class="text-center py-4">
-              <p class="text-[12px] text-gray-400">No agents installed</p>
+              <p class="text-[12px] text-gray-400">{{ $t("models.noAgentsInstalled") }}</p>
             </div>
           </div>
         </div>
@@ -984,23 +985,23 @@ const userAddedModels = computed(() => {
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity" @click="showAddLocalModel = false"></div>
       <div class="relative w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden animate-in fade-in zoom-in duration-200">
         <div class="px-6 py-4 border-b border-gray-100 bg-gray-50">
-          <h3 class="text-[16px] font-semibold text-gray-900">Add Local Model</h3>
+          <h3 class="text-[16px] font-semibold text-gray-900">{{ $t("models.addLocalModel") }}</h3>
         </div>
         <div class="p-6 space-y-4">
           <div>
-            <label class="block text-[12px] font-medium text-gray-500 mb-2">Model Name</label>
-            <input v-model="newLocalModelName" type="text" placeholder="e.g. deepreinforce-ai/Ornith-1.0-9B-GGUF"
+            <label class="block text-[12px] font-medium text-gray-500 mb-2">{{ $t("models.modelName") }}</label>
+            <input v-model="newLocalModelName" type="text" :placeholder="$t('models.modelNamePlaceholderLocal')"
               class="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-[13px] text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-gray-600/20 focus:border-gray-400 transition-all" />
-            <p class="text-[11px] text-gray-400 mt-1.5">Enter the full model name (e.g. repo/model.gguf)</p>
+            <p class="text-[11px] text-gray-400 mt-1.5">{{ $t("models.modelNameHint") }}</p>
           </div>
           <div class="bg-blue-50 border border-blue-200 rounded-xl p-3">
-            <p class="text-[12px] text-blue-700">💡 You can download GGUF models from <a href="https://huggingface.co/models" target="_blank" class="text-blue-600 underline hover:text-blue-800">Hugging Face</a> and place them in the models folder.</p>
-            <button @click="openLlamaModelsDir" class="mt-2 text-[11px] text-blue-600 hover:text-blue-800 underline cursor-pointer">Open Models Folder</button>
+            <p class="text-[12px] text-blue-700">💡 {{ $t("models.ggufHint1") }}<a href="https://huggingface.co/models" target="_blank" class="text-blue-600 underline hover:text-blue-800">{{ $t("models.huggingFace") }}</a>{{ $t("models.ggufHint2") }}</p>
+            <button @click="openLlamaModelsDir" class="mt-2 text-[11px] text-blue-600 hover:text-blue-800 underline cursor-pointer">{{ $t("models.openModelsFolder") }}</button>
           </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex gap-2 justify-end">
-          <button @click="showAddLocalModel = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">Cancel</button>
-          <button @click="handleAddLocalModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
+          <button @click="showAddLocalModel = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">{{ $t("models.cancel") }}</button>
+          <button @click="handleAddLocalModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">{{ $t("models.addModel") }}</button>
         </div>
       </div>
     </div>
@@ -1011,16 +1012,16 @@ const userAddedModels = computed(() => {
         <div class="relative bg-white rounded-2xl shadow-xl border border-gray-100 p-6 w-full max-w-lg">
           <div v-if="startingServer" class="flex items-center gap-3 mb-4">
             <div class="w-8 h-8 border-4 border-gray-200 border-t-gray-700 rounded-full animate-spin"></div>
-            <span class="text-[14px] font-medium text-gray-700">Starting Llama.cpp server...</span>
+            <span class="text-[14px] font-medium text-gray-700">{{ $t("models.startingServer") }}</span>
           </div>
           <div v-else-if="serverStartFailed" class="flex items-center gap-3 mb-4">
             <div class="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center">
               <span class="text-red-500 text-lg">✕</span>
             </div>
-            <span class="text-[14px] font-medium text-red-700">Failed to start server</span>
+            <span class="text-[14px] font-medium text-red-700">{{ $t("models.startFailed") }}</span>
           </div>
           
-          <p v-if="startingServer" class="text-[12px] text-gray-400 mb-3">This may take a while as the model loads into memory.</p>
+          <p v-if="startingServer" class="text-[12px] text-gray-400 mb-3">{{ $t("models.startHint") }}</p>
           <p v-else-if="serverStartFailed" class="text-[12px] text-red-500 mb-3">{{ serverFailureReason }}</p>
           
           <div v-if="serverLogs.length > 0" class="bg-gray-900 rounded-lg p-3 max-h-48 overflow-y-auto">
@@ -1033,7 +1034,7 @@ const userAddedModels = computed(() => {
           <div v-if="serverStartFailed" class="flex gap-2 mt-4">
             <button @click="serverStartFailed = false; serverFailureReason = ''; serverLogs = []"
               class="flex-1 px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
-              Close
+              {{ $t("models.close") }}
             </button>
           </div>
         </div>
@@ -1047,11 +1048,11 @@ const userAddedModels = computed(() => {
           <div class="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center">
             <span class="text-red-500 text-sm">!</span>
           </div>
-          <span class="text-[14px] font-semibold text-gray-900">Server Error</span>
+          <span class="text-[14px] font-semibold text-gray-900">{{ $t("models.serverError") }}</span>
         </div>
         <p class="text-[13px] text-gray-600 mb-4">{{ serverError }}</p>
         <button @click="serverError = ''" class="w-full px-4 py-2 rounded-xl text-[13px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm">
-          OK
+          {{ $t("models.ok") }}
         </button>
       </div>
     </div>
@@ -1060,11 +1061,11 @@ const userAddedModels = computed(() => {
       <div class="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity" @click="showAdd = false"></div>
       <div class="relative w-full max-w-lg bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden animate-in fade-in zoom-in duration-200">
         <div class="px-6 py-4 border-b border-gray-100 bg-gray-50">
-          <h3 class="text-[16px] font-semibold text-gray-900">Add New Model</h3>
+          <h3 class="text-[16px] font-semibold text-gray-900">{{ $t("models.addNewModel") }}</h3>
         </div>
         <div class="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
           <div>
-            <label class="block text-[12px] font-medium text-gray-500 mb-2">Provider</label>
+            <label class="block text-[12px] font-medium text-gray-500 mb-2">{{ $t("models.provider") }}</label>
             <div class="grid grid-cols-3 gap-2">
               <button v-for="p in providers.filter(p => p.id !== 'llama')" :key="p.id"
                 @click="onProviderChange(p.id)"
@@ -1080,35 +1081,35 @@ const userAddedModels = computed(() => {
           </div>
 
           <div>
-            <label class="block text-[12px] font-medium text-gray-500 mb-2">Alias</label>
-            <input v-model="newModel.alias" type="text" placeholder="Short name (optional)"
+            <label class="block text-[12px] font-medium text-gray-500 mb-2">{{ $t("models.alias") }}</label>
+            <input v-model="newModel.alias" type="text" :placeholder="$t('models.aliasPlaceholder')"
               class="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-[13px] text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-gray-600/20 focus:border-gray-400 transition-all" />
           </div>
 
           <div>
             <label class="flex items-center gap-1 text-[12px] font-medium text-gray-500 mb-2">
-              Model Name
+              {{ $t("models.modelName") }}
               <button v-if="selectedProvider.homepage" @click="openProviderHomepage"
-                class="text-gray-300 hover:text-gray-500 transition-colors cursor-pointer" title="Open provider homepage for model names">
+                class="text-gray-300 hover:text-gray-500 transition-colors cursor-pointer" :title="$t('models.openHomepageModelNames')">
                 <HelpCircle :size="13" />
               </button>
             </label>
-            <input v-model="newModel.name" type="text" placeholder="e.g. gpt-4o"
+            <input v-model="newModel.name" type="text" :placeholder="$t('models.modelNamePlaceholder')"
               class="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-[13px] text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-gray-600/20 focus:border-gray-400 transition-all" />
             <p v-if="nameError" class="text-[12px] text-red-500 mt-1.5">{{ nameError }}</p>
           </div>
 
           <div>
-            <label class="block text-[12px] font-medium text-gray-500 mb-2">API Base URL</label>
+            <label class="block text-[12px] font-medium text-gray-500 mb-2">{{ $t("models.apiBaseUrl") }}</label>
             <input v-model="newModel.apiBase" type="text" :placeholder="selectedProvider.defaultBase"
               class="w-full px-3 py-2 rounded-xl border border-gray-200 bg-white text-[13px] text-gray-900 placeholder-gray-400 outline-none focus:ring-2 focus:ring-gray-600/20 focus:border-gray-400 transition-all" />
           </div>
 
           <div>
             <label class="flex items-center gap-1 text-[12px] font-medium text-gray-500 mb-2">
-              API Key
+              {{ $t("models.apiKey") }}
               <button v-if="selectedProvider.homepage" @click="openProviderHomepage"
-                class="text-gray-300 hover:text-gray-500 transition-colors cursor-pointer" title="Open provider homepage to get API key">
+                class="text-gray-300 hover:text-gray-500 transition-colors cursor-pointer" :title="$t('models.openHomepageApiKey')">
                 <HelpCircle :size="13" />
               </button>
             </label>
@@ -1118,16 +1119,16 @@ const userAddedModels = computed(() => {
           </div>
         </div>
         <div class="px-6 py-4 border-t border-gray-100 bg-gray-50 flex gap-2 justify-end">
-          <button @click="showAdd = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">Cancel</button>
-          <button @click="addModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">Add Model</button>
+          <button @click="showAdd = false" class="px-4 py-2 rounded-xl text-[13px] font-medium text-gray-600 bg-gray-50 border border-gray-200 hover:bg-gray-100 active:scale-[0.98] transition-all duration-150 cursor-pointer">{{ $t("models.cancel") }}</button>
+          <button @click="addModel" class="px-5 py-2 rounded-xl text-[13px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] transition-all duration-150 shadow-sm cursor-pointer">{{ $t("models.addModel") }}</button>
         </div>
       </div>
     </div>
 
     <ConfirmDialog
       :show="showDeleteDialog"
-      title="Delete Model"
-      message="Deleting a model will not affect the configuration of already configured agents."
+      :title="$t('models.deleteModel')"
+      :message="$t('models.deleteModelMsg')"
       @confirm="confirmDelete"
       @cancel="cancelDelete"
     />

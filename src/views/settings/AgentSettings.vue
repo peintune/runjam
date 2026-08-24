@@ -16,6 +16,7 @@ import {
   type AgentInfo,
 } from "../../api/agents";
 import { getAgentModels } from "../../api/models";
+import { t } from "../../i18n";
 
 const router = useRouter();
 const agentStore = useAgentStore();
@@ -44,28 +45,28 @@ async function doRefresh() {
 function getStatusConfig(agent: AgentInfo) {
   // installed=true but never tested → show "Not tested" instead of "Not installed"
   if (agent.installed && agent.status === "not_installed" && !agent.last_tested_at) {
-    return { label: "Not tested", color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", icon: AlertCircle };
+    return { label: t("agents.statusNotTested"), color: "text-amber-600", bg: "bg-amber-50", border: "border-amber-200", icon: AlertCircle };
   }
   switch (agent.status) {
     case "not_installed":
-      return { label: "Not installed", color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: XCircle };
+      return { label: t("agents.statusNotInstalled"), color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: XCircle };
     case "connection_failed":
-      return { label: "Connection failed", color: "text-red-600", bg: "bg-red-50", border: "border-red-200", icon: AlertCircle };
+      return { label: t("agents.statusConnectionFailed"), color: "text-red-600", bg: "bg-red-50", border: "border-red-200", icon: AlertCircle };
     case "available":
-      return { label: "Available", color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", icon: CheckCircle2 };
+      return { label: t("agents.statusAvailable"), color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", icon: CheckCircle2 };
     default:
-      return { label: "Unknown", color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: AlertCircle };
+      return { label: t("agents.statusUnknown"), color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: AlertCircle };
   }
 }
 
 function timeAgo(iso: string): string {
   const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return 'just now';
+  if (seconds < 60) return t("agents.justNow");
   const mins = Math.floor(seconds / 60);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return t("agents.minAgo", { count: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return t("agents.hourAgo", { count: hours });
+  return t("agents.dayAgo", { count: Math.floor(hours / 24) });
 }
 
 onMounted(() => {
@@ -174,14 +175,14 @@ function goToDetail(id: string) {
 <template>
   <div class="flex flex-col h-full max-w-3xl mx-auto p-8">
     <div class="flex items-center justify-between mb-6">
-      <h2 class="text-lg font-semibold text-gray-900">Agents</h2>
+      <h2 class="text-lg font-semibold text-gray-900">{{ $t("agents.title") }}</h2>
       <button
         @click="doRefresh"
         :disabled="refreshing"
         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-all duration-150 cursor-pointer active:scale-[0.98]"
       >
         <RefreshCw :size="14" :class="{ 'animate-spin': refreshing }" />
-        {{ refreshing ? 'Refreshing...' : 'Refresh' }}
+        {{ refreshing ? $t('agents.refreshing') : $t('agents.refresh') }}
       </button>
     </div>
 
@@ -203,7 +204,7 @@ function goToDetail(id: string) {
         </div>
         <div class="flex items-center justify-center pt-4 gap-2 text-[13px] text-gray-400">
           <Loader2 :size="15" class="animate-spin" />
-          检测 Agent 中...
+          {{ $t("agents.detecting") }}
         </div>
       </template>
 
@@ -226,10 +227,10 @@ function goToDetail(id: string) {
               </div>
               <div class="flex items-center gap-3 mb-0.5">
                 <p class="text-[13px] text-gray-400">
-                  {{ agent.installed ? (agent.version ? 'v' + agent.version : 'Installed') : 'Not installed' }}
+                  {{ agent.installed ? (agent.version ? 'v' + agent.version : $t('agents.installed')) : $t('agents.notInstalled') }}
                 </p>
                 <p v-if="agent.last_tested_at" class="text-[12px] text-gray-300">
-                  Tested {{ timeAgo(agent.last_tested_at) }}
+                  {{ $t("agents.tested", { time: timeAgo(agent.last_tested_at) }) }}
                 </p>
               </div>
               <div class="flex items-center gap-3">
@@ -238,7 +239,7 @@ function goToDetail(id: string) {
                   class="inline-flex items-center gap-1 text-[12px] text-indigo-500 font-medium"
                 >
                   <Database :size="12" />
-                  {{ (agentConfigModels[agent.id] || []).length }} models
+                  {{ $t("agents.models", { count: (agentConfigModels[agent.id] || []).length }) }}
                 </span>
               </div>
             </div>
@@ -267,7 +268,7 @@ function goToDetail(id: string) {
               >
                 <ToggleRight v-if="agent.enabled" :size="14" />
                 <ToggleLeft v-else :size="14" />
-                {{ agent.enabled ? 'Enabled' : 'Disabled' }}
+                {{ agent.enabled ? $t('agents.enabled') : $t('agents.disabled') }}
               </button>
 
               <button
@@ -283,7 +284,7 @@ function goToDetail(id: string) {
               >
                 <Loader2 v-if="testing === agent.id" :size="14" class="animate-spin" />
                 <Terminal v-else :size="14" />
-                Test
+                {{ $t("agents.test") }}
               </button>
 
               <button
@@ -294,7 +295,7 @@ function goToDetail(id: string) {
               >
                 <Loader2 v-if="installing === agent.id" :size="14" class="animate-spin" />
                 <Download v-else :size="14" />
-                Install
+                {{ $t("agents.install") }}
               </button>
 
               <button
@@ -313,7 +314,7 @@ function goToDetail(id: string) {
 
         <div v-if="agents.length === 0" class="flex flex-col items-center justify-center py-12 text-gray-400">
           <Loader2 :size="48" class="mb-3 opacity-50" />
-          <p class="text-sm">No agents detected</p>
+          <p class="text-sm">{{ $t("agents.noneDetected") }}</p>
         </div>
       </template>
     </div>

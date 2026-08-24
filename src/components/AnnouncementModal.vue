@@ -14,7 +14,7 @@ defineEmits<{ close: [] }>();
         </h2>
         <button
           class="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-          aria-label="关闭"
+          :aria-label="$t('common.close')"
           @click="$emit('close')"
         >
           ✕
@@ -28,7 +28,7 @@ defineEmits<{ close: [] }>();
           class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors"
           @click="$emit('close')"
         >
-          知道了
+          {{ $t("announcement.gotIt") }}
         </button>
       </div>
     </div>

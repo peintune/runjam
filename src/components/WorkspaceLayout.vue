@@ -188,7 +188,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         @click="sidebarPinned = !sidebarPinned"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
         style="-webkit-app-region: no-drag"
-        title="Hide sidebar"
+        :title="$t('workspace.hideSidebar')"
       >
         <PanelLeftOpen :size="18" />
       </button>
@@ -198,7 +198,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         @mouseenter="sidebarHover = true"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
         style="-webkit-app-region: no-drag"
-        title="Show sidebar"
+        :title="$t('workspace.showSidebar')"
       >
         <PanelLeftClose :size="18" />
       </button>
@@ -213,7 +213,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         class="p-1.5 rounded-lg transition-colors duration-150 ml-1"
         :class="isWorkspaceMode ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
         style="-webkit-app-region: no-drag"
-        :title="isWorkspaceMode ? 'Close explorer' : 'Open explorer'"
+        :title="isWorkspaceMode ? $t('workspace.closeExplorer') : $t('workspace.openExplorer')"
       >
         <FolderTree :size="18" />
       </button>
@@ -225,7 +225,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         class="p-1.5 rounded-lg transition-colors duration-150 ml-0.5"
         :class="showTerminal ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
         style="-webkit-app-region: no-drag"
-        title="Toggle terminal"
+        :title="$t('workspace.toggleTerminal')"
       >
         <Terminal :size="18" />
       </button>
@@ -320,7 +320,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 
     <ConfirmDialog
       :show="showTerminalCloseConfirm"
-      title="Close Terminal"
+      :title="$t('workspace.closeTerminal')"
       message="Closing the terminal will terminate all running terminal processes. This cannot be undone."
       @confirm="confirmCloseTerminal"
       @cancel="cancelCloseTerminal"

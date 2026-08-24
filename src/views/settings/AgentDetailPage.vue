@@ -17,6 +17,7 @@ import {
 } from "../../api/agents";
 import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
+import { t } from "../../i18n";
 
 const router = useRouter();
 const route = useRoute();
@@ -96,13 +97,13 @@ const agentMeta: Record<string, { website: string; installManual: string; config
 function getStatusConfig(status: AgentStatus) {
   switch (status) {
     case "not_installed":
-      return { label: "Not installed", color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: XCircle };
+      return { label: t("agents.statusNotInstalled"), color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: XCircle };
     case "connection_failed":
-      return { label: "Connection failed", color: "text-red-600", bg: "bg-red-50", border: "border-red-200", icon: AlertCircle };
+      return { label: t("agents.statusConnectionFailed"), color: "text-red-600", bg: "bg-red-50", border: "border-red-200", icon: AlertCircle };
     case "available":
-      return { label: "Available", color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", icon: CheckCircle2 };
+      return { label: t("agents.statusAvailable"), color: "text-emerald-600", bg: "bg-emerald-50", border: "border-emerald-200", icon: CheckCircle2 };
     default:
-      return { label: "Unknown", color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: AlertCircle };
+      return { label: t("agents.statusUnknown"), color: "text-gray-500", bg: "bg-gray-100", border: "border-gray-200", icon: AlertCircle };
   }
 }
 
@@ -251,10 +252,10 @@ async function loadConfig(id: string) {
 
 async function saveConfig(id: string) {
   configSaving.value[id] = true;
-  try { await writeAgentConfig(id, configContent.value[id] || ''); configDirty.value[id] = false; configSaveMsg.value[id] = 'Saved successfully'; }
-  catch (err) { console.error(err); configSaveMsg.value[id] = 'Save failed'; }
+  try { await writeAgentConfig(id, configContent.value[id] || ''); configDirty.value[id] = false; configSaveMsg.value[id] = t('agent.savedSuccess'); }
+  catch (err) { console.error(err); configSaveMsg.value[id] = t('agent.saveFailed'); }
   configSaving.value[id] = false;
-  setTimeout(() => { if (configSaveMsg.value[id] === 'Saved successfully' || configSaveMsg.value[id] === 'Save failed') configSaveMsg.value[id] = ''; }, 2500);
+  setTimeout(() => { if (configSaveMsg.value[id] === t('agent.savedSuccess') || configSaveMsg.value[id] === t('agent.saveFailed')) configSaveMsg.value[id] = ''; }, 2500);
 }
 
 </script>
@@ -268,14 +269,14 @@ async function saveConfig(id: string) {
         class="group flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[13px] font-medium text-gray-400 hover:text-gray-700 hover:bg-white/60 transition-all duration-150 cursor-pointer"
       >
         <ArrowLeft :size="15" class="group-hover:-translate-x-0.5 transition-transform duration-150" />
-        Back to Agents
+        {{ $t("agent.backToAgents") }}
       </button>
     </div>
 
     <!-- Loading -->
     <div v-if="!agent" class="flex flex-col items-center justify-center py-20 text-gray-400">
       <Loader2 :size="40" class="mb-3 animate-spin opacity-40" />
-      <p class="text-sm">Loading agent...</p>
+      <p class="text-sm">{{ $t("agent.loading") }}</p>
     </div>
 
     <!-- Main content -->
@@ -327,7 +328,7 @@ async function saveConfig(id: string) {
               class="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-medium bg-gray-50 border border-gray-200 text-gray-600 hover:bg-white hover:border-gray-300 hover:shadow-sm transition-all duration-150 cursor-pointer"
             >
               <ExternalLink :size="14" />
-              Official Website
+              {{ $t("agent.officialWebsite") }}
             </a>
             <div class="inline-flex items-center gap-2 bg-gray-50 rounded-xl border border-gray-200 px-3.5 py-2">
               <Terminal :size="14" class="text-gray-400 flex-shrink-0" />
@@ -348,7 +349,7 @@ async function saveConfig(id: string) {
             >
               <ToggleRight v-if="agent.enabled" :size="16" />
               <ToggleLeft v-else :size="16" />
-              {{ agent.enabled ? 'Enabled' : 'Disabled' }}
+              {{ agent.enabled ? $t('agents.enabled') : $t('agents.disabled') }}
             </button>
             <button
               v-if="agent.installed"
@@ -363,7 +364,7 @@ async function saveConfig(id: string) {
             >
               <Loader2 v-if="testing === agent.id" :size="16" class="animate-spin" />
               <Terminal v-else :size="16" />
-              Test
+              {{ $t("agents.test") }}
             </button>
             <button
               v-if="!agent.installed"
@@ -373,7 +374,7 @@ async function saveConfig(id: string) {
             >
               <Loader2 v-if="installing === agent.id" :size="16" class="animate-spin" />
               <Download v-else :size="16" />
-              Install Agent
+              {{ $t("agent.installAgent") }}
             </button>
             <button
               v-if="agent.installed"
@@ -383,7 +384,7 @@ async function saveConfig(id: string) {
             >
               <Loader2 v-if="uninstalling === agent.id" :size="16" class="animate-spin" />
               <Trash2 v-else :size="16" />
-              Uninstall
+              {{ $t("agent.uninstall") }}
             </button>
           </div>
         </div>
@@ -396,7 +397,7 @@ async function saveConfig(id: string) {
             <div class="w-7 h-7 rounded-lg bg-indigo-50 flex items-center justify-center">
               <Database :size="14" class="text-indigo-500" />
             </div>
-            <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">Model Configuration</h3>
+            <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("agent.modelConfig") }}</h3>
           </div>
         </div>
 
@@ -438,7 +439,7 @@ async function saveConfig(id: string) {
                 class="flex items-center gap-1.5 px-5 py-2 rounded-xl text-[13px] font-semibold bg-gray-800 text-white hover:bg-gray-900 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 ml-auto cursor-pointer shadow-sm"
               >
                 <Plus :size="14" />
-                Apply
+                {{ $t("agent.apply") }}
               </button>
             </div>
           </div>
@@ -479,7 +480,7 @@ async function saveConfig(id: string) {
       <!-- ========== OPERATION LOG ========== -->
       <div v-if="installLogs[agent.id]?.length" class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100">
-          <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">Operation Log</h3>
+          <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("agent.operationLog") }}</h3>
         </div>
         <pre class="bg-gray-50 p-4 text-[12px] text-gray-600 font-mono leading-relaxed max-h-48 overflow-y-auto">{{ installLogs[agent.id]!.join('\n') }}</pre>
       </div>
@@ -489,11 +490,11 @@ async function saveConfig(id: string) {
         <div class="px-5 py-4 border-b border-gray-100">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
-              <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">Configuration File</h3>
+              <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("agent.configFile") }}</h3>
               <span class="text-[12px] text-gray-400 font-mono bg-gray-100 px-2.5 py-0.5 rounded-lg">{{ agentMeta[agent.id]?.configPath }}</span>
             </div>
             <div class="flex items-center gap-3">
-              <span class="text-[12px] text-gray-400 hidden sm:inline">Edit the raw JSON config directly</span>
+              <span class="text-[12px] text-gray-400 hidden sm:inline">{{ $t("agent.configEditHint") }}</span>
               <span
                 v-if="configSaveMsg[agent.id]"
                 :class="[
@@ -508,7 +509,7 @@ async function saveConfig(id: string) {
                 class="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-[12px] font-semibold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 cursor-pointer shadow-sm"
               >
                 <Save :size="13" />
-                {{ configSaving[agent.id] ? 'Saving...' : 'Save Changes' }}
+                {{ configSaving[agent.id] ? $t('agent.saving') : $t('agent.saveChanges') }}
               </button>
             </div>
           </div>
@@ -520,7 +521,7 @@ async function saveConfig(id: string) {
             rows="20"
             spellcheck="false"
             class="w-full p-4 rounded-xl border border-gray-200 bg-gray-50 font-mono text-[12px] text-gray-700 leading-relaxed resize-none outline-none focus:ring-2 focus:ring-indigo-500/10 focus:border-indigo-400 transition-all placeholder:text-gray-400"
-            placeholder="Config file content — will be created on save if it doesn't exist"
+            :placeholder="$t('agent.configPlaceholder')"
           />
         </div>
       </div>

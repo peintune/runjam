@@ -16,6 +16,7 @@ import {
 import { openInFinder } from "../api/app";
 import { useToast } from "../composables/useToast";
 import FileContextMenu from "./FileContextMenu.vue";
+import { t } from "../i18n";
 
 const props = defineProps<{
   rootPath: string;
@@ -354,7 +355,7 @@ async function commitInlineCreate() {
   }
   // Reject path separators — these would create nested paths we didn't intend.
   if (name.includes("/") || name.includes("\\")) {
-    ctx.error = `Invalid name: "${name}" contains a path separator`;
+    ctx.error = t("fs.invalidName", { name });
     return;
   }
   const target = parentPath === "/" ? `/${name}` : `${parentPath}/${name}`;
@@ -364,15 +365,15 @@ async function commitInlineCreate() {
     } else {
       await createDir(target, props.rootPath);
     }
-    showSuccess(kind === "file" ? `Created ${name}` : `Created ${name}/`);
+    showSuccess(t("fs.created", { name }));
     inlineCreate.value = null;
     await invalidateAndReload(parentPath);
   } catch (err) {
     const msg = String(err);
     if (msg.includes("already exists")) {
-      ctx.error = `"${name}" already exists`;
+      ctx.error = t("fs.alreadyExists", { name });
     } else {
-      ctx.error = `Operation failed: ${msg}`;
+      ctx.error = t("fs.operationFailed", { msg });
     }
   }
 }
@@ -450,7 +451,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
           <button
             @click="showNewMenu = !showNewMenu"
             class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-            :title="'New File'"
+            :title="$t('fs.newFile')"
           >
             <Plus :size="13" />
           </button>
@@ -463,28 +464,28 @@ watch(() => props.rootPath, (newPath, oldPath) => {
               @click="startInlineCreate('file', rootPath)"
             >
               <FilePlus :size="13" class="text-gray-500" />
-              <span>New File</span>
+              <span>{{ $t("fs.newFile") }}</span>
             </button>
             <button
               class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 text-[12px] text-gray-700 text-left"
               @click="startInlineCreate('folder', rootPath)"
             >
               <FolderPlus :size="13" class="text-gray-500" />
-              <span>New Folder</span>
+              <span>{{ $t("fs.newFolder") }}</span>
             </button>
           </div>
         </div>
         <button
           @click="openInFinder(props.rootPath)"
           class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-          :title="'Open in Finder'"
+          :title="$t('fs.openInFinder')"
         >
           <ExternalLink :size="13" />
         </button>
         <button
           @click="refreshTree"
           class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
-          :title="'Refresh'"
+          :title="$t('fs.refresh')"
         >
           <RefreshCw :size="13" :class="{ 'animate-spin': loading }" />
         </button>
@@ -498,7 +499,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
         <input
           v-model="searchQuery"
           @input="doSearch"
-          :placeholder="'Search files...'"
+          :placeholder="$t('fs.searchFiles')"
           class="w-full pl-8 pr-7 py-1.5 text-[12px] bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-blue-300 focus:bg-white transition-colors placeholder-gray-400"
         />
         <button
@@ -522,14 +523,14 @@ watch(() => props.rootPath, (newPath, oldPath) => {
       <template v-else-if="isSearching">
         <div v-if="searchResults.length === 0" class="flex flex-col items-center justify-center py-12 text-gray-300">
           <Search :size="28" class="mb-2 opacity-30" />
-          <p class="text-[12px] text-gray-400">No results</p>
+          <p class="text-[12px] text-gray-400">{{ $t("fs.noResults") }}</p>
         </div>
 
         <template v-else>
           <!-- Filename matches -->
           <div v-if="filenameResults.length > 0">
             <p class="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-              Files ({{ filenameResults.length }})
+              {{ $t("fs.files", { count: filenameResults.length }) }}
             </p>
             <button
               v-for="r in filenameResults"
@@ -549,7 +550,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
           <!-- Content matches -->
           <div v-if="contentResults.length > 0">
             <p class="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
-              In Files ({{ contentResults.length }})
+              {{ $t("fs.inFiles", { count: contentResults.length }) }}
             </p>
             <button
               v-for="r in contentResults"
@@ -580,7 +581,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
         </div>
         <div v-else-if="entries.length === 0 && !inlineCreate" class="flex flex-col items-center justify-center py-12 text-gray-300">
           <Folder :size="28" class="mb-2 opacity-30" />
-          <p class="text-[12px] text-gray-400">Empty directory</p>
+          <p class="text-[12px] text-gray-400">{{ $t("fs.emptyDir") }}</p>
         </div>
         <template v-else>
           <FileTreeNode
@@ -614,7 +615,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
               v-model="inlineCreate.value"
               @keydown="onInlineKey"
               @blur="onInlineBlur"
-              :placeholder="'Enter name'"
+              :placeholder="$t('fs.enterName')"
               class="flex-1 text-[12px] px-1 py-0.5 border border-blue-300 rounded outline-none focus:border-blue-500"
             />
           </div>

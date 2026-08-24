@@ -6,7 +6,7 @@ use crate::{rjlog, rjlogd};
 use crate::util::hidden_command;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,7 +69,7 @@ struct UpdateWrapper {
     status: Option<String>,
     #[serde(default)]
     #[serde(rename = "rawOutput")]
-    raw_output: Option<String>,
+    raw_output: Option<Value>,
     #[serde(default)]
     #[serde(rename = "rawInput")]
     raw_input: Option<Value>,
@@ -112,6 +112,32 @@ fn get_tool_name(w: &UpdateWrapper) -> String {
     //     rjlog!("[ACP DEBUG] get_tool_name: _meta is None, tool_name={:?}", w.tool_name);
     // }
     String::new()
+}
+
+/// Helper: extract text content from a Value that may be a plain string,
+/// an array of content blocks ({type:"text",text} or {type:"content",content:{type:"text",text}}),
+/// or a JSON object. Falls back to an empty string.
+fn value_to_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(arr) => arr
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        item.get("content")
+                            .and_then(|c| c.get("text"))
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 /// Helper: extract text content from UpdateWrapper's content field (handles both simple {type,text} and array format)
@@ -162,8 +188,11 @@ fn normalize_gemini_thought(text: &str) -> String {
 
 /// Helper: extract tool output (tries rawOutput first, then content field)
 fn get_tool_output(w: &UpdateWrapper) -> String {
-    if let Some(ref raw) = w.raw_output {
-        if !raw.is_empty() { return raw.clone(); }
+    if let Some(raw) = &w.raw_output {
+        let s = value_to_text(raw);
+        if !s.is_empty() {
+            return s;
+        }
     }
     get_content_text(w)
 }
@@ -645,6 +674,10 @@ pub struct AcpClient {
     request_id: Arc<Mutex<u64>>,
     session_id: Arc<Mutex<String>>,
     responses: Arc<Mutex<HashMap<u64, Value>>>,
+    /// ids of in-flight session/prompt (and similar turn-producing) requests.
+    /// Only responses to these ids may trigger the Finish event — handshake
+    /// responses (initialize / session/new / set_mode) must never do so.
+    pending_prompts: Arc<Mutex<HashSet<u64>>>,
     cwd: String,
     mode: String,
     agent_type: String,
@@ -688,6 +721,17 @@ impl AcpClient {
         let mut cmd = hidden_command(&cmd_path);
         for arg in args {
             cmd.arg(arg);
+        }
+        if agent_type == "codex" {
+            // codex-acp 默认的 codex 沙箱是 read-only 且禁网（web_search / curl
+            // 会因无法解析 DNS 而全部失败，exit code 6）。通过 -c 覆盖把沙箱提升
+            // 为 workspace-write，并打开网络，让 codex 能搜索网页、读写工作区文件，
+            // 同时仍保留沙箱（非 danger-full-access）。
+            // 注意：network_access 不是顶层键，它位于 [sandbox_workspace_write] 表
+            // 下，必须用点表示法 sandbox_workspace_write.network_access 覆盖；
+            // 写成顶层的 network_access=true 会被 codex 忽略，网络仍保持关闭。
+            cmd.arg("-c").arg(r#"sandbox_workspace_write.network_access=true"#);
+            cmd.arg("-c").arg(r#"sandbox_mode="workspace-write""#);
         }
         cmd.stdout(Stdio::piped())
             .stdin(Stdio::piped())
@@ -940,6 +984,11 @@ impl AcpClient {
 
         let stdin_writer = Arc::new(Mutex::new(process.stdin.take().ok_or("No stdin")?));
         let stdin_writer_clone = stdin_writer.clone();
+
+        // Track in-flight turn-producing request ids (session/prompt etc.).
+        // Only their responses may trigger the Finish event.
+        let pending_prompts = Arc::new(Mutex::new(HashSet::new()));
+        let pending_prompts_clone = pending_prompts.clone();
 
         thread::spawn(move || {
             rjlog!("[ACP DEBUG] Started stdout reader");
@@ -1331,6 +1380,13 @@ impl AcpClient {
                         }
                     } else if val.get("result").is_some() || val.get("error").is_some() {
                         rjlog!("[ACP DEBUG] Response: {}", line);
+                        // 只有 session/prompt（turn 产出）请求的响应才允许触发 finish。
+                        // 握手类响应（initialize / session/new / set_mode）即使因为
+                        // Proxy 全局 usage 兜底命中 has_usage，也绝不能把会话标记为完成。
+                        let is_prompt_response = val.get("id")
+                            .and_then(|v| v.as_u64())
+                            .map(|id| pending_prompts_clone.lock().unwrap().remove(&id))
+                            .unwrap_or(false);
                         if let Some(error) = val.get("error") {
                             let err_msg = error.get("data")
                                 .and_then(|d| d.get("message"))
@@ -1381,7 +1437,8 @@ impl AcpClient {
                             let has_usage = result_input.is_some() || result_output.is_some() || result_cached_total > 0;
                             
                             // 如果 Agent 返回的 usage 全是 0，尝试从 Proxy 全局存储获取真实数据
-                            let (result_input, result_output, result_cached_total, usage_model) = if !has_usage || (result_input == Some(0) && result_output == Some(0) && result_cached_total == 0) {
+                            // （仅 prompt 响应才做兜底，握手响应不得消费 Proxy usage 记录）
+                            let (result_input, result_output, result_cached_total, usage_model) = if is_prompt_response && (!has_usage || (result_input == Some(0) && result_output == Some(0) && result_cached_total == 0)) {
                                 rjlog!("[CACHE DEBUG] Agent usage is empty, trying Proxy global store");
                                 // 按本会话的 model 匹配取用，避免多会话并发时互相抢走
                                 match crate::proxy::take_last_usage(&model_clone) {
@@ -1403,7 +1460,12 @@ impl AcpClient {
                             rjlog!("[CACHE DEBUG] Usage extraction: input={:?}, output={:?}, totalCached={}, has_usage={}", 
                                 result_input, result_output, result_cached_total, has_usage);
                             
-                            if result.get("stopReason").is_some() || has_usage {
+                            // 只在真正的 turn 结束（result 带 stopReason）时才触发 finish。
+                            // 之前 `|| has_usage` 会让 initialize / session/new 等握手响应
+                            // 因为拿到 Proxy 全局缓存的 usage（可能是其他并发会话的）而误触发
+                            // finish，导致前端提前把会话标记为 completed —— 修复：
+                            // https://github.com/ 状态过早变为完成的问题。
+                            if is_prompt_response && result.get("stopReason").is_some() {
                                 rjlog!("[ACP DEBUG] Received stopReason or usage, processing finish");
                                 let event_name = format!("acp:{}", session_id_clone);
                                 let stop_reason = result.get("stopReason")
@@ -1451,7 +1513,7 @@ impl AcpClient {
                                         cached_tokens: if result_cached_total > 0 { Some(result_cached_total) } else { None },
                                     }
                                 ));
-                            } else {
+                            } else if is_prompt_response {
                                 // No usage data in result, but we have accumulated counters
                                 let acc_input = last_input_clone.load(Ordering::SeqCst);
                                 let acc_output = last_output_clone.load(Ordering::SeqCst);
@@ -1503,6 +1565,7 @@ impl AcpClient {
             request_id: Arc::new(Mutex::new(1)),
             session_id: Arc::new(Mutex::new(session_id.to_string())),
             responses,
+            pending_prompts,
             cwd: cwd.to_string(),
             mode: mode.to_string(),
             agent_type: agent_type.to_string(),
@@ -1590,6 +1653,9 @@ impl AcpClient {
             *guard += 1;
             id
         };
+        if method == "session/prompt" || method == "session/complete" {
+            self.pending_prompts.lock().unwrap().insert(id);
+        }
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1626,6 +1692,9 @@ impl AcpClient {
             *guard += 1;
             id
         };
+        if method == "session/prompt" || method == "session/complete" {
+            self.pending_prompts.lock().unwrap().insert(id);
+        }
 
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1886,6 +1955,7 @@ impl AcpClient {
             request_id: Arc::new(Mutex::new(1)),
             session_id: Arc::new(Mutex::new(_session_id.to_string())),
             responses,
+            pending_prompts: Arc::new(Mutex::new(HashSet::new())),
             cwd: package_dir.clone(),
             mode: "default".to_string(),
             agent_type: "claude".to_string(),

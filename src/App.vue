@@ -131,11 +131,10 @@ Promise.all([
     class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 px-6"
   >
     <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-      <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">帮助改进 RunJam</h2>
+      <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">{{ $t("app.consent.title") }}</h2>
       <p class="mt-3 text-[13px] leading-relaxed text-gray-500">
-        RunJam 会收集以下匿名信息用于改进产品：启动与版本信息、关键功能使用情况（如新建会话）、
-        错误日志（已自动脱敏，去除本地路径与密钥）。<span class="font-medium text-gray-700">
-        不会收集你的代码、对话内容或 IP 地址</span>。你可以随时在 设置 → General 中关闭。
+        {{ $t("app.consent.body") }}<span class="font-medium text-gray-700"> {{ $t("app.consent.noCode") }}</span>
+        {{ $t("app.consent.disableAt") }}
       </p>
       <div class="mt-6 flex items-center justify-end gap-3">
         <button
@@ -143,14 +142,14 @@ Promise.all([
           :disabled="deciding"
           @click="decideConsent(false)"
         >
-          暂不开启
+          {{ $t("app.consent.decline") }}
         </button>
         <button
           class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
           :disabled="deciding"
           @click="decideConsent(true)"
         >
-          同意并继续
+          {{ $t("app.consent.accept") }}
         </button>
       </div>
     </div>

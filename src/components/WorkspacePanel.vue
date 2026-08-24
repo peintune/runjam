@@ -205,7 +205,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
         <div v-else class="h-full flex items-center justify-center bg-[#fafbfc]">
           <div class="flex flex-col items-center gap-2 text-gray-300">
             <FileText :size="36" class="opacity-30" />
-            <p class="text-[12px] text-gray-400">Select a file from the explorer to start editing</p>
+            <p class="text-[12px] text-gray-400">{{ $t("workspace.selectFileHint") }}</p>
           </div>
         </div>
       </div>

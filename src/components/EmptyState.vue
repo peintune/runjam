@@ -12,16 +12,16 @@ const store = useWorkspaceStore();
         <Sparkles :size="24" class="text-gray-400" />
       </div>
       <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight mb-1.5">
-        Welcome to RunJam
+        {{ $t("empty.welcome") }}
       </h2>
       <p class="text-[13px] text-gray-500 leading-relaxed mb-6">
-        Select an agent, type a prompt, and press <strong>Enter</strong> to start.
+        <span v-html="$t('empty.hint')" />
       </p>
       <button
         @click="store.activeSessionId = null"
         class="px-5 py-2.5 rounded-xl text-[13px] font-medium text-white bg-gray-900 hover:bg-gray-800 active:scale-[0.98] transition-all duration-150"
       >
-        New Session
+        {{ $t("empty.newSession") }}
       </button>
     </div>
   </div>
