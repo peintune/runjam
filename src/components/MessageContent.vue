@@ -13,19 +13,19 @@ defineProps<{ html: string }>();
 <template>
   <div
     class="md-content prose prose-base max-w-none
-      prose-p:text-[15px] prose-p:leading-[1.75] prose-p:text-[#1e1e2e] prose-p:my-2.5
-      prose-headings:text-[#111127] prose-headings:font-semibold prose-headings:tracking-tight
+      prose-p:text-[15px] prose-p:leading-[1.75] prose-p:text-[#1e1e2e] prose-p:my-2.5 dark:prose-p:text-[#dedee8]
+      prose-headings:text-[#111127] prose-headings:font-semibold prose-headings:tracking-tight dark:prose-headings:text-[#ececf4]
       prose-h1:text-[22px] prose-h1:mt-6 prose-h1:mb-3
       prose-h2:text-[18px] prose-h2:mt-5 prose-h2:mb-2.5
       prose-h3:text-[15px] prose-h3:mt-4 prose-h3:mb-2
-      prose-blockquote:border-l-[3px] prose-blockquote:border-indigo-200 prose-blockquote:pl-4 prose-blockquote:my-4 prose-blockquote:text-[#4a4a6a] prose-blockquote:not-italic prose-blockquote:text-[14px]
-      prose-code:bg-[#f1f4f9] prose-code:text-[#c14a6b] prose-code:px-[5px] prose-code:py-[2px] prose-code:rounded-[4px] prose-code:text-[13px] prose-code:font-medium prose-code:before:content-none prose-code:after:content-none
+      prose-blockquote:border-l-[3px] prose-blockquote:border-indigo-200 prose-blockquote:pl-4 prose-blockquote:my-4 prose-blockquote:text-[#4a4a6a] prose-blockquote:not-italic prose-blockquote:text-[14px] dark:prose-blockquote:border-indigo-500 dark:prose-blockquote:text-[#a0a0ad]
+      prose-code:bg-[#f1f4f9] prose-code:text-[#c14a6b] prose-code:px-[5px] prose-code:py-[2px] prose-code:rounded-[4px] prose-code:text-[13px] prose-code:font-medium prose-code:before:content-none prose-code:after:content-none dark:prose-code:bg-[#26262f] dark:prose-code:text-[#f472b6]
       prose-pre:bg-transparent prose-pre:p-0 prose-pre:m-0 prose-pre:rounded-none
-      prose-a:text-indigo-500 prose-a:no-underline hover:prose-a:underline prose-a:font-medium
-      prose-strong:text-[#111127] prose-strong:font-semibold
-      prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-li:leading-[1.75] prose-li:text-[15px] prose-li:text-[#1e1e2e]
-      prose-table:text-[13px] prose-th:border prose-th:border-[#e4e7ed] prose-th:bg-[#f8f9fc] prose-th:px-3 prose-th:py-2 prose-th:font-semibold prose-th:text-[#111127] prose-td:border prose-td:border-[#e4e7ed] prose-td:px-3 prose-td:py-2
-      prose-hr:my-5 prose-hr:border-[#e4e7ed]
+      prose-a:text-indigo-500 prose-a:no-underline hover:prose-a:underline prose-a:font-medium dark:prose-a:text-indigo-400
+      prose-strong:text-[#111127] prose-strong:font-semibold dark:prose-strong:text-[#ececf4]
+      prose-ul:my-3 prose-ol:my-3 prose-li:my-1 prose-li:leading-[1.75] prose-li:text-[15px] prose-li:text-[#1e1e2e] dark:prose-li:text-[#dedee8]
+      prose-table:text-[13px] prose-th:border prose-th:border-[#e4e7ed] prose-th:bg-[#f8f9fc] prose-th:px-3 prose-th:py-2 prose-th:font-semibold prose-th:text-[#111127] prose-td:border prose-td:border-[#e4e7ed] prose-td:px-3 prose-td:py-2 dark:prose-th:border-[#2e2e3a] dark:prose-th:bg-[#1d1d24] dark:prose-th:text-[#ececf4] dark:prose-td:border-[#2e2e3a]
+      prose-hr:my-5 prose-hr:border-[#e4e7ed] dark:prose-hr:border-[#2e2e3a]
       prose-img:rounded-xl"
     v-html="html"
   />

@@ -64,7 +64,7 @@ watch(() => props.filePath, loadFile, { immediate: true });
     </div>
 
     <!-- preview body -->
-    <div class="flex-1 min-h-0 overflow-auto flex items-center justify-center bg-[#f8f9fb]">
+    <div class="flex-1 min-h-0 overflow-auto flex items-center justify-center bg-[#f8f9fb] dark:bg-[#101015]">
       <div v-if="loading" class="flex items-center gap-2 text-gray-400">
         <Loader :size="16" class="animate-spin" />
         <span class="text-[13px]">{{ $t("editor.loading") }}</span>

@@ -92,7 +92,7 @@ function timeAgo(iso: string): string {
 
 <template>
   <div
-    class="group bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200 transition-all duration-150 p-3.5 cursor-pointer"
+    class="group bg-white rounded-xl border border-gray-100 dark:border-zinc-700 shadow-sm hover:shadow-md hover:border-gray-200 dark:hover:border-zinc-500 transition-all duration-150 p-3.5 cursor-pointer"
     @click="emit('open')"
   >
     <!-- title row -->

@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* Class-based dark mode: activated by <html class="dark"> */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   * {
     -webkit-font-smoothing: antialiased;
@@ -464,4 +467,148 @@
 }
 .animate-blink {
   animation: blink 1.2s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════
+   Theme System — Dark Mode
+   Tailwind v4 color utilities reference `var(--color-*)`, so overriding the
+   palette variables under `.dark` re-themes the entire app without touching
+   every component class.
+   ═══════════════════════════════════════════ */
+.dark {
+  /* neutral gray scale — inverted for dark surfaces & text */
+  --color-gray-50: #17171d;
+  --color-gray-100: #1d1d24;
+  --color-gray-200: #26262f;
+  --color-gray-300: #35353f;
+  --color-gray-400: #6e6e7c;
+  --color-gray-500: #8b8b98;
+  --color-gray-600: #a0a0ad;
+  --color-gray-700: #b4b4c0;
+  --color-gray-800: #c9c9d4;
+  --color-gray-900: #dedee8;
+  --color-gray-950: #ececf4;
+
+  /* `white` surfaces (cards, sidebars) become dark panels */
+  --color-white: #1d1d24;
+
+  /* tinted scales: darken the light tints used as soft backgrounds */
+  --color-indigo-50: #1c1a38;
+  --color-indigo-100: #292650;
+  --color-indigo-200: #37336b;
+  --color-indigo-300: #4b4690;
+  --color-blue-50: #16263f;
+  --color-blue-100: #1e3557;
+  --color-blue-200: #2b4773;
+  --color-blue-300: #3a5f96;
+  --color-green-50: #0e2418;
+  --color-green-100: #153320;
+  --color-green-200: #1d452d;
+  --color-green-300: #2a6a45;
+  --color-red-50: #2a1215;
+  --color-red-100: #3a1a1e;
+  --color-red-200: #4f242a;
+  --color-red-300: #7a333c;
+  --color-amber-50: #2a1f0d;
+  --color-amber-100: #3a2b12;
+  --color-amber-200: #4e3a1a;
+  --color-amber-300: #7a5a28;
+  --color-purple-50: #24163a;
+  --color-purple-100: #321e4f;
+  --color-purple-200: #432a68;
+  --color-purple-300: #633d99;
+  --color-emerald-50: #0d241c;
+  --color-emerald-100: #143329;
+  --color-emerald-200: #1d4637;
+  --color-emerald-300: #2c6b52;
+  --color-cyan-50: #0c2427;
+  --color-cyan-100: #123238;
+  --color-cyan-200: #1a4550;
+  --color-orange-50: #2a1a0d;
+  --color-orange-100: #3a2512;
+  --color-orange-200: #4e311a;
+  --color-orange-300: #7a4b28;
+  --color-teal-50: #0d2420;
+  --color-teal-100: #14332d;
+  --color-teal-200: #1c453d;
+
+  /* page background & text */
+  color: #dedee8;
+  background: #101015;
+}
+
+/* Accent / deep buttons keep a light-on-color look in dark mode.
+   `--color-white` now points at a dark surface, so restore pure white for
+   text/icons that sit on colored or dark backgrounds. */
+.dark .text-white { color: #ffffff; }
+.dark .hover\:text-white:hover { color: #ffffff; }
+.dark .fill-white { fill: #ffffff; }
+.dark [fill="white"] { fill: #ffffff; }
+
+/* ── Selection ─────────────────────────────── */
+.dark ::selection {
+  background: rgba(129, 140, 248, 0.35);
+}
+
+/* ── Code block surfaces (non-highlight.js shell) ── */
+.dark .cb-wrap:not(.hljs-theme-dark) {
+  background: #16161c;
+  border-color: #26262f;
+}
+.dark .cb-wrap:not(.hljs-theme-dark) .cb-head {
+  background: #1d1d24;
+  border-bottom-color: #26262f;
+}
+.dark .cb-wrap:not(.hljs-theme-dark) .cb-copy,
+.dark .cb-wrap:not(.hljs-theme-dark) .cb-copy-btn {
+  border-color: #35353f;
+  color: #a0a0ad;
+}
+.dark .cb-wrap:not(.hljs-theme-dark) .cb-copy:hover,
+.dark .cb-wrap:not(.hljs-theme-dark) .cb-copy-btn:hover {
+  background: #26262f;
+  color: #ececf4;
+  border-color: #4a4a56;
+}
+
+/* ── Message bubbles & action bar ─────────── */
+.dark .msg-user-bubble {
+  background: #26262f;
+  color: #ececf4;
+}
+.dark .msg-agent-bubble {
+  background: #1d1d24;
+  border-color: #26262f;
+  color: #dedee8;
+}
+.dark .msg-action-btn {
+  color: #8b8b98;
+}
+.dark .msg-action-btn:hover {
+  background: #26262f;
+  color: #ececf4;
+}
+
+/* ── Mermaid block fallback ────────────────── */
+.dark .mermaid-block {
+  background: #1d1d24;
+  border-color: #26262f;
+}
+.dark .mermaid-fallback pre {
+  background: #16161c;
+}
+.dark .mermaid-fallback code {
+  color: #c0caf5;
+}
+.dark .mermaid-fallback .cb-head {
+  background: #1d1d24;
+  border-bottom-color: #26262f;
+}
+
+/* ── Code block scrollbar in dark surfaces ─── */
+.dark .cb-wrap pre::-webkit-scrollbar-thumb {
+  background: #35353f;
+}
+.dark .cb-wrap pre::-webkit-scrollbar-thumb:hover {
+  background: #4a4a56;
 }

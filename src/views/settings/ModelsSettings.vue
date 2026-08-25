@@ -869,12 +869,12 @@ const userAddedModels = computed(() => {
 
       <div v-for="model in commercialModels" :key="model.id"
         class="group bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-2.5 bg-gray-700 border-b border-gray-600">
+        <div class="flex items-center justify-between px-5 py-2.5 bg-gray-700 border-b border-gray-600 dark:bg-zinc-800 dark:border-zinc-700">
           <div class="flex items-center gap-2">
             <div class="w-6 h-6 rounded-lg flex items-center justify-center overflow-hidden bg-gray-200">
               <img :src="getProviderLogo(getProviderById(model.provider)?.id || getProviderByName(model.provider)?.id || 'custom')" :alt="model.provider" class="w-4 h-4 object-contain" />
             </div>
-            <span class="text-[11px] font-medium text-gray-300">{{ getProviderById(model.provider)?.name || model.provider }}</span>
+            <span class="text-[11px] font-medium text-gray-300 dark:text-zinc-400">{{ getProviderById(model.provider)?.name || model.provider }}</span>
           </div>
           <span class="text-[14px] font-semibold text-white">{{ model.alias || model.name }}</span>
         </div>
@@ -967,7 +967,7 @@ const userAddedModels = computed(() => {
                 :class="[
                   'w-5 h-5 rounded-full border-2 flex items-center justify-center',
                   (models.find(m => m.id === showAgentDropdown)?.assignedAgents.includes(agent.id))
-                    ? 'border-gray-700 bg-gray-700'
+                    ? 'border-gray-700 bg-gray-700 dark:border-zinc-700 dark:bg-zinc-700'
                     : 'border-gray-300'
                 ]">
                 <Check v-if="models.find(m => m.id === showAgentDropdown)?.assignedAgents.includes(agent.id)" :size="12" class="text-white" />
@@ -1024,9 +1024,9 @@ const userAddedModels = computed(() => {
           <p v-if="startingServer" class="text-[12px] text-gray-400 mb-3">{{ $t("models.startHint") }}</p>
           <p v-else-if="serverStartFailed" class="text-[12px] text-red-500 mb-3">{{ serverFailureReason }}</p>
           
-          <div v-if="serverLogs.length > 0" class="bg-gray-900 rounded-lg p-3 max-h-48 overflow-y-auto">
+          <div v-if="serverLogs.length > 0" class="bg-gray-900 rounded-lg p-3 max-h-48 overflow-y-auto dark:bg-zinc-900">
             <div v-for="(log, index) in serverLogs.slice(-20)" :key="index" 
-              :class="['text-[11px] font-mono leading-relaxed', log.includes('[ERROR]') ? 'text-red-400' : 'text-gray-300']">
+              :class="['text-[11px] font-mono leading-relaxed', log.includes('[ERROR]') ? 'text-red-400' : 'text-gray-300 dark:text-zinc-400']">
               {{ log }}
             </div>
           </div>

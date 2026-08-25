@@ -33,6 +33,18 @@ const en = {
   "app.consent.decline": "Not now",
   "app.consent.accept": "Accept & continue",
 
+  // ── First-run setup ─────────────────────────────────────────────────────
+  "setup.title": "Welcome to RunJam",
+  "setup.subtitle": "Choose a theme and language to get started",
+  "setup.theme": "Theme",
+  "setup.light": "Light",
+  "setup.lightDesc": "Bright and airy",
+  "setup.dark": "Dark",
+  "setup.darkDesc": "Easy on the eyes",
+  "setup.language": "Language",
+  "setup.start": "Get Started",
+  "setup.changable": "You can change both anytime in Settings",
+
   // ── Settings layout ─────────────────────────────────────────────────────
   "settings.title": "Settings",
   "settings.models": "Models",
@@ -42,8 +54,10 @@ const en = {
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "Appearance",
-  "settings.general.lightOnly": "Light mode only",
+  "settings.general.theme": "Theme",
+  "settings.general.themeDesc": "Choose the look of the app",
   "settings.general.light": "Light",
+  "settings.general.dark": "Dark",
   "settings.general.dataDir": "Data Directory",
   "settings.general.dataDirDesc": "Where logs and database are stored",
   "settings.general.telemetry": "Anonymous Usage Data",

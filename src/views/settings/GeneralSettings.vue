@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { FolderOpen } from "lucide-vue-next";
+import { FolderOpen, Sun, Moon } from "lucide-vue-next";
 import { getDataDir, openDataDir } from "@/api/app";
 import { currentLocale, setLocale, type Locale } from "@/i18n";
+import { useThemeStore } from "@/stores/useThemeStore";
 import {
   getTelemetryStatus,
   setTelemetryEnabled,
@@ -12,6 +13,7 @@ import {
 } from "@/api/telemetry";
 
 const locale = ref<Locale>(currentLocale());
+const themeStore = useThemeStore();
 
 function changeLocale(l: Locale) {
   setLocale(l);
@@ -104,14 +106,14 @@ async function handleTestProxy() {
           <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
             <button
               class="px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 cursor-pointer"
-              :class="locale === 'en-US' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+              :class="locale === 'en-US' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700'"
               @click="changeLocale('en-US')"
             >
               English
             </button>
             <button
               class="px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 cursor-pointer"
-              :class="locale === 'zh-CN' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+              :class="locale === 'zh-CN' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700'"
               @click="changeLocale('zh-CN')"
             >
               中文
@@ -122,9 +124,26 @@ async function handleTestProxy() {
         <div class="flex items-center justify-between px-5 py-4">
           <div>
             <p class="text-[14px] font-medium text-gray-900">{{ $t("settings.general.appearance") }}</p>
-            <p class="text-[12px] text-gray-400 mt-0.5">{{ $t("settings.general.lightOnly") }}</p>
+            <p class="text-[12px] text-gray-400 mt-0.5">{{ $t("settings.general.themeDesc") }}</p>
           </div>
-          <span class="text-[13px] text-gray-400">{{ $t("settings.general.light") }}</span>
+          <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+            <button
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 cursor-pointer"
+              :class="themeStore.theme === 'light' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700'"
+              @click="themeStore.setTheme('light')"
+            >
+              <Sun :size="14" />
+              {{ $t("settings.general.light") }}
+            </button>
+            <button
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 cursor-pointer"
+              :class="themeStore.theme === 'dark' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700'"
+              @click="themeStore.setTheme('dark')"
+            >
+              <Moon :size="14" />
+              {{ $t("settings.general.dark") }}
+            </button>
+          </div>
         </div>
 
         <div class="flex items-center justify-between px-5 py-4">
@@ -159,7 +178,7 @@ async function handleTestProxy() {
             @click="toggleTelemetry"
           >
             <span
-              class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all"
+              class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all dark:bg-white"
               :class="telemetryEnabled ? 'left-[22px]' : 'left-0.5'"
             />
           </button>

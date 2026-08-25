@@ -171,7 +171,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#f2f3f5] relative overflow-hidden">
+  <div class="flex flex-col h-screen bg-[#f2f3f5] dark:bg-[#101015] relative overflow-hidden">
 
     <!-- ═══ Top Nav Bar (always visible) ═══ -->
     <div

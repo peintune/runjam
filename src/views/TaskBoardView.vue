@@ -173,7 +173,7 @@ function handleDelete(id: string) {
           <button
             :class="[
               'px-3 py-1.5 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer',
-              viewMode === 'kanban' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700',
+              viewMode === 'kanban' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700',
             ]"
             @click="viewMode = 'kanban'"
           >
@@ -183,7 +183,7 @@ function handleDelete(id: string) {
           <button
             :class="[
               'px-3 py-1.5 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer',
-              viewMode === 'folder' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700',
+              viewMode === 'folder' ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700',
             ]"
             @click="viewMode = 'folder'"
           >
@@ -198,7 +198,7 @@ function handleDelete(id: string) {
             :key="opt.key"
             :class="[
               'px-3 py-1.5 rounded-lg text-[12px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer',
-              sortKey === opt.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700',
+              sortKey === opt.key ? 'bg-white shadow-sm text-gray-900 dark:bg-gray-200 dark:shadow-none' : 'text-gray-500 hover:text-gray-700',
             ]"
             @click="sortKey = opt.key"
           >

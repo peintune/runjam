@@ -782,7 +782,7 @@ defineExpose({ killAll });
   <div class="flex flex-col h-full bg-[#0d1117]">
     <!-- Header bar: single row with tabs inline -->
     <div
-      class="flex items-center h-[36px] flex-shrink-0 select-none border-b border-white/[0.06]"
+      class="flex items-center h-[36px] flex-shrink-0 select-none border-b border-[#ffffff]/[0.06]"
       style="background: linear-gradient(180deg, #161b22 0%, #0d1117 100%)"
     >
       <!-- Left: status indicator -->
@@ -805,15 +805,15 @@ defineExpose({ killAll });
           class="flex items-center gap-1 px-2 h-[22px] rounded text-[10px] whitespace-nowrap shrink-0 cursor-pointer transition-colors select-none"
           :class="
             i === activeTabIndex
-              ? 'bg-[#0d1117] text-[#c9d1d9] border border-white/[0.08]'
-              : 'text-[#484f58] hover:text-[#8b949e] hover:bg-white/[0.04]'
+              ? 'bg-[#0d1117] text-[#c9d1d9] border border-[#ffffff]/[0.08]'
+              : 'text-[#484f58] hover:text-[#8b949e] hover:bg-[#ffffff]/[0.04]'
           "
         >
           <TerminalIcon :size="9" />
           <span>{{ tab.title }}</span>
           <button
             @click.stop="closeTab(i)"
-            class="w-[14px] h-[14px] flex items-center justify-center rounded hover:bg-white/[0.1] text-[#484f58] hover:text-[#c9d1d9]"
+            class="w-[14px] h-[14px] flex items-center justify-center rounded hover:bg-[#ffffff]/[0.1] text-[#484f58] hover:text-[#c9d1d9]"
             :title="$t('terminal.close')"
           >
             <X :size="8" />
@@ -821,7 +821,7 @@ defineExpose({ killAll });
         </button>
         <button
           @click="addTab()"
-          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#484f58] hover:text-[#8b949e] hover:bg-white/[0.06] transition-colors shrink-0"
+          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#484f58] hover:text-[#8b949e] hover:bg-[#ffffff]/[0.06] transition-colors shrink-0"
           :title="$t('terminal.newTerminal')"
         >
           <Plus :size="13" />
@@ -832,14 +832,14 @@ defineExpose({ killAll });
       <div class="flex items-center gap-px pr-2 shrink-0 ml-auto">
         <button
           @click="handleClear"
-          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-white/[0.08] transition-colors cursor-pointer"
+          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#ffffff]/[0.08] transition-colors cursor-pointer"
           :title="$t('terminal.clear')"
         >
           <Trash2 :size="11.5" />
         </button>
         <button
           @click="emit('close')"
-          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-white/[0.08] transition-colors cursor-pointer"
+          class="w-[22px] h-[22px] flex items-center justify-center rounded text-[#8b949e] hover:text-[#c9d1d9] hover:bg-[#ffffff]/[0.08] transition-colors cursor-pointer"
           :title="$t('terminal.close')"
         >
           <X :size="11.5" />

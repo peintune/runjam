@@ -2428,7 +2428,7 @@ watch(messages, (msgs) => {
             @click.stop="toggleMessageList"
             :class="[
               'relative flex flex-col items-center justify-center gap-1.5 py-3 px-1.5 rounded-l-xl bg-white/85 backdrop-blur-sm border border-r-0 border-gray-200 shadow-sm text-gray-500 hover:text-gray-800 hover:bg-white transition-all duration-200 cursor-pointer',
-              showMessageList ? 'bg-white text-gray-800 shadow-md' : ''
+              showMessageList ? 'bg-white text-gray-800 shadow-md dark:bg-gray-200 dark:shadow-none' : ''
             ]"
             :title="$t('session.messageList')"
             @mouseenter="handleMouseEnterTrigger"
@@ -2493,7 +2493,7 @@ watch(messages, (msgs) => {
                   :class="[
                     'px-2.5 py-2 rounded-lg cursor-pointer transition-all border',
                     selectedSkills.has(skill.name)
-                      ? 'bg-gray-900 border-gray-900 text-white'
+                      ? 'bg-gray-900 border-gray-900 text-white dark:bg-zinc-800 dark:border-zinc-800'
                       : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50 text-gray-700',
                   ]"
                 >
@@ -2570,7 +2570,7 @@ watch(messages, (msgs) => {
                       <span class="flex-1">{{ o.label }}</span>
                       <span class="relative group">
                         <HelpCircle :size="12" class="text-gray-300 hover:text-gray-500 transition-colors cursor-help" />
-                        <span class="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 text-[11px] text-white bg-gray-900 rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 whitespace-nowrap z-50 shadow-lg max-w-[200px]">
+                        <span class="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 text-[11px] text-white bg-gray-900 rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 whitespace-nowrap z-50 shadow-lg max-w-[200px] dark:bg-zinc-800">
                           {{ o.description }}
                         </span>
                       </span>
@@ -2680,12 +2680,12 @@ watch(messages, (msgs) => {
                   </div>
                 </div>
 
-                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel || contextOverLimit" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel && !contextOverLimit)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+                <button v-if="!isProcessing" @click="handleSend" :disabled="!inputText.trim() || !selectedModel || contextOverLimit" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm relative flex-shrink-0" :class="(inputText.trim() && selectedModel && !contextOverLimit)?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer dark:bg-zinc-800 dark:hover:bg-zinc-700':'bg-gray-200 text-gray-400 cursor-not-allowed'">
                   <Send :size="12" />{{ $t("input.send") }}
-                  <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
-                  <span v-else-if="contextOverLimit" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.contextLimitShort") }}</span>
+                  <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 dark:bg-zinc-700 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
+                  <span v-else-if="contextOverLimit" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 dark:bg-zinc-700 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.contextLimitShort") }}</span>
                 </button>
-                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0"><Square :size="12" />{{ $t("input.stop") }}</button>
+                <button v-else @click="handleStop" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gray-900 text-white hover:bg-red-600 transition-all duration-200 cursor-pointer text-[12px] font-medium shadow-sm flex-shrink-0 dark:bg-zinc-800 dark:hover:bg-red-600"><Square :size="12" />{{ $t("input.stop") }}</button>
               </div>
             </div>
           </div>
@@ -2705,7 +2705,7 @@ watch(messages, (msgs) => {
         <div class="flex justify-center mb-5">
           <div class="inline-flex bg-gray-100 rounded-2xl p-1 gap-0.5">
             <template v-if="enabledAgents.length > 0">
-              <button v-for="a in enabledAgents" :key="a.id" @click="selectedAgentId=a.id" :class="['flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 cursor-pointer',selectedAgentId===a.id?'bg-white text-gray-900 shadow-sm':'text-gray-500 hover:text-gray-700']">
+              <button v-for="a in enabledAgents" :key="a.id" @click="selectedAgentId=a.id" :class="['flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 cursor-pointer',selectedAgentId===a.id?'bg-white text-gray-900 shadow-sm dark:bg-gray-200 dark:shadow-none':'text-gray-500 hover:text-gray-700']">
                 <AgentIcon :agent-id="a.id" />
                 {{ a.display_name }}
               </button>
@@ -2826,7 +2826,7 @@ watch(messages, (msgs) => {
                 :class="[
                   'px-2.5 py-2 rounded-lg cursor-pointer transition-all border',
                   selectedSkills.has(skill.name)
-                    ? 'bg-gray-900 border-gray-900 text-white'
+                    ? 'bg-gray-900 border-gray-900 text-white dark:bg-zinc-800 dark:border-zinc-800'
                     : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50 text-gray-700',
                 ]"
               >
@@ -2903,7 +2903,7 @@ watch(messages, (msgs) => {
                     <span class="flex-1">{{ o.label }}</span>
                     <span class="relative group">
                       <HelpCircle :size="12" class="text-gray-300 hover:text-gray-500 transition-colors cursor-help" />
-                      <span class="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 text-[11px] text-white bg-gray-900 rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 whitespace-nowrap z-50 shadow-lg max-w-[200px]">
+                      <span class="absolute left-full ml-2 top-1/2 -translate-y-1/2 px-2.5 py-1.5 text-[11px] text-white bg-gray-900 rounded-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 whitespace-nowrap z-50 shadow-lg max-w-[200px] dark:bg-zinc-800">
                         {{ o.description }}
                       </span>
                     </span>
@@ -2971,9 +2971,9 @@ watch(messages, (msgs) => {
                 <Sparkles :size="14" />
               </button>
               <!-- Send button -->
-              <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer':'bg-gray-200 text-gray-400 cursor-not-allowed'">
+              <button @click="handleSend" :disabled="!inputText.trim() || !selectedModel" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all duration-200 text-[12px] font-medium shadow-sm flex-shrink-0 relative" :class="inputText.trim() && selectedModel ?'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer dark:bg-zinc-800 dark:hover:bg-zinc-700':'bg-gray-200 text-gray-400 cursor-not-allowed'">
                 <Send :size="12" />{{ $t("input.send") }}
-                <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
+                <span v-if="!selectedModel" class="absolute -top-8 right-0 px-2 py-1 text-[10px] text-white bg-gray-700 rounded-lg opacity-0 hover:opacity-100 dark:bg-zinc-700 transition-opacity whitespace-nowrap pointer-events-none z-50">{{ $t("session.selectModelHint") }}</span>
               </button>
             </div>
           </div>
@@ -3115,7 +3115,7 @@ watch(messages, (msgs) => {
             :class="[
               'flex-1 px-3 py-1.5 rounded-lg text-[12px] font-medium border transition-colors cursor-pointer',
               feedbackType === t.id
-                ? 'bg-gray-900 border-gray-900 text-white'
+                ? 'bg-gray-900 border-gray-900 text-white dark:bg-zinc-800 dark:border-zinc-800'
                 : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50',
             ]"
           >

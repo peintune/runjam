@@ -160,7 +160,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
       <!-- Tab bar -->
       <div
         v-if="openFiles.length > 0"
-        class="flex-shrink-0 min-w-0 overflow-hidden h-[30px] bg-[#fafbfc] border-b border-gray-200"
+        class="flex-shrink-0 min-w-0 overflow-hidden h-[30px] bg-[#fafbfc] border-b border-gray-200 dark:bg-[#16161c]"
       >
         <div
           class="flex items-center h-full overflow-x-auto [&::-webkit-scrollbar]:hidden"
@@ -202,7 +202,7 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
           :file-path="activeFile"
         />
         <!-- Empty state -->
-        <div v-else class="h-full flex items-center justify-center bg-[#fafbfc]">
+        <div v-else class="h-full flex items-center justify-center bg-[#fafbfc] dark:bg-[#16161c]">
           <div class="flex flex-col items-center gap-2 text-gray-300">
             <FileText :size="36" class="opacity-30" />
             <p class="text-[12px] text-gray-400">{{ $t("workspace.selectFileHint") }}</p>

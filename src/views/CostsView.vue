@@ -111,7 +111,7 @@ async function changeDays(d: number) {
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#f8f9fb]">
+  <div class="flex flex-col h-screen bg-[#f8f9fb] dark:bg-[#101015]">
     <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full relative" style="-webkit-app-region: drag">
       <div class="absolute right-0 top-0">
         <WindowControls />

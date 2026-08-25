@@ -33,6 +33,18 @@ const zhCN: Record<TranslationKey, string> = {
   "app.consent.decline": "暂不开启",
   "app.consent.accept": "同意并继续",
 
+  // ── First-run setup ─────────────────────────────────────────────────────
+  "setup.title": "欢迎使用 RunJam",
+  "setup.subtitle": "选择主题和语言，马上开始",
+  "setup.theme": "主题",
+  "setup.light": "浅色",
+  "setup.lightDesc": "明亮清爽",
+  "setup.dark": "深色",
+  "setup.darkDesc": "护眼舒适",
+  "setup.language": "语言",
+  "setup.start": "开始使用",
+  "setup.changable": "之后可在设置中随时更改",
+
   // ── Settings layout ─────────────────────────────────────────────────────
   "settings.title": "设置",
   "settings.models": "模型",
@@ -42,8 +54,10 @@ const zhCN: Record<TranslationKey, string> = {
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "外观",
-  "settings.general.lightOnly": "仅浅色模式",
+  "settings.general.theme": "主题",
+  "settings.general.themeDesc": "选择应用外观",
   "settings.general.light": "浅色",
+  "settings.general.dark": "深色",
   "settings.general.dataDir": "数据目录",
   "settings.general.dataDirDesc": "日志和数据库存储位置",
   "settings.general.telemetry": "匿名使用数据",

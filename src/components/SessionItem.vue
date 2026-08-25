@@ -128,7 +128,7 @@ function submitRename() { if (editText.value.trim()) emit('do-rename', editText.
       'w-full flex items-center gap-3 rounded-xl text-[13px] transition-all duration-150 text-left cursor-pointer group',
       compact ? 'px-2.5 py-1.5' : 'px-3 py-2',
       archived ? 'opacity-50 hover:opacity-80' : '',
-      active && !archived ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-600 hover:bg-gray-50',
+      active && !archived ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-600 hover:bg-gray-50',
     ]"
     @click="onClick"
     @contextmenu="onContextMenu"

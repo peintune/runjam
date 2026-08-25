@@ -17,16 +17,28 @@ import Toast from "./components/Toast.vue";
 import UpdatePrompt from "./components/UpdatePrompt.vue";
 import AnnouncementBanner from "./components/AnnouncementBanner.vue";
 import AnnouncementModal from "./components/AnnouncementModal.vue";
+import WelcomeSetup from "./components/WelcomeSetup.vue";
 
 const agentStore = useAgentStore();
 const workspaceStore = useWorkspaceStore();
 const { toasts, removeToast } = useToast();
+
+// First-launch setup (theme + language).
+const showSetup = ref(false);
 
 // First-launch telemetry consent dialog.
 const showConsent = ref(false);
 const deciding = ref(false);
 
 onMounted(async () => {
+  // Ask for theme/language preferences on the very first launch.
+  try {
+    if (!localStorage.getItem("runjam.setupDone")) {
+      showSetup.value = true;
+    }
+  } catch {
+    // ignore storage errors
+  }
   try {
     const status = await getTelemetryStatus();
     // Only ask on first launch; once answered we never show it again.
@@ -124,6 +136,9 @@ Promise.all([
       <component :is="Component" />
     </keep-alive>
   </router-view>
+
+  <!-- First-launch setup (theme + language) -->
+  <WelcomeSetup v-if="showSetup" @done="showSetup = false" />
 
   <!-- First-launch telemetry consent -->
   <div

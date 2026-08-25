@@ -6,6 +6,7 @@ import {
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
 import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence } from "../composables/useMarkdown";
+import { useThemeStore } from "../stores/useThemeStore";
 import AgentIcon from "./AgentIcon.vue";
 import MessageContent from "./MessageContent.vue";
 import { invoke } from "@tauri-apps/api/core";
@@ -13,6 +14,7 @@ import { recordRender, recordMdParse } from "../lib/diag";
 import { t } from "../i18n";
 
 const { safeSliceForStreaming, renderMermaidBlocks, hasMermaid } = useMarkdown();
+const themeStore = useThemeStore();
 
 // ═══ Types ═══
 export interface InteractionOption { key: string; label: string; is_default: boolean; }
@@ -607,11 +609,14 @@ const safeSliceCache = new Map<string, string>();
 function renderContent(idx: number, msg: Message): string {
   const fullContent = msg.content;
   const displayed = displayMap[idx]?.content;
+  // Reading the theme here makes the whole list re-render (and re-key the
+  // render cache) when the user switches light/dark.
+  const theme = themeStore.theme;
   const t0 = performance.now();
   let html: string;
   if (displayed === undefined || displayed.length >= fullContent.length) {
     // 完成/历史内容：可缓存
-    html = renderCached(fullContent, { sanitize: true }, (ms) => recordMdParse(ms));
+    html = renderCached(fullContent, { sanitize: true, theme }, (ms) => recordMdParse(ms));
   } else {
     // 流式部分内容：使用独立流式缓存（不与历史缓存冲突）
     let safeSlice = safeSliceCache.get(displayed);
@@ -624,7 +629,7 @@ function renderContent(idx: number, msg: Message): string {
         if (oldest !== undefined) safeSliceCache.delete(oldest);
       }
     }
-    html = renderCached(safeSlice, { sanitize: true }, (ms) => recordMdParse(ms), false);
+    html = renderCached(safeSlice, { sanitize: true, theme }, (ms) => recordMdParse(ms), false);
   }
   recordRender(performance.now() - t0);
   return html;
@@ -657,9 +662,22 @@ async function handleMermaidInContent(idx: number, msg: Message) {
     `[data-msg-content="${idx}"]`,
   );
   if (containers && containers.length > 0) {
-    await renderMermaidBlocks(containers[0] as HTMLElement);
+    await renderMermaidBlocks(containers[0] as HTMLElement, themeStore.theme);
   }
 }
+
+// When the app theme changes, re-render mermaid diagrams with the new palette.
+watch(
+  () => themeStore.theme,
+  () => {
+    mermaidRenderedMessages.value = new Set();
+    clearStreamingCache();
+    // Re-run mermaid post-processing once the DOM has the new-theme HTML.
+    props.messages.forEach((m, i) => {
+      if (m.content && hasMermaid(m.content)) void handleMermaidInContent(i, m);
+    });
+  },
+);
 
 // ═══ Message list reactivity ═══
 let lastMsgsRef: Message[] | null = null;
@@ -1168,7 +1186,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                   class="px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-150 border cursor-pointer max-w-[200px] truncate"
                   :class="
                     opt.is_default
-                      ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800'
+                      ? 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800 dark:bg-zinc-800 dark:border-zinc-800 dark:hover:bg-zinc-700'
                       : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
                   "
                 >

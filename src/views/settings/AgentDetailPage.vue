@@ -436,7 +436,7 @@ async function saveConfig(id: string) {
               <button
                 @click="addModelToAgent(agent.id, selectedModelId[agent.id])"
                 :disabled="addingModel[agent.id] || !selectedModelId[agent.id]"
-                class="flex items-center gap-1.5 px-5 py-2 rounded-xl text-[13px] font-semibold bg-gray-800 text-white hover:bg-gray-900 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 ml-auto cursor-pointer shadow-sm"
+                class="flex items-center gap-1.5 px-5 py-2 rounded-xl text-[13px] font-semibold bg-gray-800 text-white hover:bg-gray-900 active:scale-[0.98] disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-150 ml-auto cursor-pointer shadow-sm dark:bg-zinc-800 dark:hover:bg-zinc-700"
               >
                 <Plus :size="14" />
                 {{ $t("agent.apply") }}

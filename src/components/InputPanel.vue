@@ -18,7 +18,7 @@ function handleSend() {
 
 <template>
   <div class="flex-shrink-0 border-t border-gray-100 bg-white px-4 py-3">
-    <div class="rounded-2xl border border-gray-200 bg-[#f8f9fb] focus-within:border-gray-300 focus-within:bg-white focus-within:shadow-sm transition-all duration-150">
+    <div class="rounded-2xl border border-gray-200 bg-[#f8f9fb] focus-within:border-gray-300 focus-within:bg-white focus-within:shadow-sm transition-all duration-150 dark:bg-[#16161c] dark:focus-within:bg-[#1d1d24]">
       <!-- toolbar -->
       <div class="flex items-center gap-2 px-4 pt-3 pb-1">
         <select class="text-[12px] font-medium text-gray-600 bg-transparent border-none outline-none cursor-pointer appearance-none pr-4 bg-[length:8px_8px] bg-[right_0_center] bg-no-repeat" style="background-image: url('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%228%22 height=%228%22%3E%3Cpath d=%22M0 2l4 4 4-4%22 fill=%22none%22 stroke=%22%23999%22 stroke-width=%221.5%22/%3E%3C/svg%3E')">
@@ -54,7 +54,7 @@ function handleSend() {
           @click="handleSend"
           :disabled="!inputText.trim()"
           class="p-1.5 rounded-lg transition-colors duration-150"
-          :class="inputText.trim() ? 'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer' : 'bg-gray-200 text-gray-400 cursor-not-allowed'"
+          :class="inputText.trim() ? 'bg-gray-900 text-white hover:bg-gray-800 cursor-pointer dark:bg-zinc-800 dark:hover:bg-zinc-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'"
         >
           <Send :size="15" />
         </button>

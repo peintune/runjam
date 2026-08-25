@@ -87,9 +87,13 @@ export interface RenderOptions {
 }
 
 // ── Module-level render + shared cache ──
-function renderMarkdown(src: string, sanitize: boolean): string {
+function renderMarkdown(src: string, sanitize: boolean, theme: "light" | "dark" = "light"): string {
   try {
     let html = marked.parse(src) as string;
+    if (theme === "dark") {
+      // Tag code blocks so the dark hljs theme (and dark surface) applies.
+      html = html.replace(/class="cb-wrap"/g, 'class="cb-wrap hljs-theme-dark"');
+    }
     if (sanitize && typeof DOMPurify?.sanitize === "function") {
       html = DOMPurify.sanitize(html, PURIFY_CONFIG as any) as unknown as string;
     }
@@ -97,6 +101,11 @@ function renderMarkdown(src: string, sanitize: boolean): string {
   } catch {
     return src;
   }
+}
+
+/** Cache keys are theme-scoped so switching themes never serves stale HTML. */
+function cacheKey(src: string, theme: "light" | "dark"): string {
+  return theme === "dark" ? "d\u0000" + src : "l\u0000" + src;
 }
 
 /**
@@ -125,6 +134,14 @@ export function clearStreamingCache(): void {
   streamingMdCache.clear();
 }
 
+/** Drop every module-level render cache (shared + streaming + mermaid SVG).
+ *  Called when the app theme switches so stale cached HTML/SVG is discarded. */
+export function clearMarkdownCaches(): void {
+  sharedMdCache.clear();
+  streamingMdCache.clear();
+  mermaidSvgCache.clear();
+}
+
 /** Returns true if `src` contains a fenced code block (``` or ~~~).
  * 供智能打字机判定复用：含代码块的内容跳过逐字揭示，直接完整显示，
  * 避免流式阶段对代码围栏做上千次不完整的 markdown 解析。 */
@@ -145,31 +162,34 @@ export function renderCached(
   onMiss?: (renderMs: number) => void,
   cache = true,
 ): string {
+  const theme = opts.theme ?? "light";
   if (!cache) {
     // Streaming content: use a separate cache so we don't evict the shared
     // history cache. The same streaming slice is requested multiple times per
     // render cycle because the full message list re-renders on every tick.
-    let html = streamingMdCache.get(src);
+    const key = cacheKey(src, theme);
+    let html = streamingMdCache.get(key);
     if (html !== undefined) return html;
     const t0 = performance.now();
     // Skip DOMPurify for streaming content — it will be re-parsed within 16ms
     // anyway, and the final (complete) version always goes through full
     // sanitization. This saves ~50% of parse time.
-    html = renderMarkdown(src, false);
+    html = renderMarkdown(src, false, theme);
     onMiss?.(performance.now() - t0);
-    streamingMdCache.set(src, html);
+    streamingMdCache.set(key, html);
     if (streamingMdCache.size > STREAMING_MD_CACHE_MAX) {
       const oldest = streamingMdCache.keys().next().value;
       if (oldest !== undefined) streamingMdCache.delete(oldest);
     }
     return html;
   }
-  let html = sharedMdCache.get(src);
+  const key = cacheKey(src, theme);
+  let html = sharedMdCache.get(key);
   if (html === undefined) {
     const t0 = performance.now();
-    html = renderMarkdown(src, opts.sanitize ?? true);
+    html = renderMarkdown(src, opts.sanitize ?? true, theme);
     onMiss?.(performance.now() - t0);
-    sharedMdCache.set(src, html);
+    sharedMdCache.set(key, html);
     if (sharedMdCache.size > SHARED_MD_CACHE_MAX) {
       const oldest = sharedMdCache.keys().next().value;
       if (oldest !== undefined) sharedMdCache.delete(oldest);
@@ -185,7 +205,7 @@ export function useMarkdown() {
    * call `renderMermaidBlocks()` on the container after nextTick.
    */
   function render(src: string, opts: RenderOptions = {}): string {
-    return renderMarkdown(src, opts.sanitize ?? true);
+    return renderMarkdown(src, opts.sanitize ?? true, opts.theme);
   }
 
   /** Returns true if `src` contains at least one mermaid code fence */
@@ -233,7 +253,7 @@ export function useMarkdown() {
    * Render all `<pre class="mermaid">` elements inside `container`.
    * Lazily imports mermaid on first call. Safe to call multiple times.
    */
-  async function renderMermaidBlocks(container: HTMLElement): Promise<void> {
+  async function renderMermaidBlocks(container: HTMLElement, theme: "light" | "dark" = "light"): Promise<void> {
     const mermaidEls = container.querySelectorAll<HTMLElement>("pre.mermaid");
     if (mermaidEls.length === 0) return;
 
@@ -241,22 +261,35 @@ export function useMarkdown() {
       const mermaid = await import("mermaid");
 
       // Initialize once (mermaid remembers state across calls)
+      const isDark = theme === "dark";
       mermaid.default.initialize({
         startOnLoad: false,
         theme: "base",
-        themeVariables: {
-          primaryColor: "#f0f2ff",
-          primaryBorderColor: "#6366f1",
-          primaryTextColor: "#1e1e2e",
-          lineColor: "#6366f1",
-          secondaryColor: "#fef3c7",
-          tertiaryColor: "#ecfdf5",
-          // Edge label background
-          edgeLabelBackground: "#ffffff",
-          // Node text
-          fontSize: "14px",
-          fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-        },
+        themeVariables: isDark
+          ? {
+              primaryColor: "#1e1b4b",
+              primaryBorderColor: "#6366f1",
+              primaryTextColor: "#e2e8f0",
+              lineColor: "#818cf8",
+              secondaryColor: "#312e81",
+              tertiaryColor: "#0f172a",
+              edgeLabelBackground: "#1e1e36",
+              fontSize: "14px",
+              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+            }
+          : {
+              primaryColor: "#f0f2ff",
+              primaryBorderColor: "#6366f1",
+              primaryTextColor: "#1e1e2e",
+              lineColor: "#6366f1",
+              secondaryColor: "#fef3c7",
+              tertiaryColor: "#ecfdf5",
+              // Edge label background
+              edgeLabelBackground: "#ffffff",
+              // Node text
+              fontSize: "14px",
+              fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+            },
       });
 
       // 命中缓存：直接注入 SVG，跳过 mermaid.run（主要成本）

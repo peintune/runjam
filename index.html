@@ -8,6 +8,19 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
     <title>RunJam</title>
+    <script>
+      // Apply saved theme before first paint to avoid a flash.
+      // Defaults to dark; only an explicit "light" preference opts into light mode.
+      (function () {
+        try {
+          if (localStorage.getItem("runjam.theme") !== "light") {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

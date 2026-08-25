@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import { AlertTriangle } from "lucide-vue-next";
+import { useThemeStore } from "../stores/useThemeStore";
 
 const props = defineProps<{ code: string }>();
+const themeStore = useThemeStore();
 
 const container = ref<HTMLElement | null>(null);
 const renderError = ref(false);
@@ -12,23 +14,36 @@ async function renderDiagram() {
   if (rendered.value || !container.value) return;
 
   const el = container.value;
+  const isDark = themeStore.theme === "dark";
   try {
     const mermaid = await import("mermaid");
 
     mermaid.default.initialize({
       startOnLoad: false,
       theme: "base",
-      themeVariables: {
-        primaryColor: "#f0f2ff",
-        primaryBorderColor: "#6366f1",
-        primaryTextColor: "#1e1e2e",
-        lineColor: "#6366f1",
-        secondaryColor: "#fef3c7",
-        tertiaryColor: "#ecfdf5",
-        edgeLabelBackground: "#ffffff",
-        fontSize: "14px",
-        fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-      },
+      themeVariables: isDark
+        ? {
+            primaryColor: "#1e1b4b",
+            primaryBorderColor: "#6366f1",
+            primaryTextColor: "#e2e8f0",
+            lineColor: "#818cf8",
+            secondaryColor: "#312e81",
+            tertiaryColor: "#0f172a",
+            edgeLabelBackground: "#1e1e36",
+            fontSize: "14px",
+            fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+          }
+        : {
+            primaryColor: "#f0f2ff",
+            primaryBorderColor: "#6366f1",
+            primaryTextColor: "#1e1e2e",
+            lineColor: "#6366f1",
+            secondaryColor: "#fef3c7",
+            tertiaryColor: "#ecfdf5",
+            edgeLabelBackground: "#ffffff",
+            fontSize: "14px",
+            fontFamily: "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+          },
     });
 
     // mermaid uses a unique id; generate one
@@ -50,6 +65,18 @@ watch(() => props.code, () => {
   renderError.value = false;
   renderDiagram();
 });
+
+// Re-render with the dark palette when the app theme changes.
+watch(
+  () => themeStore.theme,
+  () => {
+    if (!rendered.value && !renderError.value) return;
+    rendered.value = false;
+    renderError.value = false;
+    if (container.value) container.value.innerHTML = "";
+    renderDiagram();
+  },
+);
 </script>
 
 <template>
@@ -164,5 +191,36 @@ watch(() => props.code, () => {
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* Dark mode surfaces */
+:global(.dark) .mermaid-block-wrapper {
+  background: #1d1d24;
+  border-color: #26262f;
+  box-shadow: none;
+}
+
+:global(.dark) .mermaid-block-head {
+  background: #16161c;
+  border-bottom-color: #26262f;
+}
+
+:global(.dark) .mermaid-block-lang {
+  color: #818cf8;
+}
+
+:global(.dark) .mermaid-block-error {
+  color: #fbbf24;
+  background: #2a1f0d;
+}
+
+:global(.dark) .mermaid-block-code {
+  background: #16161c;
+  color: #b4b4c0;
+}
+
+:global(.dark) .mermaid-skeleton-line {
+  background: linear-gradient(90deg, #23232c 25%, #2e2e3a 50%, #23232c 75%);
+  background-size: 200% 100%;
 }
 </style>

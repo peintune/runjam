@@ -183,7 +183,7 @@ function confirmDeleteAllArchived() {
     <div class="px-3 pb-3">
       <button
         @click="newSession"
-        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-gray-700 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm"
+        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-[12px] font-semibold text-white bg-gray-700 hover:bg-gray-900 active:scale-[0.98] transition-all duration-150 cursor-pointer shadow-sm dark:bg-zinc-700 dark:hover:bg-zinc-800"
       >
         <Plus :size="17" /> {{ $t("session.newSession") }}
       </button>
@@ -195,7 +195,7 @@ function confirmDeleteAllArchived() {
         @click="router.push('/board')"
         :class="[
           'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 cursor-pointer',
-          route.path === '/board' ? 'bg-gray-100 text-gray-900' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700',
+          route.path === '/board' ? 'bg-gray-100 text-gray-900 dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700',
         ]"
       >
         <LayoutDashboard :size="15" />
@@ -347,10 +347,10 @@ function confirmDeleteAllArchived() {
 
     <!-- footer -->
     <div class="border-t border-gray-100 px-3 py-3 space-y-0.5">
-      <button @click="router.push('/costs')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/costs' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
+      <button @click="router.push('/costs')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/costs' ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
         <BarChart3 :size="17" /> {{ $t("sidebar.costs") }}
       </button>
-      <button @click="router.push('/settings')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/settings' ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
+      <button @click="router.push('/settings')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/settings' ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
         <Settings :size="17" /> {{ $t("common.settings") }}
       </button>
     </div>

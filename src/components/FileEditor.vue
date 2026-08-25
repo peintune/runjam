@@ -4,6 +4,7 @@ import { readFileText, writeFile } from "../api/fs";
 import { openInFinder } from "../api/app";
 import { Loader, ExternalLink } from "lucide-vue-next";
 import { t } from "../i18n";
+import { useThemeStore } from "../stores/useThemeStore";
 
 const props = defineProps<{
   filePath: string;
@@ -15,6 +16,7 @@ const loading = ref(true);
 const saving = ref(false);
 const error = ref("");
 const editorContainer = ref<HTMLElement>();
+const themeStore = useThemeStore();
 
 let monacoEditor: any = null;
 let monacoModule: any = null;
@@ -173,7 +175,7 @@ async function initEditor() {
   monacoEditor = monaco.editor.create(editorContainer.value, {
     value: content.value,
     language,
-    theme: "vs",
+    theme: themeStore.theme === "dark" ? "vs-dark" : "vs",
     fontSize: 13,
     lineNumbers: "on",
     minimap: { enabled: false },
@@ -235,6 +237,16 @@ function handleKeydown(e: KeyboardEvent) {
     handleSave();
   }
 }
+
+// Follow the app theme for Monaco (vs ↔ vs-dark)
+watch(
+  () => themeStore.theme,
+  (val) => {
+    if (monacoModule?.editor) {
+      monacoModule.editor.setTheme(val === "dark" ? "vs-dark" : "vs");
+    }
+  },
+);
 
 watch(() => props.filePath, async (newPath) => {
   if (newPath) {

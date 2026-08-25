@@ -16,7 +16,7 @@ const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] =
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#f8f9fb]">
+  <div class="flex flex-col h-screen bg-[#f8f9fb] dark:bg-[#101015]">
     <!-- drag region -->
     <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full relative" style="-webkit-app-region: drag">
       <div class="absolute right-0 top-0">
@@ -44,7 +44,7 @@ const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] =
           <button v-for="item in navItems" :key="item.path"
             @click="router.push(item.path)"
             :class="['w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-colors duration-150 cursor-pointer',
-              route.path === item.path ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']"
+              route.path === item.path ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']"
           >
             <component :is="item.icon" :size="18" />
             {{ $t(item.labelKey) }}

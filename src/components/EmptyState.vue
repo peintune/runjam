@@ -19,7 +19,7 @@ const store = useWorkspaceStore();
       </p>
       <button
         @click="store.activeSessionId = null"
-        class="px-5 py-2.5 rounded-xl text-[13px] font-medium text-white bg-gray-900 hover:bg-gray-800 active:scale-[0.98] transition-all duration-150"
+        class="px-5 py-2.5 rounded-xl text-[13px] font-medium text-white bg-gray-900 hover:bg-gray-800 active:scale-[0.98] transition-all duration-150 dark:bg-zinc-800 dark:hover:bg-zinc-700"
       >
         {{ $t("empty.newSession") }}
       </button>
