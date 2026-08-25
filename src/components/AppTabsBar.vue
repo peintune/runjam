@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { nextTick, ref } from "vue";
 import { useRouter } from "vue-router";
-import { Plus, X } from "lucide-vue-next";
+import { Plus, X, ArrowLeft, ArrowRight, RotateCw } from "lucide-vue-next";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
+import { faviconFor, type AppItem } from "../stores/useAppsStore";
 
 const appTabs = useAppTabsStore();
 const router = useRouter();
@@ -15,11 +17,39 @@ function goHome() {
   }
 }
 
-/** Open the "add app" settings page; hide every app webview first so the web
- *  page can never cover the settings page. */
-function openAddApps() {
-  appTabs.hideAll();
-  router.push("/settings/apps");
+/** Inline URL input (browser-like): the "+" expands into an address bar. */
+const showUrlInput = ref(false);
+const urlInput = ref("");
+const urlInputEl = ref<HTMLInputElement | null>(null);
+
+function toggleUrlInput() {
+  showUrlInput.value = !showUrlInput.value;
+  if (showUrlInput.value) {
+    urlInput.value = "";
+    nextTick(() => urlInputEl.value?.focus());
+  }
+}
+
+/** Open the typed address as a brand-new app tab. */
+function submitUrl() {
+  const raw = urlInput.value.trim();
+  showUrlInput.value = false;
+  if (!raw) return;
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return;
+  }
+  const item: AppItem = {
+    id: "",
+    name: parsed.hostname.replace(/^www\./, ""),
+    url: parsed.toString(),
+    icon: faviconFor(parsed.toString()),
+    builtin: false,
+  };
+  appTabs.openApp(item).catch(console.error);
 }
 </script>
 
@@ -86,13 +116,52 @@ function openAddApps() {
       </button>
     </div>
 
-    <!-- Add more apps -->
+    <!-- Add tab: the "+" expands into a browser-like URL input -->
+    <input
+      v-if="showUrlInput"
+      ref="urlInputEl"
+      v-model="urlInput"
+      type="text"
+      @keyup.enter="submitUrl"
+      @keyup.esc="showUrlInput = false"
+      @blur="showUrlInput = false"
+      :placeholder="$t('appsTab.urlPlaceholder')"
+      class="w-44 h-7 flex-shrink-0 px-2 rounded-lg border border-gray-200 bg-white text-gray-900 placeholder:text-gray-400 outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-blue-500 transition-colors"
+    />
     <button
-      @click="openAddApps"
+      v-else
+      @click="toggleUrlInput"
       class="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
       :title="$t('sidebar.addApp')"
     >
       <Plus :size="14" />
+    </button>
+
+    <!-- Browser navigation for the active app tab -->
+    <div class="w-px h-4 bg-gray-200/80 mx-0.5 flex-shrink-0" />
+    <button
+      @click="appTabs.navigate('back')"
+      :disabled="appTabs.activeTabId === null"
+      class="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+      :title="$t('appsTab.back')"
+    >
+      <ArrowLeft :size="14" />
+    </button>
+    <button
+      @click="appTabs.navigate('forward')"
+      :disabled="appTabs.activeTabId === null"
+      class="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+      :title="$t('appsTab.forward')"
+    >
+      <ArrowRight :size="14" />
+    </button>
+    <button
+      @click="appTabs.navigate('reload')"
+      :disabled="appTabs.activeTabId === null"
+      class="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+      :title="$t('appsTab.reload')"
+    >
+      <RotateCw :size="13" />
     </button>
   </div>
 </template>

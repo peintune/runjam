@@ -4,7 +4,7 @@ import { useRouter, useRoute } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
 import { useAppsStore, type AppItem } from "../stores/useAppsStore";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
-import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink, LayoutDashboard } from "lucide-vue-next";
+import { Settings, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink, LayoutDashboard } from "lucide-vue-next";
 import SessionItem from "./SessionItem.vue";
 import { openInFinder } from "../api/app";
 
@@ -389,9 +389,6 @@ function openApp(app: AppItem) {
 
     <!-- footer -->
     <div class="border-t border-gray-100 px-3 py-3 space-y-0.5">
-      <button @click="router.push('/costs')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/costs' ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
-        <BarChart3 :size="17" /> {{ $t("sidebar.costs") }}
-      </button>
       <button @click="router.push('/settings')" :class="['w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[13px] transition-all duration-150 cursor-pointer', route.path === '/settings' ? 'bg-gray-100 text-gray-900 font-medium dark:bg-gray-200' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700']">
         <Settings :size="17" /> {{ $t("common.settings") }}
       </button>

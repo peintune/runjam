@@ -192,6 +192,7 @@ pub fn run() {
             commands::app_cmd::close_app_tab,
             commands::app_cmd::set_app_tab_visible,
             commands::app_cmd::layout_app_tabs,
+            commands::app_cmd::app_tab_navigate,
             commands::proxy_cmd::get_proxy_port,
             commands::proxy_cmd::get_proxy_url,
             commands::proxy_cmd::set_reasoning_disabled,

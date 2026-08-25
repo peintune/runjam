@@ -33,36 +33,27 @@ export const useAppTabsStore = defineStore("appTabs", () => {
     invoke("layout_app_tabs").catch(() => {});
   }
 
-  /** Dedupe rapid double-clicks while a tab is still being created. */
-  const pendingOpens: Record<string, Promise<void> | undefined> = {};
-
-  /** Open an app as a tab (or switch to it if already open). */
+  /**
+   * Open an app as a fresh tab. Browser-like: clicking the same app in the
+   * sidebar opens ANOTHER tab for the same site (each with a unique id), so
+   * the same website can be open several times at once.
+   */
   function openApp(item: AppItem): Promise<void> {
-    const inflight = pendingOpens[item.id];
-    if (inflight) return inflight;
-    const p = (async () => {
-      const existing = tabs.value.find((t) => t.id === item.id);
-      if (existing) {
-        await activateTab(existing.id);
-        return;
-      }
+    const id = `app-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return (async () => {
       const webviewLabel = await invoke<string>("open_app_tab", {
         url: item.url,
+        tabId: id,
       });
       tabs.value.push({
-        id: item.id,
+        id,
         name: item.name,
         url: item.url,
         icon: item.icon,
         webviewLabel,
       });
-      await activateTab(item.id);
+      await activateTab(id);
     })();
-    pendingOpens[item.id] = p;
-    p.finally(() => {
-      delete pendingOpens[item.id];
-    }).catch(() => {});
-    return p;
   }
 
   /** Switch to an app tab: show its webview, hide the others. */
@@ -113,6 +104,22 @@ export const useAppTabsStore = defineStore("appTabs", () => {
     }
   }
 
+  /** Webview label of the active tab, or null when on the workspace. */
+  function activeLabel(): string | null {
+    return (
+      tabs.value.find((t) => t.id === activeTabId.value)?.webviewLabel ?? null
+    );
+  }
+
+  /** Browser-style navigation on the active app tab (back / forward / reload). */
+  function navigate(action: "back" | "forward" | "reload") {
+    const label = activeLabel();
+    if (!label) return;
+    invoke("app_tab_navigate", { label, action }).catch((e) =>
+      console.error(`[app-tab] navigate ${action} FAILED: ${label}`, e)
+    );
+  }
+
   /**
    * Monotonic sequence guarding against interleaved tab switches: each call
    * captures its own sequence and bails out as soon as a newer switch has
@@ -155,6 +162,7 @@ export const useAppTabsStore = defineStore("appTabs", () => {
     hideAll,
     restore,
     closeTab,
+    navigate,
     init,
     dispose,
     relayout,

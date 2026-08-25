@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use tauri::{LogicalPosition, LogicalSize, WebviewBuilder, WebviewUrl};
+#[cfg(target_os = "windows")]
 use crate::util::hidden_command;
 
 /// Height (in logical px) occupied by the top nav bar plus the app tab strip.
@@ -98,18 +99,29 @@ fn remove_tab(label: &str) {
 /// Open an external website as a browser-like tab INSIDE the main window. The
 /// site is rendered by a child webview positioned below the top bar + app tab
 /// strip, so it feels like a tab of the window rather than a separate window.
-/// If a tab for the same URL is already open it is shown and focused instead.
+/// When `tab_id` is supplied the tab is always created fresh (browser-like:
+/// the same site can be open in several tabs at once); otherwise an
+/// already-open tab for the same URL is shown and focused instead.
 #[tauri::command]
 pub fn open_app_tab(
     window: tauri::Webview,
     url: String,
+    tab_id: Option<String>,
 ) -> Result<String, String> {
     // Only allow http(s) destinations.
     let parsed = url::Url::parse(url.trim()).map_err(|e| e.to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("Unsupported URL scheme: {}", parsed.scheme()));
     }
-    let label = tab_label_for(&parsed);
+    // A caller-supplied unique id means "open a brand-new tab" (e.g. repeated
+    // clicks on the same app in the sidebar) — use it directly as the label so
+    // the URL-based reuse check below can never match an existing tab.
+    let label = match tab_id {
+        Some(id) if !id.trim().is_empty() => {
+            format!("{}{}", APP_TAB_LABEL_PREFIX, sanitize_label(id.trim()))
+        }
+        _ => tab_label_for(&parsed),
+    };
 
     // Reuse an already-open tab for the same URL.
     if let Some(wv) = get_tab(&label) {
@@ -129,7 +141,14 @@ pub fn open_app_tab(
     let (width, height) = child_viewport(&window.window())?;
 
     let parent = window.window();
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed));
+    // Give each tab its own on-disk data directory (cookies, localStorage,
+    // IndexedDB, ...) so sessions survive closing the app — child webviews use
+    // a non-persistent in-memory store by default. Reusing the same directory
+    // per label means reopening a tab restores its cookies/state.
+    let data_dir = get_app_data_dir().join("app-tabs").join(&label);
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+        .data_directory(data_dir);
     let webview = parent
         .add_child(
             builder,
@@ -160,6 +179,21 @@ pub fn close_app_tab(label: String) -> Result<(), String> {
         None => eprintln!("[app-tab] close: NOT FOUND {label}"),
     }
     Ok(())
+}
+
+/// Browser-style navigation on the active app tab: go back / forward in its
+/// history, or reload the page.
+#[tauri::command]
+pub fn app_tab_navigate(label: String, action: String) -> Result<(), String> {
+    let wv = get_tab(&label).ok_or_else(|| format!("[app-tab] navigate: NOT FOUND {label}"))?;
+    let result = match action.as_str() {
+        "back" => wv.eval("window.history.back()"),
+        "forward" => wv.eval("window.history.forward()"),
+        "reload" => wv.reload(),
+        other => return Err(format!("[app-tab] navigate: unknown action '{other}'")),
+    };
+    eprintln!("[app-tab] navigate: {label} -> {action}");
+    result.map_err(|e| format!("[app-tab] navigate {action} failed: {e}"))
 }
 
 /// Show/hide an app tab's child webview (tab switching).

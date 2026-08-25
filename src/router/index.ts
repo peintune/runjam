@@ -12,11 +12,6 @@ const router = createRouter({
       component: WorkspaceLayout,
     },
     {
-      path: "/costs",
-      name: "costs",
-      component: () => import("../views/CostsView.vue"),
-    },
-    {
       path: "/board",
       name: "board",
       component: () => import("../components/WorkspaceLayout.vue"),
@@ -55,6 +50,11 @@ const router = createRouter({
           path: "general",
           name: "settings-general",
           component: () => import("../views/settings/GeneralSettings.vue"),
+        },
+        {
+          path: "costs",
+          name: "settings-costs",
+          component: () => import("../views/settings/CostsSettings.vue"),
         },
         {
           path: "about",

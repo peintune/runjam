@@ -53,6 +53,7 @@ const zhCN: Record<TranslationKey, string> = {
   "settings.agents": "智能体",
   "settings.apps": "应用",
   "settings.general": "通用",
+  "settings.costs": "费用",
   "settings.about": "关于",
 
   // ── Apps settings ───────────────────────────────────────────────────────
@@ -73,6 +74,10 @@ const zhCN: Record<TranslationKey, string> = {
   // ── App tabs bar ─────────────────────────────────────────────────────────
   "appsTab.home": "RunJam 工作区",
   "appsTab.close": "关闭标签页",
+  "appsTab.back": "后退",
+  "appsTab.forward": "前进",
+  "appsTab.reload": "刷新",
+  "appsTab.urlPlaceholder": "输入网址，回车打开",
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "外观",
@@ -109,7 +114,6 @@ const zhCN: Record<TranslationKey, string> = {
   "sidebar.delete": "删除",
   "sidebar.board": "看板",
   "sidebar.taskBoard": "任务看板",
-  "sidebar.costs": "费用",
   "sidebar.openFolder": "打开文件夹",
   "sidebar.editTitle": "编辑标题",
   "sidebar.emptyState": "暂无会话",

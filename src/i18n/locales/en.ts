@@ -53,6 +53,7 @@ const en = {
   "settings.agents": "Agents",
   "settings.apps": "Apps",
   "settings.general": "General",
+  "settings.costs": "Costs",
   "settings.about": "About",
 
   // ── Apps settings ───────────────────────────────────────────────────────
@@ -73,6 +74,10 @@ const en = {
   // ── App tabs bar ─────────────────────────────────────────────────────────
   "appsTab.home": "RunJam workspace",
   "appsTab.close": "Close tab",
+  "appsTab.back": "Back",
+  "appsTab.forward": "Forward",
+  "appsTab.reload": "Reload",
+  "appsTab.urlPlaceholder": "Enter address, Enter to open",
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "Appearance",
@@ -109,7 +114,6 @@ const en = {
   "sidebar.delete": "Delete",
   "sidebar.board": "Board",
   "sidebar.taskBoard": "Task Board",
-  "sidebar.costs": "Costs",
   "sidebar.openFolder": "Open Folder",
   "sidebar.editTitle": "Edit title",
   "sidebar.emptyState": "No sessions yet",
