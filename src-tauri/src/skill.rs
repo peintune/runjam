@@ -17,6 +17,18 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
+/// The user-installed skills directory: `~/.runjam/skills/`.
+/// Skills uploaded as .zip packages are extracted here (one folder per skill,
+/// each with a SKILL.md). This is the same unified user-data location used by
+/// the database, logs and sessions (see `lib.rs`).
+pub fn user_skills_dir() -> PathBuf {
+    let home = directories::UserDirs::new()
+        .map(|d| d.home_dir().join(".runjam").join("skills"))
+        .unwrap_or_else(|| PathBuf::from(".runjam").join("skills"));
+    std::fs::create_dir_all(&home).ok();
+    home
+}
+
 /// Parsed YAML frontmatter from a SKILL.md file. Only `name` and
 /// `description` are loaded into the agent's context at all times; the rest
 /// of the SKILL.md body is read only when the agent decides to use the skill.
@@ -103,15 +115,11 @@ fn parse_skill_frontmatter(skill_md: &Path) -> Option<SkillMeta> {
     Some(SkillMeta { name, description })
 }
 
-/// Scan the builtin-skills directory and return metadata for every skill
-/// that has a valid SKILL.md with YAML frontmatter.
-pub fn list_builtin_skills(app: &AppHandle) -> Vec<Skill> {
-    let Some(base) = builtin_skills_dir(app) else {
-        rjlog!("[SKILL] builtin-skills directory not found");
-        return Vec::new();
-    };
+/// Scan a directory of skill folders (each containing SKILL.md) and return
+/// metadata for every skill with valid YAML frontmatter.
+fn scan_skills_dir(base: &Path) -> Vec<Skill> {
     let mut skills = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&base) {
+    if let Ok(entries) = std::fs::read_dir(base) {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
@@ -127,7 +135,39 @@ pub fn list_builtin_skills(app: &AppHandle) -> Vec<Skill> {
             }
         }
     }
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    skills
+}
+
+/// Scan the builtin-skills directory and return metadata for every skill
+/// that has a valid SKILL.md with YAML frontmatter.
+pub fn list_builtin_skills(app: &AppHandle) -> Vec<Skill> {
+    let Some(base) = builtin_skills_dir(app) else {
+        rjlog!("[SKILL] builtin-skills directory not found");
+        return Vec::new();
+    };
+    let skills = scan_skills_dir(&base);
     rjlog!("[SKILL] Discovered {} builtin skills in {:?}", skills.len(), base);
+    skills
+}
+
+/// Scan the user-installed skills directory (`~/.runjam/skills/`).
+pub fn list_user_skills() -> Vec<Skill> {
+    scan_skills_dir(&user_skills_dir())
+}
+
+/// Every skill available to RunJam: user-installed first (so a user skill with
+/// the same name overrides a builtin), then builtins.
+pub fn list_all_skills(app: &AppHandle) -> Vec<Skill> {
+    let mut skills = list_user_skills();
+    let builtin = list_builtin_skills(app);
+    let mut seen = std::collections::HashSet::new();
+    skills.retain(|s| seen.insert(s.name.clone()));
+    for s in builtin {
+        if seen.insert(s.name.clone()) {
+            skills.push(s);
+        }
+    }
     skills
 }
 
@@ -175,7 +215,7 @@ pub fn deploy_skills_to_session(
     std::fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("Failed to create skills dir {}: {}", dest_dir.display(), e))?;
 
-    let all_skills = list_builtin_skills(app);
+    let all_skills = list_all_skills(app);
     let to_deploy: Vec<&Skill> = all_skills
         .iter()
         .filter(|s| skill_names.iter().any(|n| n == &s.name))
@@ -255,12 +295,12 @@ pub fn deploy_single_skill(
     std::fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("Failed to create skills dir: {}", e))?;
 
-    // Find the skill in builtin-skills.
-    let all_skills = list_builtin_skills(app);
+    // Find the skill among builtin + user-installed skills.
+    let all_skills = list_all_skills(app);
     let skill = all_skills
         .iter()
         .find(|s| s.name == skill_name)
-        .ok_or_else(|| format!("Skill '{}' not found in builtin-skills", skill_name))?;
+        .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
     let dest = dest_dir.join(skill_name);
     if dest.exists() {
@@ -293,6 +333,152 @@ pub fn remove_single_skill(
         rjlog!("[SKILL] Removed skill '{}' from {}", skill_name, skill_dir.display());
     }
     Ok(())
+}
+
+/// Install skills from a base64-encoded .zip package into `~/.runjam/skills/`.
+///
+/// The archive may contain one skill (SKILL.md at the zip root, or inside a
+/// single wrapping folder) or several top-level skill folders. Every folder
+/// with a valid SKILL.md (YAML frontmatter) is installed; a skill with the
+/// same name as an existing one is overwritten. Returns the installed skills.
+///
+/// Security: entries are path-squashed and any absolute / `..` paths are
+/// rejected (zip-slip protection).
+pub fn install_skill_zip(zip_base64: &str) -> Result<Vec<Skill>, String> {
+    use base64::Engine;
+    use zip::ZipArchive;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(zip_base64)
+        .map_err(|e| format!("Invalid zip data: {e}"))?;
+    let mut archive =
+        ZipArchive::new(std::io::Cursor::new(&bytes)).map_err(|e| format!("Invalid zip archive: {e}"))?;
+
+    // Stage into a temp dir first, then scan for skill folders.
+    let staging = std::env::temp_dir().join(format!("runjam-skill-{}", std::process::id()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).ok();
+    }
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+
+    let extract_result = extract_zip(&mut archive, &staging);
+    if let Err(e) = extract_result {
+        std::fs::remove_dir_all(&staging).ok();
+        return Err(e);
+    }
+
+    let dest = user_skills_dir();
+    let mut installed = Vec::new();
+
+    // Case 1: SKILL.md at the zip root → the whole package is one skill.
+    if staging.join("SKILL.md").is_file() {
+        try_install_one(&staging, &dest, &mut installed);
+        std::fs::remove_dir_all(&staging).ok();
+        if installed.is_empty() {
+            return Err("The .zip does not contain a valid skill (a SKILL.md with YAML frontmatter)".into());
+        }
+        return Ok(installed);
+    }
+
+    // Case 2: top-level folders, each possibly a skill. Some packages wrap the
+    // skill in one extra folder — check one level down as well.
+    let top_entries = std::fs::read_dir(&staging).map_err(|e| e.to_string())?;
+    for entry in top_entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("SKILL.md").is_file() {
+            try_install_one(&path, &dest, &mut installed);
+        } else if let Ok(inner) = std::fs::read_dir(&path) {
+            for e2 in inner.flatten() {
+                if e2.path().is_dir() && e2.path().join("SKILL.md").is_file() {
+                    try_install_one(&e2.path(), &dest, &mut installed);
+                }
+            }
+        }
+    }
+    std::fs::remove_dir_all(&staging).ok();
+
+    if installed.is_empty() {
+        return Err("The .zip does not contain a valid skill (a folder with SKILL.md containing YAML frontmatter)".into());
+    }
+    Ok(installed)
+}
+
+/// Extract every entry of a zip archive into `dest`, rejecting unsafe paths.
+fn extract_zip<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    dest: &Path,
+) -> Result<(), String> {
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| format!("Zip read error: {e}"))?;
+        let name = entry.name().replace('\\', "/");
+        // Zip-slip protection.
+        let clean = Path::new(&name);
+        if clean.is_absolute() || name.split('/').any(|c| c == "..") || name.contains('\0') {
+            return Err(format!("Unsafe path in zip: {name}"));
+        }
+        let out_path = dest.join(&name);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path).ok();
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut file = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy a staged skill folder into the user skills dir under its frontmatter
+/// name (overwriting an existing skill of the same name). Returns true if a
+/// valid skill was installed.
+fn try_install_one(src: &Path, dest: &Path, installed: &mut Vec<Skill>) -> bool {
+    let Some(meta) = parse_skill_frontmatter(&src.join("SKILL.md")) else {
+        rjlog!("[SKILL] Skipping {} — no valid SKILL.md frontmatter", src.display());
+        return false;
+    };
+    if !is_safe_skill_name(&meta.name) {
+        rjlog!("[SKILL] Rejecting unsafe skill name '{}'", meta.name);
+        return false;
+    }
+    let target = dest.join(&meta.name);
+    if target.exists() {
+        std::fs::remove_dir_all(&target).ok();
+    }
+    if let Err(e) = copy_dir_recursive(src, &target) {
+        rjlog!("[SKILL] Failed to install '{}': {}", meta.name, e);
+        return false;
+    }
+    rjlog!("[SKILL] Installed user skill '{}' → {}", meta.name, target.display());
+    installed.push(Skill {
+        name: meta.name,
+        description: meta.description,
+        source_dir: target,
+    });
+    true
+}
+
+/// Remove a user-installed skill (by its frontmatter name) from `~/.runjam/skills/`.
+pub fn remove_user_skill(skill_name: &str) -> Result<(), String> {
+    if !is_safe_skill_name(skill_name) {
+        return Err(format!("Unsafe skill name: {skill_name}"));
+    }
+    let dir = user_skills_dir().join(skill_name);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("Failed to remove skill '{skill_name}': {e}"))?;
+        rjlog!("[SKILL] Removed user skill '{skill_name}'");
+    }
+    Ok(())
+}
+
+/// Allow only plain folder names (no separators / traversal) for skill names.
+fn is_safe_skill_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
 /// Recursively copy a directory tree (files + subdirs).

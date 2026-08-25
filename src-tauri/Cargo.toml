@@ -34,6 +34,7 @@ tiny_http = "0.12"
 ureq = { version = "2.10", features = ["json", "socks-proxy"] }
 portable-pty = "0.7"
 zip = "2"
+base64 = "0.22"
 quick-xml = "0.36"
 calamine = "0.25"
 pdf-extract = "0.7"

@@ -19,6 +19,21 @@ export async function listSkills(): Promise<SkillInfo[]> {
   return invoke<SkillInfo[]>("list_skills");
 }
 
+/** List skills the user installed from .zip packages (~/.runjam/skills/). */
+export async function listUserSkills(): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("list_user_skills");
+}
+
+/** Install skills from a base64-encoded .zip package. Returns installed skills. */
+export async function installSkillZip(zipBase64: string): Promise<SkillInfo[]> {
+  return invoke<SkillInfo[]>("install_skill_zip", { zipBase64 });
+}
+
+/** Remove a user-installed skill. */
+export async function removeUserSkill(skillName: string): Promise<void> {
+  return invoke("remove_user_skill", { skillName });
+}
+
 /** List the skill names already deployed in a session's per-agent skills directory. */
 export async function listSessionSkills(cwd: string, cli: string): Promise<string[]> {
   return invoke<string[]>("list_session_skills", { cwd, cli });

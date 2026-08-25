@@ -1484,8 +1484,12 @@ impl AcpClient {
                                     });
                                 rjlog!("[ACP DEBUG] Finish tokens: input={:?} output={:?} cached={}", finish_input, finish_output, result_cached_total);
                                 
-                                // Record cached tokens to database if we have them
-                                if result_cached_total > 0 {
+                                // Record usage to database: input/output/cached 任一非 0 都写入。
+                                // 原实现只在有缓存 token 时才写入，导致无缓存的模型
+                                // （如火山 ark MiniMax-M3）永远写不进 token_usage 表。
+                                let fin_in = finish_input.unwrap_or(0);
+                                let fin_out = finish_output.unwrap_or(0);
+                                if fin_in > 0 || fin_out > 0 || result_cached_total > 0 {
                                     let _ = app_clone2.try_state::<Mutex<Database>>().map(|state| {
                                         if let Ok(db) = state.lock() {
                                             if let Ok(conn) = db.conn.lock() {
@@ -1493,12 +1497,12 @@ impl AcpClient {
                                                     &conn,
                                                     &session_id_clone,
                                                     &usage_model,
-                                                    finish_input.unwrap_or(0),
-                                                    finish_output.unwrap_or(0),
+                                                    fin_in,
+                                                    fin_out,
                                                     0.0,
                                                     result_cached_total,
                                                 );
-                                                rjlog!("[CACHE] Recorded {} cached tokens to database (model={})", result_cached_total, usage_model);
+                                                rjlog!("[CACHE] Recorded usage to database (model={}, input={}, output={}, cached={})", usage_model, fin_in, fin_out, result_cached_total);
                                             }
                                         }
                                     });

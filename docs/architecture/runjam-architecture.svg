@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1100" width="1600" height="1100">
+  <defs>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#059669"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#ea580c"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#7c3aed"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280"/>
+    </marker>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000018"/>
+    </filter>
+    <linearGradient id="gradFrontend" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dbeafe"/>
+      <stop offset="100%" stop-color="#eff6ff"/>
+    </linearGradient>
+    <linearGradient id="gradBackend" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fed7aa"/>
+      <stop offset="100%" stop-color="#fff7ed"/>
+    </linearGradient>
+    <linearGradient id="gradExternal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#dcfce7"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+  </defs>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .title { font-size: 28px; font-weight: 700; fill: #0f172a; }
+    .subtitle { font-size: 14px; font-weight: 400; fill: #64748b; }
+    .layer-title { font-size: 18px; font-weight: 700; fill: #1e293b; }
+    .node-title { font-size: 15px; font-weight: 600; fill: #0f172a; }
+    .node-sub { font-size: 12px; font-weight: 400; fill: #475569; }
+    .node-sub2 { font-size: 11px; font-weight: 400; fill: #64748b; }
+    .arrow-label { font-size: 12px; font-weight: 500; fill: #334155; }
+    .legend-text { font-size: 13px; font-weight: 500; fill: #475569; }
+  </style>
+  <rect width="1600" height="1100" fill="#ffffff"/>
+  <text x="800" y="44" text-anchor="middle" class="title">RunJam · AI Coding Agent Unified Manager</text>
+  <text x="800" y="66" text-anchor="middle" class="subtitle">Tauri 2 + Vue 3 + Rust · Local-First · Multi-Agent · Protocol Auto-Conversion</text>
+  <!-- ============== LAYER 1: USER + DESKTOP ============== -->
+  <g id="user">
+    <circle cx="100" cy="130" r="22" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+    <path d="M 70,180 Q 70,148 100,148 Q 130,148 130,180 L 130,184 L 70,184 Z" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+    <text x="100" y="208" text-anchor="middle" class="node-title">User</text>
+  </g>
+  <g id="desktop-shell">
+    <rect x="180" y="100" width="1280" height="220" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="200" y="125" class="layer-title">🖥️ Tauri 2 Desktop Runtime (com.runjam.app · 1200×800)</text>
+  </g>
+  <!-- ============== LAYER 2: FRONTEND ============== -->
+  <g id="frontend">
+    <rect x="200" y="145" width="600" height="155" rx="10" fill="url(#gradFrontend)" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="220" y="170" class="layer-title">Vue 3 Frontend (src/)</text>
+    <rect x="220" y="185" width="200" height="100" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+    <text x="320" y="205" text-anchor="middle" class="node-title">Pinia Stores (9)</text>
+    <text x="230" y="225" class="node-sub2">• useAgentStore</text>
+    <text x="230" y="241" class="node-sub2">• useSessionStore</text>
+    <text x="230" y="257" class="node-sub2">• useProjectStore</text>
+    <text x="230" y="273" class="node-sub2">• useCost / Tabs / Theme…</text>
+    <rect x="440" y="185" width="160" height="100" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+    <text x="520" y="205" text-anchor="middle" class="node-title">API Layer</text>
+    <text x="450" y="225" class="node-sub2">src/api/*.ts</text>
+    <text x="450" y="241" class="node-sub2">agents · sessions</text>
+    <text x="450" y="257" class="node-sub2">projects · models</text>
+    <text x="450" y="273" class="node-sub2">costs · fs · proxy…</text>
+    <rect x="620" y="185" width="160" height="100" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2"/>
+    <text x="700" y="205" text-anchor="middle" class="node-title">Components (34)</text>
+    <text x="630" y="225" class="node-sub2">Chat · Session</text>
+    <text x="630" y="241" class="node-sub2">Editor · Terminal</text>
+    <text x="630" y="257" class="node-sub2">FileTree · Tabs</text>
+    <text x="630" y="273" class="node-sub2">Markdown · Toast</text>
+    <rect x="220" y="230" width="200" height="50" rx="8" fill="#ffffff" stroke="#60a5fa" stroke-width="1.2" transform="translate(400,0)"/>
+  </g>
+  <!-- ============== LAYER 2b: IPC BRIDGE ============== -->
+  <g id="ipc">
+    <rect x="820" y="160" width="160" height="125" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+    <text x="900" y="183" text-anchor="middle" class="node-title">Tauri IPC</text>
+    <text x="900" y="200" text-anchor="middle" class="node-sub">invoke · emit</text>
+    <line x1="840" y1="220" x2="960" y2="220" stroke="#d97706" stroke-width="1"/>
+    <text x="900" y="237" text-anchor="middle" class="node-sub2">Frontend ⇄ Rust</text>
+    <text x="900" y="254" text-anchor="middle" class="node-sub2">80+ commands</text>
+    <text x="900" y="271" text-anchor="middle" class="node-sub2">real-time events</text>
+  </g>
+  <!-- ============== LAYER 2c: BACKEND ============== -->
+  <g id="backend">
+    <rect x="1000" y="145" width="440" height="155" rx="10" fill="url(#gradBackend)" stroke="#ea580c" stroke-width="1.5"/>
+    <text x="1020" y="170" class="layer-title">🦀 Rust Backend (src-tauri/)</text>
+    <rect x="1020" y="185" width="200" height="100" rx="8" fill="#ffffff" stroke="#fb923c" stroke-width="1.2"/>
+    <text x="1120" y="205" text-anchor="middle" class="node-title">commands/ (15)</text>
+    <text x="1030" y="225" class="node-sub2">agent · session · project</text>
+    <text x="1030" y="241" class="node-sub2">cost · proxy · models</text>
+    <text x="1030" y="257" class="node-sub2">fs · term · llama · ollama</text>
+    <text x="1030" y="273" class="node-sub2">skill · telemetry · app…</text>
+    <rect x="1240" y="185" width="185" height="100" rx="8" fill="#ffffff" stroke="#fb923c" stroke-width="1.2"/>
+    <text x="1332" y="205" text-anchor="middle" class="node-title">Domain Modules</text>
+    <text x="1250" y="225" class="node-sub2">agent · session · proxy</text>
+    <text x="1250" y="241" class="node-sub2">models · db · git</text>
+    <text x="1250" y="257" class="node-sub2">cost · search · skill</text>
+    <text x="1250" y="273" class="node-sub2">acp · updates · state</text>
+  </g>
+  <!-- ============== LAYER 3: CORE SUBSYSTEMS ============== -->
+  <g id="agent-mgr">
+    <rect x="80" y="360" width="240" height="120" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="200" y="382" text-anchor="middle" class="layer-title">⚙️ Agent Manager</text>
+    <text x="200" y="405" text-anchor="middle" class="node-sub">agent/</text>
+    <text x="100" y="425" class="node-sub2">• Auto-detect PATH</text>
+    <text x="100" y="442" class="node-sub2">• Install / Uninstall</text>
+    <text x="100" y="459" class="node-sub2">• Config read/write</text>
+    <text x="100" y="473" class="node-sub2">• Version tracking</text>
+  </g>
+  <g id="session-mgr">
+    <rect x="340" y="360" width="280" height="120" rx="10" fill="#fce7f3" stroke="#db2777" stroke-width="2"/>
+    <text x="480" y="382" text-anchor="middle" class="layer-title">🎯 SessionManager</text>
+    <text x="480" y="405" text-anchor="middle" class="node-sub">session/ · acp_client</text>
+    <text x="360" y="425" class="node-sub2">• Spawn AcpClient per session</text>
+    <text x="360" y="442" class="node-sub2">• Stream events to FE via emit</text>
+    <text x="360" y="459" class="node-sub2">• Multi-agent concurrent</text>
+    <text x="360" y="473" class="node-sub2">• Run/stop lifecycle</text>
+  </g>
+  <g id="proxy">
+    <rect x="640" y="360" width="320" height="120" rx="10" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+    <text x="800" y="382" text-anchor="middle" class="layer-title">🔄 Protocol Proxy</text>
+    <text x="800" y="405" text-anchor="middle" class="node-sub">proxy/ · tiny_http</text>
+    <text x="660" y="425" class="node-sub2">• Anthropic ⇄ OpenAI ⇄ Gemini</text>
+    <text x="660" y="442" class="node-sub2">• OpenAI Responses / Passthrough</text>
+    <text x="660" y="459" class="node-sub2">• Response cache (in-memory)</text>
+    <text x="660" y="473" class="node-sub2">• Usage store + cost calc</text>
+  </g>
+  <g id="llama">
+    <rect x="980" y="360" width="240" height="120" rx="10" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.5"/>
+    <text x="1100" y="382" text-anchor="middle" class="layer-title">🦙 Local Models</text>
+    <text x="1100" y="405" text-anchor="middle" class="node-sub">llama_cmd · ollama_cmd</text>
+    <text x="1000" y="425" class="node-sub2">• Bundled llama-server</text>
+    <text x="1000" y="442" class="node-sub2">• DeepSeek / Qwen / Llama</text>
+    <text x="1000" y="459" class="node-sub2">• Offline inference</text>
+    <text x="1000" y="473" class="node-sub2">• Ollama integration</text>
+  </g>
+  <g id="storage">
+    <rect x="1240" y="360" width="220" height="120" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+    <text x="1350" y="382" text-anchor="middle" class="layer-title">💾 Storage</text>
+    <text x="1350" y="405" text-anchor="middle" class="node-sub">db/ · ~/.runjam/</text>
+    <text x="1260" y="425" class="node-sub2">• SQLite (rusqlite)</text>
+    <text x="1260" y="442" class="node-sub2">• runjam.db · search.db</text>
+    <text x="1260" y="459" class="node-sub2">• 4 models: agent/project/</text>
+    <text x="1260" y="473" class="node-sub2">  session/token_usage</text>
+  </g>
+  <!-- ============== LAYER 4: AGENT CLIs ============== -->
+  <g id="cli-tools">
+    <rect x="80" y="540" width="820" height="80" rx="10" fill="url(#gradExternal)" stroke="#16a34a" stroke-width="1.5"/>
+    <text x="100" y="562" class="layer-title">🛠️ Agent CLI Tools (auto-detect / one-click install)</text>
+    <rect x="110" y="575" width="180" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="200" y="590" text-anchor="middle" class="node-title">Claude Code</text>
+    <text x="200" y="604" text-anchor="middle" class="node-sub2">claude</text>
+    <rect x="310" y="575" width="180" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="400" y="590" text-anchor="middle" class="node-title">Codex CLI</text>
+    <text x="400" y="604" text-anchor="middle" class="node-sub2">codex</text>
+    <rect x="510" y="575" width="180" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="600" y="590" text-anchor="middle" class="node-title">Gemini CLI</text>
+    <text x="600" y="604" text-anchor="middle" class="node-sub2">gemini</text>
+    <rect x="710" y="575" width="180" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="800" y="590" text-anchor="middle" class="node-title">Other</text>
+    <text x="800" y="604" text-anchor="middle" class="node-sub2">qwen · kiro…</text>
+  </g>
+  <!-- ============== LAYER 5: LLM PROVIDERS ============== -->
+  <g id="llm-providers">
+    <rect x="930" y="540" width="530" height="80" rx="10" fill="url(#gradExternal)" stroke="#16a34a" stroke-width="1.5"/>
+    <text x="950" y="562" class="layer-title">☁️ LLM Providers (via Protocol Proxy)</text>
+    <rect x="950" y="575" width="115" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="1007" y="590" text-anchor="middle" class="node-title">Anthropic</text>
+    <text x="1007" y="604" text-anchor="middle" class="node-sub2">Claude</text>
+    <rect x="1075" y="575" width="115" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="1132" y="590" text-anchor="middle" class="node-title">OpenAI</text>
+    <text x="1132" y="604" text-anchor="middle" class="node-sub2">GPT · o1</text>
+    <rect x="1200" y="575" width="115" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="1257" y="590" text-anchor="middle" class="node-title">Google</text>
+    <text x="1257" y="604" text-anchor="middle" class="node-sub2">Gemini</text>
+    <rect x="1325" y="575" width="115" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="1382" y="590" text-anchor="middle" class="node-title">Groq</text>
+    <text x="1382" y="604" text-anchor="middle" class="node-sub2">Llama</text>
+    <rect x="1450" y="575" width="0" height="0"/>
+    <rect x="1325" y="575" width="115" height="35" rx="6" fill="#ffffff" stroke="#16a34a" stroke-width="1.2"/>
+    <text x="1382" y="590" text-anchor="middle" class="node-title">DeepSeek</text>
+    <text x="1382" y="604" text-anchor="middle" class="node-sub2">R1 · V3</text>
+  </g>
+  <!-- ============== LAYER 6: RUNTIMES ============== -->
+  <g id="runtimes">
+    <rect x="80" y="660" width="600" height="60" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+    <text x="100" y="682" class="layer-title">⚙️ Runtime Support</text>
+    <rect x="100" y="692" width="180" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="190" y="707" text-anchor="middle" class="node-sub">Embedded Node.js (ACP)</text>
+    <rect x="300" y="692" width="180" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="390" y="707" text-anchor="middle" class="node-sub">llama-server binary</text>
+    <rect x="500" y="692" width="160" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="580" y="707" text-anchor="middle" class="node-sub">Tauri Plugins</text>
+  </g>
+  <g id="plugins">
+    <rect x="700" y="660" width="360" height="60" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+    <text x="720" y="682" class="layer-title">🔌 Tauri Plugins</text>
+    <rect x="720" y="692" width="80" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="760" y="707" text-anchor="middle" class="node-sub">opener</text>
+    <rect x="810" y="692" width="80" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="850" y="707" text-anchor="middle" class="node-sub">shell</text>
+    <rect x="890" y="692" width="80" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="930" y="707" text-anchor="middle" class="node-sub">dialog</text>
+    <rect x="980" y="692" width="80" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="1020" y="707" text-anchor="middle" class="node-sub">updater</text>
+  </g>
+  <g id="resources">
+    <rect x="1080" y="660" width="380" height="60" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+    <text x="1100" y="682" class="layer-title">📦 Bundle Resources</text>
+    <rect x="1100" y="692" width="120" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="1160" y="707" text-anchor="middle" class="node-sub">./acp/</text>
+    <rect x="1230" y="692" width="120" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="1290" y="707" text-anchor="middle" class="node-sub">./binaries/llama-server/</text>
+    <rect x="1400" y="692" width="120" height="22" rx="4" fill="#ffffff" stroke="#475569" stroke-width="1"/>
+    <text x="1460" y="707" text-anchor="middle" class="node-sub">./builtin-skills/</text>
+  </g>
+  <!-- ============== LAYER 7: DATA FLOW (bottom) ============== -->
+  <g id="flow-band">
+    <rect x="80" y="760" width="1380" height="180" rx="10" fill="#fafafa" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4,3"/>
+    <text x="100" y="782" class="layer-title">🔁 Key Data Flow (User → Session → ACP → CLI → Proxy → Provider)</text>
+    <rect x="110" y="805" width="180" height="50" rx="8" fill="#dbeafe" stroke="#475569" stroke-width="1.2"/>
+    <text x="200" y="825" text-anchor="middle" class="node-title">1. User</text>
+    <text x="200" y="842" text-anchor="middle" class="node-sub2">input</text>
+    <rect x="320" y="805" width="180" height="50" rx="8" fill="#dbeafe" stroke="#475569" stroke-width="1.2"/>
+    <text x="410" y="825" text-anchor="middle" class="node-title">2. Vue FE</text>
+    <text x="410" y="842" text-anchor="middle" class="node-sub2">stores · api</text>
+    <rect x="530" y="805" width="180" height="50" rx="8" fill="#fef3c7" stroke="#475569" stroke-width="1.2"/>
+    <text x="620" y="825" text-anchor="middle" class="node-title">3. IPC</text>
+    <text x="620" y="842" text-anchor="middle" class="node-sub2">invoke/emit</text>
+    <rect x="740" y="805" width="180" height="50" rx="8" fill="#fce7f3" stroke="#475569" stroke-width="1.2"/>
+    <text x="830" y="825" text-anchor="middle" class="node-title">4. SessionManager</text>
+    <text x="830" y="842" text-anchor="middle" class="node-sub2">AcpClient</text>
+    <rect x="960" y="805" width="180" height="50" rx="8" fill="#dcfce7" stroke="#475569" stroke-width="1.2"/>
+    <text x="1050" y="825" text-anchor="middle" class="node-title">5. Agent CLI</text>
+    <text x="1050" y="842" text-anchor="middle" class="node-sub2">subprocess</text>
+    <rect x="1190" y="805" width="180" height="50" rx="8" fill="#dbeafe" stroke="#475569" stroke-width="1.2"/>
+    <text x="1280" y="825" text-anchor="middle" class="node-title">6. Proxy</text>
+    <text x="1280" y="842" text-anchor="middle" class="node-sub2">→ Provider</text>
+    <text x="100" y="875" class="node-sub">Response path (reverse direction):</text>
+    <text x="100" y="895" class="node-sub2">  Provider → Proxy (SSE stream) → AcpEvent → SessionManager.emit → Vue FE render (Markdown/Tool/Thinking)</text>
+    <text x="100" y="915" class="node-sub2">  Side effects: usage tracking → cost calc → SQLite (token_usage table) → in-memory response cache</text>
+  </g>
+  <!-- ============== ARROWS ============== -->
+  <path d="M 800,200 L 820,200" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M 980,200 L 1000,200" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M 1080,300 L 1080,330 L 200,330 L 200,360" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M 1180,300 L 1180,330 L 480,330 L 480,360" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M 1280,300 L 1280,330 L 800,330 L 800,360" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M 1380,300 L 1380,330 L 1350,330 L 1350,360" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M 480,480 L 480,540" stroke="#16a34a" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M 900,580 L 940,580" stroke="#16a34a" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M 960,420 L 1100,540" stroke="#2563eb" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M 200,480 L 200,540" stroke="#ea580c" stroke-width="2" fill="none" marker-end="url(#arrowOrange)"/>
+  <path d="M 1100,480 L 1100,540" stroke="#0d9488" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M 480,480 L 1280,420" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="4,3" fill="none" marker-end="url(#arrowGray)"/>
+  <rect x="850" y="440" width="80" height="16" fill="#ffffff" opacity="0.9"/>
+  <text x="890" y="453" text-anchor="middle" class="arrow-label">persist</text>
+  <!-- ============== LEGEND ============== -->
+  <g id="legend" transform="translate(80,970)">
+    <rect x="0" y="0" width="640" height="110" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
+    <text x="16" y="22" class="layer-title">Legend</text>
+    <line x1="20" y1="42" x2="50" y2="42" stroke="#2563eb" stroke-width="2" marker-end="url(#arrowBlue)"/>
+    <text x="58" y="46" class="legend-text">Frontend ⇄ Backend (IPC)</text>
+    <line x1="220" y1="42" x2="250" y2="42" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrowPurple)"/>
+    <text x="258" y="46" class="legend-text">Backend internal flow</text>
+    <line x1="420" y1="42" x2="450" y2="42" stroke="#16a34a" stroke-width="2" marker-end="url(#arrowGreen)"/>
+    <text x="458" y="46" class="legend-text">Agent exec / Provider call</text>
+    <line x1="20" y1="72" x2="50" y2="72" stroke="#ea580c" stroke-width="2" marker-end="url(#arrowOrange)"/>
+    <text x="58" y="76" class="legend-text">Agent detection/install</text>
+    <line x1="220" y1="72" x2="250" y2="72" stroke="#0d9488" stroke-width="2" marker-end="url(#arrowGreen)"/>
+    <text x="258" y="76" class="legend-text">Local model path</text>
+    <line x1="420" y1="72" x2="450" y2="72" stroke="#6b7280" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arrowGray)"/>
+    <text x="458" y="76" class="legend-text">Persist (dashed)</text>
+  </g>
+  <!-- ============== NOTES (right side) ============== -->
+  <g id="notes" transform="translate(760,970)">
+    <rect x="0" y="0" width="700" height="110" rx="10" fill="#f0f9ff" stroke="#3b82f6" stroke-width="1.2"/>
+    <text x="16" y="22" class="layer-title">Core Design Principles</text>
+    <text x="16" y="44" class="node-sub">• Local-First: ~/.runjam/ holds db · logs · sessions · acp · skills</text>
+    <text x="16" y="64" class="node-sub">• Protocol Auto-Conversion: configure once → all CLIs use the same model set via proxy</text>
+    <text x="16" y="84" class="node-sub">• Zero-config: auto-detect PATH · one-click install · bundled Node.js + llama-server</text>
+    <text x="16" y="102" class="node-sub">• Privacy: opt-in telemetry · local SQLite · no cloud lock-in</text>
+  </g>
+</svg>

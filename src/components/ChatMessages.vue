@@ -606,6 +606,14 @@ function formatTokens(n: number): string {
 // safeSliceCache avoids redundant regex matching in safeSliceForStreaming when
 // the same displayed content is requested multiple times in the same render cycle.
 const safeSliceCache = new Map<string, string>();
+// 生成中（isProcessing）的超长消息只渲染截断预览：流式 chunk 期间 content
+// 每个 chunk 都变，几十 KB 的 markdown 若每次全量解析（marked + hljs +
+// DOMPurify）会同步阻塞主线程数秒——从别的会话切回一个正在生成的大会话时
+// 首帧就要解析全部已生成内容，期间事件循环（含定时轮询、IPC 响应）全部排队。
+// 预览只取前 LIVE_PREVIEW_MAX_CHARS 字符且前缀稳定 → streaming cache 命中，
+// 每次 chunk 几乎零解析成本；流结束（isProcessing=false）后再完整渲染一次
+// 并进入模块级 shared cache，之后切换秒开。
+const LIVE_PREVIEW_MAX_CHARS = 4000;
 function renderContent(idx: number, msg: Message): string {
   const fullContent = msg.content;
   const displayed = displayMap[idx]?.content;
@@ -614,7 +622,11 @@ function renderContent(idx: number, msg: Message): string {
   const theme = themeStore.theme;
   const t0 = performance.now();
   let html: string;
-  if (displayed === undefined || displayed.length >= fullContent.length) {
+  if (msg.isProcessing === true && fullContent.length > LIVE_PREVIEW_MAX_CHARS) {
+    // 生成中的超长内容：安全切片为截断预览（前缀稳定 → 流式缓存命中）
+    const preview = safeSliceForStreaming(fullContent.slice(0, LIVE_PREVIEW_MAX_CHARS));
+    html = renderCached(preview, { sanitize: true, theme }, (ms) => recordMdParse(ms), false);
+  } else if (displayed === undefined || displayed.length >= fullContent.length) {
     // 完成/历史内容：可缓存
     html = renderCached(fullContent, { sanitize: true, theme }, (ms) => recordMdParse(ms));
   } else {
