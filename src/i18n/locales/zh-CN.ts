@@ -48,9 +48,31 @@ const zhCN: Record<TranslationKey, string> = {
   // ── Settings layout ─────────────────────────────────────────────────────
   "settings.title": "设置",
   "settings.models": "模型",
+  "settings.localModels": "本地模型",
+  "settings.commercialModels": "商业模型",
   "settings.agents": "智能体",
+  "settings.apps": "应用",
   "settings.general": "通用",
   "settings.about": "关于",
+
+  // ── Apps settings ───────────────────────────────────────────────────────
+  "apps.desc": "显示在侧边栏的快捷启动应用，点击会以浏览器式标签页的形式在 RunJam 内打开。",
+  "apps.popular": "常用应用",
+  "apps.addCustom": "添加网页应用",
+  "apps.namePlaceholder": "名称，如 GitHub",
+  "apps.urlPlaceholder": "https://example.com",
+  "apps.add": "添加",
+  "apps.open": "打开",
+  "apps.delete": "移除",
+  "apps.builtin": "内置",
+  "apps.empty": "暂无应用，在上方添加后即可在侧边栏看到。",
+  "apps.invalidUrl": "请输入有效的 http(s) 网址",
+  "apps.nameRequired": "请输入名称",
+  "apps.restoreDefaults": "恢复默认",
+
+  // ── App tabs bar ─────────────────────────────────────────────────────────
+  "appsTab.home": "RunJam 工作区",
+  "appsTab.close": "关闭标签页",
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "外观",
@@ -97,6 +119,8 @@ const zhCN: Record<TranslationKey, string> = {
   "sidebar.comfortableView": "舒适视图",
   "sidebar.selectedCount": "已选 {count} 个",
   "sidebar.sessionBoard": "会话看板",
+  "sidebar.apps": "应用",
+  "sidebar.addApp": "添加应用",
   "sidebar.clickToSelect": "点击会话进行选择",
   "sidebar.openInFinder": "在访达中打开",
   "sidebar.collapse": "收起",

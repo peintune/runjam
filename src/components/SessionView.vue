@@ -2748,7 +2748,7 @@ watch(messages, (msgs) => {
             <button @click="router.push('/settings/agents')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-blue-600 text-white hover:bg-blue-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
               <Download :size="15" /> {{ $t("session.installAgentBtn") }}
             </button>
-            <button @click="router.push('/settings/models?action=add')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
+            <button @click="router.push('/settings/models/commercial?action=add')" class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold bg-white text-gray-700 border border-gray-200 hover:bg-gray-50 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
               <Wand2 :size="15" /> {{ $t("session.configureModel") }}
             </button>
           </div>
@@ -2771,7 +2771,7 @@ watch(messages, (msgs) => {
             <p class="text-[13px] font-medium text-purple-800">{{ $t("session.noModelYet") }}</p>
             <p class="text-[12px] text-purple-500">{{ $t("session.noModelHint") }}</p>
           </div>
-          <button @click="router.push('/settings/models?action=add')" class="flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-purple-600 text-white hover:bg-purple-700 active:scale-[0.98] transition-all cursor-pointer">
+          <button @click="router.push('/settings/models/commercial?action=add')" class="flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-purple-600 text-white hover:bg-purple-700 active:scale-[0.98] transition-all cursor-pointer">
             {{ $t("session.addModelBtn") }}
           </button>
         </div>
@@ -2956,7 +2956,7 @@ watch(messages, (msgs) => {
                     </div>
                     <div class="border-t border-gray-100">
                       <button
-                        @click="router.push('/settings/models?action=add')"
+                        @click="router.push('/settings/models/commercial?action=add')"
                       class="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[12px] text-gray-600 hover:bg-gray-50 transition-colors cursor-pointer font-medium"
                     >
                       <Plus :size="13" class="text-gray-400" />

@@ -48,9 +48,31 @@ const en = {
   // ── Settings layout ─────────────────────────────────────────────────────
   "settings.title": "Settings",
   "settings.models": "Models",
+  "settings.localModels": "Local Models",
+  "settings.commercialModels": "Commercial Models",
   "settings.agents": "Agents",
+  "settings.apps": "Apps",
   "settings.general": "General",
   "settings.about": "About",
+
+  // ── Apps settings ───────────────────────────────────────────────────────
+  "apps.desc": "Quick-launch apps shown in the sidebar. Click an app to open it as a browser-style tab inside RunJam.",
+  "apps.popular": "Popular apps",
+  "apps.addCustom": "Add a web app",
+  "apps.namePlaceholder": "Name, e.g. GitHub",
+  "apps.urlPlaceholder": "https://example.com",
+  "apps.add": "Add",
+  "apps.open": "Open",
+  "apps.delete": "Remove",
+  "apps.builtin": "Built-in",
+  "apps.empty": "No apps yet. Add one above to see it in the sidebar.",
+  "apps.invalidUrl": "Please enter a valid http(s) URL",
+  "apps.nameRequired": "Please enter a name",
+  "apps.restoreDefaults": "Restore defaults",
+
+  // ── App tabs bar ─────────────────────────────────────────────────────────
+  "appsTab.home": "RunJam workspace",
+  "appsTab.close": "Close tab",
 
   // ── General settings ────────────────────────────────────────────────────
   "settings.general.appearance": "Appearance",
@@ -97,6 +119,8 @@ const en = {
   "sidebar.comfortableView": "Comfortable view",
   "sidebar.selectedCount": "{count} selected",
   "sidebar.sessionBoard": "Session Board",
+  "sidebar.apps": "Apps",
+  "sidebar.addApp": "Add app",
   "sidebar.clickToSelect": "Click sessions to select",
   "sidebar.openInFinder": "Open in Finder",
   "sidebar.collapse": "Collapse",

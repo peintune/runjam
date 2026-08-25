@@ -93,7 +93,7 @@ async function handleTestProxy() {
 
 <template>
   <div class="p-6 flex justify-center">
-    <div class="max-w-lg w-full">
+    <div class="max-w-2xl w-full">
       <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight mb-6">{{ $t("settings.general") }}</h2>
 
       <div class="bg-white rounded-xl border border-gray-100 divide-y divide-gray-100">
@@ -151,10 +151,10 @@ async function handleTestProxy() {
             <p class="text-[14px] font-medium text-gray-900">{{ $t("settings.general.dataDir") }}</p>
             <p class="text-[12px] text-gray-400 mt-0.5">{{ $t("settings.general.dataDirDesc") }}</p>
           </div>
-          <div class="flex items-center gap-2">
-            <span class="text-[13px] text-gray-400 font-mono">{{ dataDir }}</span>
+          <div class="flex items-center gap-2 min-w-0 pl-4">
+            <span class="text-[13px] text-gray-400 font-mono truncate">{{ dataDir }}</span>
             <button
-              class="inline-flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-[0.98] rounded-lg transition-all duration-150 cursor-pointer"
+              class="inline-flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 active:scale-[0.98] rounded-lg transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0"
               @click="handleOpen"
             >
               <FolderOpen :size="14" />

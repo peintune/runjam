@@ -2,9 +2,14 @@
 import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
+import { useAppsStore, type AppItem } from "../stores/useAppsStore";
+import { useAppTabsStore } from "../stores/useAppTabsStore";
 import { Settings, BarChart3, Plus, Folder, ChevronRight, LayoutGrid, CheckSquare, Archive, MoreHorizontal, ExternalLink, LayoutDashboard } from "lucide-vue-next";
 import SessionItem from "./SessionItem.vue";
 import { openInFinder } from "../api/app";
+
+const appsStore = useAppsStore();
+const appTabs = useAppTabsStore();
 
 const store = useWorkspaceStore();
 const router = useRouter();
@@ -146,6 +151,11 @@ function confirmDeleteAllArchived() {
     confirmDeleteTimer.value = setTimeout(() => { confirmDeleteMode.value = false; }, 3000);
   }
 }
+
+/** Open a quick-launch app as a browser-like tab inside RunJam. */
+function openApp(app: AppItem) {
+  appTabs.openApp(app).catch(console.error);
+}
 </script>
 
 <template>
@@ -155,7 +165,7 @@ function confirmDeleteAllArchived() {
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
           <img src="/runjam-logo.svg" alt="RunJam" class="w-11 h-11 d rounded-xl" />
-          <span class="text-[17px] font-semibold text-gray-90 0 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
+          <span class="text-[17px] font-semibold text-gray-900 tracking-tight">Run<span style="color: #10b981">Jam</span></span>
         </div>
         <div class="flex items-center gap-1">
           <button v-if="batchMode" @click="exitBatch" class="p-1.5 rounded-lg text-[11px] font-medium text-gray-500 hover:bg-gray-100 transition-colors cursor-pointer">{{ $t("common.cancel") }}</button>
@@ -201,6 +211,38 @@ function confirmDeleteAllArchived() {
         <LayoutDashboard :size="15" />
         {{ $t("sidebar.sessionBoard") }}
       </button>
+    </div>
+
+    <!-- apps -->
+    <div class="px-3 pb-3">
+      <div class="flex items-center justify-between px-1 pb-1.5">
+        <span class="text-[11px] font-medium text-gray-400 dark:text-gray-500">{{ $t("sidebar.apps") }}</span>
+        <button
+          @click="router.push('/settings/apps')"
+          class="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+          :title="$t('sidebar.addApp')"
+        >
+          <Plus :size="13" />
+        </button>
+      </div>
+      <div class="flex items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <button
+          v-for="app in appsStore.apps" :key="app.id"
+          @click="openApp(app)"
+          class="flex-shrink-0 w-9 h-9 rounded-xl border border-gray-100 bg-white hover:bg-gray-50 hover:border-gray-200 hover:shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700 flex items-center justify-center transition-all duration-150 cursor-pointer"
+          :title="app.name"
+        >
+          <img v-if="app.icon" :src="app.icon" :alt="app.name" class="w-5 h-5 rounded" @error="app.icon = null" />
+          <span v-else class="text-[12px] font-semibold text-gray-500">{{ app.name.charAt(0).toUpperCase() }}</span>
+        </button>
+        <button
+          @click="router.push('/settings/apps')"
+          class="flex-shrink-0 w-9 h-9 rounded-xl border border-dashed border-gray-200 text-gray-400 hover:text-gray-600 hover:border-gray-300 hover:bg-gray-50 dark:border-zinc-700 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-zinc-800 flex items-center justify-center transition-all duration-150 cursor-pointer"
+          :title="$t('sidebar.addApp')"
+        >
+          <Plus :size="15" />
+        </button>
+      </div>
     </div>
 
     <div class="mx-5 border-t border-gray-100" />

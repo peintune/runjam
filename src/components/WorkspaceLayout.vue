@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { useRoute } from "vue-router";
 
 defineOptions({ name: "WorkspaceLayout" });
@@ -10,7 +10,9 @@ import TaskBoardView from "../views/TaskBoardView.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import SearchButton from "./SearchButton.vue";
 import WindowControls from "./WindowControls.vue";
+import AppTabsBar from "./AppTabsBar.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
+import { useAppTabsStore } from "../stores/useAppTabsStore";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
 import { homeDir } from "@tauri-apps/api/path";
@@ -27,6 +29,7 @@ const isWorkspaceMode = ref(false);
 const store = useWorkspaceStore();
 const route = useRoute();
 const { layout, switchDirectory, saveLayout } = useSessionLayout();
+const appTabs = useAppTabsStore();
 
 /** True when rendering the task-board view (route /board) instead of a session. */
 const isBoard = computed(() => route.path === "/board");
@@ -144,6 +147,10 @@ onMounted(async () => {
     switchDirectory(dirId);
     showTerminal.value = layout.showTerminal;
   }
+  // App tabs: re-align child webviews on window resize and restore the
+  // previously active tab when returning to the workspace.
+  appTabs.init();
+  appTabs.restore();
 });
 
 // ---- Resizable sidebar ----
@@ -168,6 +175,14 @@ const chatResize = useDragResize({
 // Sync resize sizes when layout changes (session switch)
 watch(() => layout.sidebarWidth, (w) => { sidebarResize.size.value = w; });
 watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
+
+// App webview visibility is managed globally by a router guard
+// (see src/router/index.ts): leaving the workspace routes hides every app
+// webview, returning re-shows the active one. `dispose()` clears any
+// un-closed webviews when this layout is torn down.
+onBeforeUnmount(() => {
+  appTabs.dispose();
+});
 </script>
 
 <template>
@@ -184,7 +199,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 
       <!-- Sidebar toggle: hide when pinned, show when hidden -->
       <button
-        v-if="sidebarPinned"
+        v-if="sidebarPinned && !appTabs.activeTabId"
         @click="sidebarPinned = !sidebarPinned"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
         style="-webkit-app-region: no-drag"
@@ -193,7 +208,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
         <PanelLeftOpen :size="18" />
       </button>
       <button
-        v-if="!sidebarPinned"
+        v-if="!sidebarPinned && !appTabs.activeTabId"
         @click="sidebarPinned = true"
         @mouseenter="sidebarHover = true"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
@@ -208,7 +223,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 
       <!-- File explorer toggle -->
       <button
-        v-if="canEnableWorkspace"
+        v-if="canEnableWorkspace && !appTabs.activeTabId"
         @click="toggleWorkspace"
         class="p-1.5 rounded-lg transition-colors duration-150 ml-1"
         :class="isWorkspaceMode ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
@@ -220,7 +235,7 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 
       <!-- Terminal toggle -->
       <button
-        v-if="canEnableWorkspace"
+        v-if="canEnableWorkspace && !appTabs.activeTabId"
         @click="toggleTerminal"
         class="p-1.5 rounded-lg transition-colors duration-150 ml-0.5"
         :class="showTerminal ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
@@ -233,6 +248,9 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
       <!-- Window controls (Windows/Linux: replaces native title bar buttons) -->
       <WindowControls />
     </div>
+
+    <!-- ═══ App Tabs Bar (browser-like tabs for quick-launch apps) ═══ -->
+    <AppTabsBar />
 
     <!-- ═══ Sidebar Overlay: slides in from left when hovering toggle ═══ -->
     <Transition name="sidebar-slide">

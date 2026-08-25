@@ -46,7 +46,7 @@ async function checkForUpdate() {
 
 <template>
   <div class="p-6 flex justify-center">
-    <div class="max-w-lg w-full">
+    <div class="max-w-2xl w-full">
       <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight mb-6">{{ $t("about.title") }}</h2>
 
       <div class="bg-white rounded-xl border border-gray-100 divide-y divide-gray-100">
