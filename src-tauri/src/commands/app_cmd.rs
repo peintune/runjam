@@ -147,10 +147,25 @@ pub fn open_app_tab(
     // IndexedDB, ...) so sessions survive closing the app — child webviews use
     // a non-persistent in-memory store by default. Reusing the same directory
     // per label means reopening a tab restores its cookies/state.
-    let data_dir = get_app_data_dir().join("app-tabs").join(&label);
-    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .data_directory(data_dir);
+    //
+    // Windows: this is deliberately skipped. A per-tab `data_directory` makes
+    // WebView2 start a brand-new browser process group for every tab
+    // (`CreateCoreWebView2EnvironmentWithOptions` with a fresh user data
+    // folder), and that async creation is awaited synchronously on the main
+    // thread inside `Window::add_child`. If the new browser process cannot
+    // start (antivirus, locked directory, WebView2 runtime bootstrap, ...) the
+    // completion callback never fires and the whole UI freezes on a hung
+    // `open_app_tab` request. Without a custom directory the child reuses the
+    // main webview's default WebView2 environment, whose creation already
+    // succeeded at startup — tabs then share that environment's storage.
+    #[cfg(target_os = "windows")]
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed));
+    #[cfg(not(target_os = "windows"))]
+    let builder = {
+        let data_dir = get_app_data_dir().join("app-tabs").join(&label);
+        std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+        WebviewBuilder::new(&label, WebviewUrl::External(parsed)).data_directory(data_dir)
+    };
     let webview = parent
         .add_child(
             builder,
