@@ -31,14 +31,16 @@ static VISIBLE_TABS: LazyLock<Mutex<HashSet<String>>> =
 static APP_TABS: LazyLock<Mutex<HashMap<String, tauri::Webview>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Make a label legal for Tauri — window/webview labels only allow
-/// alphanumeric characters, `-`, `/`, `:` and `_` (dots in `www.google.com`
-/// would otherwise make the label invalid).
+/// Make a label legal for Tauri AND safe to use as a path segment on every
+/// platform. Window/webview labels only allow alphanumeric characters, `-`,
+/// `/`, `:` and `_`; but `:` and `/` are illegal in Windows file names, and
+/// app-tab labels double as data-directory names for persistent cookies — so
+/// collapse everything down to `[A-Za-z0-9_-]` here.
 fn sanitize_label(input: &str) -> String {
     input
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '/') {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
                 c
             } else {
                 '-'
@@ -160,6 +162,11 @@ pub fn open_app_tab(
     eprintln!("[app-tab] open: created {label}");
     store_tab(&label, &webview);
     mark_visible(&label, true);
+    // Ensure the freshly created webview is actually shown and focused. On
+    // macOS child webviews default to visible, but on Windows the WebView2
+    // controller can start out hidden — make it explicit everywhere.
+    let _ = webview.show();
+    let _ = webview.set_focus();
     // The new webview was created against the current layout — keep every other
     // open tab aligned as well.
     let _ = layout_app_tabs(window);
