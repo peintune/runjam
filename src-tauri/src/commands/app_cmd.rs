@@ -105,87 +105,119 @@ fn remove_tab(label: &str) {
 /// the same site can be open in several tabs at once); otherwise an
 /// already-open tab for the same URL is shown and focused instead.
 #[tauri::command]
-pub fn open_app_tab(
+pub async fn open_app_tab(
     window: tauri::Webview,
     url: String,
     tab_id: Option<String>,
 ) -> Result<String, String> {
-    // Only allow http(s) destinations.
-    let parsed = url::Url::parse(url.trim()).map_err(|e| e.to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("Unsupported URL scheme: {}", parsed.scheme()));
-    }
-    // A caller-supplied unique id means "open a brand-new tab" (e.g. repeated
-    // clicks on the same app in the sidebar) — use it directly as the label so
-    // the URL-based reuse check below can never match an existing tab.
-    let label = match tab_id {
-        Some(id) if !id.trim().is_empty() => {
-            format!("{}{}", APP_TAB_LABEL_PREFIX, sanitize_label(id.trim()))
-        }
-        _ => tab_label_for(&parsed),
-    };
-
-    // Reuse an already-open tab for the same URL.
-    if let Some(wv) = get_tab(&label) {
-        eprintln!("[app-tab] open: reuse {label}");
-        mark_visible(&label, true);
-        if let Ok((w, h)) = child_viewport(&window.window()) {
-            let _ = wv.set_position(LogicalPosition::new(0.0, APP_TAB_STRIP_TOP));
-            let _ = wv.set_size(LogicalSize::new(w, h));
-        }
-        let _ = wv.show();
-        let _ = wv.set_focus();
-        return Ok(label);
-    }
-
-    // Child webviews keep their bounds when the window resizes, so compute them
-    // from the current window size and re-apply on every window resize.
-    let (width, height) = child_viewport(&window.window())?;
-
-    let parent = window.window();
-    // Give each tab its own on-disk data directory (cookies, localStorage,
-    // IndexedDB, ...) so sessions survive closing the app — child webviews use
-    // a non-persistent in-memory store by default. Reusing the same directory
-    // per label means reopening a tab restores its cookies/state.
+    // The synchronous variant runs the `add_child` build on the main thread
+    // (tauri's `Window::add_child` dispatches to the main thread and blocks on
+    // a channel). When invoked from an IPC callback — which on Windows is the
+    // WebView2 WebMessageReceived handler running on the main thread — the
+    // build's `wait_with_pump` nested message loop re-enters the main webview's
+    // message processing, so the WebView2 creation callback never completes and
+    // the whole UI freezes on a hung `open_app_tab` request.
     //
-    // Windows: this is deliberately skipped. A per-tab `data_directory` makes
-    // WebView2 start a brand-new browser process group for every tab
-    // (`CreateCoreWebView2EnvironmentWithOptions` with a fresh user data
-    // folder), and that async creation is awaited synchronously on the main
-    // thread inside `Window::add_child`. If the new browser process cannot
-    // start (antivirus, locked directory, WebView2 runtime bootstrap, ...) the
-    // completion callback never fires and the whole UI freezes on a hung
-    // `open_app_tab` request. Without a custom directory the child reuses the
-    // main webview's default WebView2 environment, whose creation already
-    // succeeded at startup — tabs then share that environment's storage.
-    #[cfg(target_os = "windows")]
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed));
-    #[cfg(not(target_os = "windows"))]
-    let builder = {
-        let data_dir = get_app_data_dir().join("app-tabs").join(&label);
-        std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-        WebviewBuilder::new(&label, WebviewUrl::External(parsed)).data_directory(data_dir)
-    };
-    let webview = parent
-        .add_child(
-            builder,
-            LogicalPosition::new(0.0, APP_TAB_STRIP_TOP),
-            LogicalSize::new(width, height),
-        )
-        .map_err(|e| e.to_string())?;
+    // Running the command body on a background thread makes `add_child` enqueue
+    // its build task through the event loop instead, so the webview is created
+    // in a clean event-loop context (the same one used for window creation at
+    // startup) where the nested message pump can complete. The frontend is
+    // never blocked either: the worker thread waits on the channel.
+    tauri::async_runtime::spawn_blocking(move || {
+        // Only allow http(s) destinations.
+        let parsed = url::Url::parse(url.trim()).map_err(|e| e.to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(format!("Unsupported URL scheme: {}", parsed.scheme()));
+        }
+        // A caller-supplied unique id means "open a brand-new tab" (e.g. repeated
+        // clicks on the same app in the sidebar) — use it directly as the label so
+        // the URL-based reuse check below can never match an existing tab.
+        let label = match tab_id {
+            Some(id) if !id.trim().is_empty() => {
+                format!("{}{}", APP_TAB_LABEL_PREFIX, sanitize_label(id.trim()))
+            }
+            _ => tab_label_for(&parsed),
+        };
 
-    eprintln!("[app-tab] open: created {label}");
-    store_tab(&label, &webview);
-    mark_visible(&label, true);
-    // Ensure the freshly created webview is actually shown and focused. On
-    // macOS child webviews default to visible, but on Windows the WebView2
-    // controller can start out hidden — make it explicit everywhere.
-    let _ = webview.show();
-    let _ = webview.set_focus();
-    // The new webview was created against the current layout — keep every other
-    // open tab aligned as well.
-    let _ = layout_app_tabs(window);
-    Ok(label)
+        // Reuse an already-open tab for the same URL.
+        if let Some(wv) = get_tab(&label) {
+            eprintln!("[app-tab] open: reuse {label}");
+            mark_visible(&label, true);
+            if let Ok((w, h)) = child_viewport(&window.window()) {
+                let _ = wv.set_position(LogicalPosition::new(0.0, APP_TAB_STRIP_TOP));
+                let _ = wv.set_size(LogicalSize::new(w, h));
+            }
+            let _ = wv.show();
+            let _ = wv.set_focus();
+            return Ok(label);
+        }
+
+        // Child webviews keep their bounds when the window resizes, so compute
+        // them from the current window size and re-apply on every resize.
+        let start = std::time::Instant::now();
+        let (width, height) = child_viewport(&window.window())?;
+        eprintln!(
+            "[app-tab] open {label}: viewport {width}x{height} in {}ms",
+            start.elapsed().as_millis()
+        );
+
+        let parent = window.window();
+        // Give each tab its own on-disk data directory (cookies, localStorage,
+        // IndexedDB, ...) so sessions survive closing the app — child webviews
+        // use a non-persistent in-memory store by default. Reusing the same
+        // directory per label means reopening a tab restores its state.
+        //
+        // Windows: this is deliberately skipped. A per-tab `data_directory`
+        // makes WebView2 start a brand-new browser process group for every tab
+        // (`CreateCoreWebView2EnvironmentWithOptions` with a fresh user data
+        // folder), which only adds risk on top of the already fragile
+        // in-IPC-callback child creation. Without a custom directory the child
+        // reuses the main webview's default WebView2 environment, whose
+        // creation already succeeded at startup — tabs then share that
+        // environment's storage.
+        #[cfg(target_os = "windows")]
+        let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed));
+        #[cfg(not(target_os = "windows"))]
+        let builder = {
+            let data_dir = get_app_data_dir().join("app-tabs").join(&label);
+            std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+            WebviewBuilder::new(&label, WebviewUrl::External(parsed)).data_directory(data_dir)
+        };
+        eprintln!(
+            "[app-tab] open {label}: building child webview (t={}ms)",
+            start.elapsed().as_millis()
+        );
+        let webview = parent
+            .add_child(
+                builder,
+                LogicalPosition::new(0.0, APP_TAB_STRIP_TOP),
+                LogicalSize::new(width, height),
+            )
+            .map_err(|e| {
+                eprintln!(
+                    "[app-tab] open {label}: add_child FAILED after {}ms: {e}",
+                    start.elapsed().as_millis()
+                );
+                e.to_string()
+            })?;
+        eprintln!(
+            "[app-tab] open {label}: add_child done in {}ms",
+            start.elapsed().as_millis()
+        );
+        store_tab(&label, &webview);
+        mark_visible(&label, true);
+        // Ensure the freshly created webview is actually shown and focused. On
+        // macOS child webviews default to visible, but on Windows the WebView2
+        // controller can start out hidden — make it explicit everywhere.
+        let _ = webview.show();
+        let _ = webview.set_focus();
+        // The new webview was created against the current layout — keep every
+        // other open tab aligned as well.
+        let _ = layout_app_tabs(window);
+        Ok(label)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Close (destroy) an app tab's child webview.
