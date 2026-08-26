@@ -333,7 +333,13 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
         "max_tokens": max_tokens,
         "stream": stream,
     });
-    
+    // 显式请求流式 usage 统计：OpenAI 兼容端点在流式模式默认不返回 usage
+    // （火山 ark MiniMax-M3 等每个 chunk 的 usage 都是 null），不声明的话
+    // token 用量 / 费用统计永远为 0。
+    if stream {
+        openai_body["stream_options"] = serde_json::json!({ "include_usage": true });
+    }
+
     // Log outbound request details for cache debugging
     rjlogd!("[CACHE DEBUG] Outbound request: model={}, messages={}, tools={}, stream={}", 
         real_model, openai_messages.len(), openai_tools.len(), stream);

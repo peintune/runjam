@@ -154,6 +154,12 @@ function confirmDeleteAllArchived() {
 
 /** Open a quick-launch app as a browser-like tab inside RunJam. */
 function openApp(app: AppItem) {
+  // RunJam 自身：不打开浏览器式 tab，直接定位回主工作区
+  if (app.id === "runjam") {
+    appTabs.goHome().catch(console.error);
+    if (route.path !== "/") router.push("/");
+    return;
+  }
   appTabs.openApp(app).catch(console.error);
 }
 </script>

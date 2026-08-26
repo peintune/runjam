@@ -14,15 +14,35 @@ use tauri::AppHandle;
 /// Users cannot toggle these on/off — they are always present.
 const HIDDEN_SKILLS: &[&str] = &["runjam-defaults"];
 
-/// List all built-in skills available to RunJam, excluding hidden skills
-/// that are auto-injected (e.g. `runjam-defaults`). The frontend uses this
-/// to populate the skill picker grid.
+/// List all skills available to RunJam — built-ins shipped in app resources
+/// plus user-installed skills from `~/.runjam/skills/` — excluding hidden
+/// skills that are auto-injected (e.g. `runjam-defaults`). The frontend uses
+/// this to populate the skill picker grid.
 #[tauri::command]
 pub fn list_skills(app: AppHandle) -> Vec<Skill> {
-    skill::list_builtin_skills(&app)
+    skill::list_all_skills(&app)
         .into_iter()
         .filter(|s| !HIDDEN_SKILLS.contains(&s.name.as_str()))
         .collect()
+}
+
+/// List only the skills installed by the user (uploaded .zip packages).
+#[tauri::command]
+pub fn list_user_skills() -> Vec<Skill> {
+    skill::list_user_skills()
+}
+
+/// Install skills from a base64-encoded .zip package into `~/.runjam/skills/`.
+/// Returns the newly installed skills.
+#[tauri::command]
+pub fn install_skill_zip(zip_base64: String) -> Result<Vec<Skill>, String> {
+    skill::install_skill_zip(&zip_base64)
+}
+
+/// Remove a user-installed skill.
+#[tauri::command]
+pub fn remove_user_skill(skill_name: String) -> Result<(), String> {
+    skill::remove_user_skill(&skill_name)
 }
 
 /// List the skill names already deployed in a session's per-agent skills

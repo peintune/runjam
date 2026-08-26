@@ -973,8 +973,8 @@ const RETRY_DELAY_MS = 1000;
 // 达到该时长即视为失败（agent 没起来 / 连接异常）。60s 足够慢首 token 模型。
 const RETRY_TIMEOUT_MS = 60_000;
 // 活跃阶段超时：确认存活后（收到过任意事件），agent 消化工具结果、规划下一步、
-// 慢模型推理都可能长时间无事件，60s 会误杀正常调用 → 放宽到 10 分钟。
-const ACTIVE_TIMEOUT_MS = 600_000;
+// 慢模型推理都可能长时间无事件 → 放宽到 30 分钟。
+const ACTIVE_TIMEOUT_MS = 1_800_000;
 
 const sessionStates = new Map<string, SessionState>();
 
