@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" width="1200" height="820">
+  <style>
+    text { font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .title { font-size: 22px; font-weight: 700; fill: #111827; }
+    .subtitle { font-size: 13px; fill: #6b7280; }
+    .layer-title { font-size: 14px; font-weight: 700; fill: #111827; }
+    .node-title { font-size: 13px; font-weight: 600; fill: #111827; }
+    .node-sub { font-size: 11px; fill: #6b7280; }
+    .legend-text { font-size: 12px; fill: #374151; }
+    .label-text { font-size: 11px; fill: #374151; font-weight: 500; }
+    .icon-text { font-size: 16px; font-weight: 700; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#dc2626"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#16a34a"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#9333ea"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#ea580c"/>
+    </marker>
+    <filter id="ds" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="820" fill="#ffffff"/>
+  <text x="40" y="42" class="title">RunJam — App Framework Architecture</text>
+  <text x="40" y="62" class="subtitle">A local-first desktop manager for Claude Code, Codex CLI, and Gemini CLI · Tauri 2 + Vue 3 + Rust</text>
+  <!-- Layer 1: Vue 3 Frontend -->
+  <rect x="30" y="90" width="1140" height="100" rx="10" fill="#f0fdf4" stroke="#bbf7d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="48" y="112" class="layer-title">🖥️  Vue 3 Frontend (WebView)</text>
+  <rect x="100" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="162.5" y="166" text-anchor="middle" class="node-title">Chat UI</text>
+  <text x="162.5" y="180" text-anchor="middle" class="node-sub">Streaming messages</text>
+  <text x="162.5" y="192" text-anchor="middle" class="node-sub">Markdown · Mermaid</text>
+  <rect x="250" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="312.5" y="166" text-anchor="middle" class="node-title">Session</text>
+  <text x="312.5" y="180" text-anchor="middle" class="node-title">Sidebar</text>
+  <text x="312.5" y="194" text-anchor="middle" class="node-sub">Multi-project</text>
+  <text x="312.5" y="206" text-anchor="middle" class="node-sub">list</text>
+  <rect x="400" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="462.5" y="166" text-anchor="middle" class="node-title">Workspace</text>
+  <text x="462.5" y="180" text-anchor="middle" class="node-sub">File tree</text>
+  <text x="462.5" y="192" text-anchor="middle" class="node-sub">Monaco · xterm</text>
+  <rect x="550" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="612.5" y="166" text-anchor="middle" class="node-title">Session</text>
+  <text x="612.5" y="180" text-anchor="middle" class="node-title">Dashboard</text>
+  <text x="612.5" y="194" text-anchor="middle" class="node-sub">Kanban view</text>
+  <text x="612.5" y="206" text-anchor="middle" class="node-sub">status cards</text>
+  <rect x="700" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="762.5" y="166" text-anchor="middle" class="node-title">App</text>
+  <text x="762.5" y="180" text-anchor="middle" class="node-title">Manager</text>
+  <text x="762.5" y="194" text-anchor="middle" class="node-sub">Web app</text>
+  <text x="762.5" y="206" text-anchor="middle" class="node-sub">launcher</text>
+  <rect x="850" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="912.5" y="166" text-anchor="middle" class="node-title">Model Hub</text>
+  <text x="912.5" y="180" text-anchor="middle" class="node-title">Local Models</text>
+  <text x="912.5" y="194" text-anchor="middle" class="node-sub">Providers</text>
+  <text x="912.5" y="206" text-anchor="middle" class="node-sub">GGUF manager</text>
+  <rect x="1000" y="148" width="125" height="55" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="1062.5" y="166" text-anchor="middle" class="node-title">Settings</text>
+  <text x="1062.5" y="180" text-anchor="middle" class="node-title">i18n · Cost</text>
+  <text x="1062.5" y="194" text-anchor="middle" class="node-sub">Configs</text>
+  <text x="1062.5" y="206" text-anchor="middle" class="node-sub">EN/中文</text>
+  <!-- Layer 2: Tauri IPC -->
+  <rect x="30" y="215" width="1140" height="58" rx="10" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="48" y="237" class="layer-title">🔌  Tauri 2 IPC Bridge</text>
+  <rect x="200" y="247" width="200" height="18" rx="4" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+  <text x="300" y="259" text-anchor="middle" class="label-text">Tauri Events · (streaming output)</text>
+  <rect x="420" y="247" width="200" height="18" rx="4" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+  <text x="520" y="259" text-anchor="middle" class="label-text">Tauri Commands · (invoke handlers)</text>
+  <rect x="640" y="247" width="200" height="18" rx="4" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+  <text x="740" y="259" text-anchor="middle" class="label-text">Tauri State · (reactive stores)</text>
+  <rect x="860" y="247" width="200" height="18" rx="4" fill="#dbeafe" stroke="#93c5fd" stroke-width="1"/>
+  <text x="960" y="259" text-anchor="middle" class="label-text">Window / FS / Dialog · (opener, dialog plugins)</text>
+  <line x1="162" y1="186" x2="162" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="312" y1="186" x2="312" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="462" y1="186" x2="462" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="612" y1="186" x2="612" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="762" y1="186" x2="762" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="912" y1="186" x2="912" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="1062" y1="186" x2="1062" y2="215" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <!-- Layer 3: Rust Backend -->
+  <rect x="30" y="295" width="1140" height="115" rx="10" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+  <text x="48" y="317" class="layer-title">🦀  Rust Backend (src-tauri)</text>
+  <rect x="80" y="333" width="210" height="65" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="185.0" y="351" text-anchor="middle" class="node-title">Agent Manager</text>
+  <text x="185.0" y="381" text-anchor="middle" class="node-sub">detect · install</text>
+  <text x="185.0" y="393" text-anchor="middle" class="node-sub">spawn · pipe</text>
+  <rect x="305" y="333" width="210" height="65" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="410.0" y="351" text-anchor="middle" class="node-title">Session Manager</text>
+  <text x="410.0" y="381" text-anchor="middle" class="node-sub">multi-session</text>
+  <text x="410.0" y="393" text-anchor="middle" class="node-sub">PTY · persist</text>
+  <rect x="530" y="333" width="210" height="65" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="635.0" y="351" text-anchor="middle" class="node-title">API Proxy</text>
+  <text x="635.0" y="381" text-anchor="middle" class="node-sub">protocol adapter</text>
+  <text x="635.0" y="393" text-anchor="middle" class="node-sub">cache · keychain</text>
+  <rect x="755" y="333" width="210" height="65" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="860.0" y="351" text-anchor="middle" class="node-title">llama.cpp Manager</text>
+  <text x="860.0" y="381" text-anchor="middle" class="node-sub">GGUF download</text>
+  <text x="860.0" y="393" text-anchor="middle" class="node-sub">server control</text>
+  <rect x="980" y="333" width="210" height="65" rx="8" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="1085.0" y="351" text-anchor="middle" class="node-title">Dashboard / AppMgr</text>
+  <text x="1085.0" y="365" text-anchor="middle" class="node-title">Command Handlers</text>
+  <text x="1085.0" y="381" text-anchor="middle" class="node-sub">state · events</text>
+  <text x="1085.0" y="393" text-anchor="middle" class="node-sub">plugin loader</text>
+  <g>
+    <line x1="185" y1="265" x2="185" y2="295" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <line x1="405" y1="265" x2="405" y2="295" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <line x1="625" y1="265" x2="625" y2="295" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <line x1="845" y1="265" x2="845" y2="295" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <line x1="1065" y1="265" x2="1065" y2="295" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="3,2"/>
+  </g>
+  <!-- Layer 4: External Processes -->
+  <rect x="30" y="435" width="1140" height="80" rx="10" fill="#faf5ff" stroke="#e9d5ff" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="48" y="457" class="layer-title">📦  External CLI Processes (child processes · stdin/stdout)</text>
+  <rect x="130" y="467" width="240" height="40" rx="8" fill="#ede9fe" stroke="#9333ea" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="250.0" y="483" text-anchor="middle" class="node-title">Claude Code</text>
+  <text x="250.0" y="497" text-anchor="middle" class="node-sub">@anthropic-ai · claude</text>
+  <rect x="395" y="467" width="240" height="40" rx="8" fill="#ede9fe" stroke="#9333ea" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="515.0" y="483" text-anchor="middle" class="node-title">Codex CLI</text>
+  <text x="515.0" y="497" text-anchor="middle" class="node-sub">@openai/codex · (ACP)</text>
+  <rect x="660" y="467" width="240" height="40" rx="8" fill="#ede9fe" stroke="#9333ea" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="780.0" y="483" text-anchor="middle" class="node-title">Gemini CLI</text>
+  <text x="780.0" y="497" text-anchor="middle" class="node-sub">@google/ · gemini-cli</text>
+  <rect x="925" y="467" width="240" height="40" rx="8" fill="#ede9fe" stroke="#9333ea" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="1045.0" y="483" text-anchor="middle" class="node-title">llama-server</text>
+  <text x="1045.0" y="497" text-anchor="middle" class="node-sub">llama.cpp · GGUF runtime</text>
+  <line x1="185" y1="398" x2="250" y2="467" stroke="#9333ea" stroke-width="1.5"/>
+  <line x1="410" y1="398" x2="515" y2="467" stroke="#9333ea" stroke-width="1.5"/>
+  <line x1="635" y1="398" x2="780" y2="467" stroke="#9333ea" stroke-width="1.5"/>
+  <line x1="860" y1="398" x2="1045" y2="467" stroke="#9333ea" stroke-width="1.5"/>
+  <line x1="250" y1="507" x2="515" y2="398" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-green)"/>
+  <line x1="515" y1="507" x2="515" y2="398" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-green)"/>
+  <line x1="780" y1="507" x2="515" y2="398" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-green)"/>
+  <line x1="1045" y1="507" x2="740" y2="398" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-green)"/>
+  <!-- Layer 5: LLM APIs + Local -->
+  <rect x="30" y="540" width="1140" height="115" rx="10" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
+  <text x="48" y="562" class="layer-title">☁️  LLM Provider APIs  ·  💻  Local Models  (one proxy, all protocols)</text>
+  <rect x="80" y="578" width="165" height="62" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="162.5" y="596" text-anchor="middle" class="node-title">Anthropic</text>
+  <text x="162.5" y="626" text-anchor="middle" class="node-sub">claude-3.5 · opus</text>
+  <text x="162.5" y="638" text-anchor="middle" class="node-sub">haiku · sonnet</text>
+  <rect x="257" y="578" width="165" height="62" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="339.5" y="596" text-anchor="middle" class="node-title">OpenAI</text>
+  <text x="339.5" y="626" text-anchor="middle" class="node-sub">gpt-4o · o1</text>
+  <text x="339.5" y="638" text-anchor="middle" class="node-sub">gpt-4-turbo</text>
+  <rect x="434" y="578" width="165" height="62" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="516.5" y="596" text-anchor="middle" class="node-title">Google AI</text>
+  <text x="516.5" y="626" text-anchor="middle" class="node-sub">gemini-2.5</text>
+  <text x="516.5" y="638" text-anchor="middle" class="node-sub">flash · pro</text>
+  <rect x="611" y="578" width="165" height="62" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="693.5" y="596" text-anchor="middle" class="node-title">DeepSeek</text>
+  <text x="693.5" y="626" text-anchor="middle" class="node-sub">deepseek-chat</text>
+  <text x="693.5" y="638" text-anchor="middle" class="node-sub">deepseek-coder</text>
+  <rect x="788" y="578" width="165" height="62" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="870.5" y="596" text-anchor="middle" class="node-title">Qwen / Groq</text>
+  <text x="870.5" y="610" text-anchor="middle" class="node-title">Custom</text>
+  <text x="870.5" y="626" text-anchor="middle" class="node-sub">dashscope · groq</text>
+  <text x="870.5" y="638" text-anchor="middle" class="node-sub">self-hosted</text>
+  <rect x="965" y="578" width="165" height="62" rx="8" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5" filter="url(#ds)"/>
+  <text x="1047.5" y="596" text-anchor="middle" class="node-title">Local GGUF</text>
+  <text x="1047.5" y="626" text-anchor="middle" class="node-sub">Qwen · Llama</text>
+  <text x="1047.5" y="638" text-anchor="middle" class="node-sub">Mistral · offline</text>
+  <line x1="515" y1="398" x2="162.5" y2="578" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <line x1="515" y1="398" x2="339.5" y2="578" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <line x1="515" y1="398" x2="516.5" y2="578" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <line x1="515" y1="398" x2="693.5" y2="578" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <line x1="515" y1="398" x2="870.5" y2="578" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <line x1="740" y1="398" x2="1047.5" y2="578" stroke="#9333ea" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+  <!-- Layer 6: Local Storage -->
+  <rect x="30" y="680" width="1140" height="65" rx="10" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.5"/>
+  <text x="48" y="702" class="layer-title">🔒  Local-First Storage  ·  ~/.runjam/  (private, no telemetry, no cloud)</text>
+  <rect x="70" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="170" y="724" text-anchor="middle" class="label-text">SQLite · sessions · costs · config</text>
+  <rect x="280" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="380" y="724" text-anchor="middle" class="label-text">Response Cache · hash-keyed · auto reuse</text>
+  <rect x="490" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="590" y="724" text-anchor="middle" class="label-text">OS Keychain · API keys · encrypted</text>
+  <rect x="700" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="800" y="724" text-anchor="middle" class="label-text">GGUF Library · downloaded · models</text>
+  <rect x="910" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
+  <text x="1010" y="724" text-anchor="middle" class="label-text">App Pin Registry · web apps · icons</text>
+  <line x1="170" y1="398" x2="170" y2="710" stroke="#6b7280" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <line x1="380" y1="398" x2="380" y2="710" stroke="#6b7280" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <line x1="590" y1="398" x2="590" y2="710" stroke="#6b7280" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <line x1="800" y1="398" x2="800" y2="710" stroke="#6b7280" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <line x1="1010" y1="398" x2="1010" y2="710" stroke="#6b7280" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+  <!-- Legend -->
+  <g transform="translate(40,770)">
+    <text x="0" y="0" class="layer-title">Legend</text>
+    <line x1="0" y1="20" x2="30" y2="20" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+    <text x="38" y="24" class="legend-text">Tauri IPC (events / commands)</text>
+    <line x1="230" y1="20" x2="260" y2="20" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <text x="268" y="24" class="legend-text">stdout stream (agent → proxy)</text>
+    <line x1="460" y1="20" x2="490" y2="20" stroke="#9333ea" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+    <text x="498" y="24" class="legend-text">stdin pipe (Rust → agent)</text>
+    <line x1="690" y1="20" x2="720" y2="20" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+    <text x="728" y="24" class="legend-text">HTTP to cloud LLM API</text>
+    <line x1="920" y1="20" x2="950" y2="20" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="3,2"/>
+    <text x="958" y="24" class="legend-text">Local storage / config</text>
+  </g>
+</svg>

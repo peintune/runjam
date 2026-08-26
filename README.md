@@ -4,97 +4,265 @@
 
 # RunJam
 
-### One Desktop, All Your AI Agents
+### One Desktop. All Your AI Agents. Zero Lock-in.
 
-Manage and run multiple AI agents — Claude Code, Codex CLI, Gemini CLI, and more — in a single unified desktop app. Auto-detect, one-click install, real-time streaming, local-first, automatic protocol proxy, cache optimization, llama.cpp local models, built-in code editor, terminal, and more.
+A local-first desktop manager for **Claude Code, Codex CLI, and Gemini CLI** — install once, run any model on any agent, and manage every project in a single window. No ACP rewrites, no per-agent config, no cloud lock-in.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tauri](https://img.shields.io/badge/Tauri-2-orange.svg)](https://tauri.app)
+[![Tauri 2](https://img.shields.io/badge/Tauri-2-orange.svg)](https://tauri.app)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org)
 [![Rust](https://img.shields.io/badge/Rust-🦀-ce422b.svg)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
+[Features](#-why-runjam) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
 
 [中文文档](README.zh-CN.md)
 
 <br/>
 
-<img src="public/homepage-screenshot.jpg" alt="RunJam Homepage" width="100%" />
+<img src="docs/screenshots/en/01-hero.png" alt="RunJam main window — sessions, chat, and workspace in one view" width="90%" />
+<br/>
+<br/>
 
 </div>
 
----
+## 🏗️ Architecture
 
-## What is RunJam?
+> Understand RunJam at a glance: **Agents → RunJam (auto protocol conversion) → Models (cloud + local)**.
 
-RunJam is a **local-first, cross-platform desktop manager for AI agents**. It manages your AI CLI tools and LLM model configurations — think of it as a unified control panel for all your AI coding assistants.
+<p align="center">
+  <img src="docs/screenshots/en/00-architecture.svg" alt="RunJam's overall architecture: multiple agents connect to RunJam over stdin/stdout; RunJam handles protocol conversion, session management, and cache optimization, then adapts to cloud models (Anthropic/OpenAI/Google/...) and local models (llama.cpp/GGUF). The 8 pain points at the bottom map one-to-one to RunJam's built-in solutions." width="100%" />
+  <br/>
+  <sub>🇨🇳 <a href="docs/screenshots/zh/00-architecture.svg">中文版</a></sub>
+</p>
 
-Instead of juggling multiple terminal windows, manually configuring each agent, and losing track of which agent is working on which project, RunJam brings everything into one clean interface with a single model configuration for all projects and agents:
+**Reading order (left → right):**
 
-- **Auto-detect** agents already installed on your system
-- **One-click install** missing agents (Claude Code, Codex CLI, Gemini CLI)
-- **Unified chat interface** with real-time streaming, Markdown rendering, and syntax highlighting
-- **Multi-project, multi-agent** sessions running in parallel
-- **Built-in file explorer, terminal, and code editor** for each project workspace
-- **Unified model configuration** — configure once, sync to all agents with automatic protocol proxy
-- **Cache optimization** — automatic prompt cache detection saves tokens and reduces costs
-- **Run local models** — built-in llama.cpp support for free, offline inference with open-source models
-- **Local-first** — all data stays on your machine, no cloud, no telemetry
-
-> **Core philosophy:** RunJam doesn't require manually installing agent CLI tools — one-click auto-install. No need to manually configure the right model for each agent — RunJam's proxy auto-converts model protocols. No need for multiple editor windows for multiple projects — one interface manages all projects in parallel. **Zero modifications needed. Just install and go.**
+- **01 · AGENTS** — Any Agent CLI (Claude Code / Codex CLI / Gemini CLI / …) connects via `stdin/stdout` — **no agent modification required**
+- **02 · RUNJAM CORE** — Three core capabilities: 🔀 **Protocol conversion** (Anthropic ↔ OpenAI ↔ Gemini), 🗂️ **Session management** (parallel sessions, persistent state), ⚡ **Cache optimization** (prompt cache + response cache); plus four capabilities below: 🔌 Install / 💬 Chat / 📁 Workspace / 📊 Dashboard
+- **03 · MODELS** — Plug in any model: ☁️ Cloud (Anthropic, OpenAI, Google, DeepSeek, Qwen, custom API) and 💻 Local (llama.cpp + GGUF, OpenAI-compatible API)
+- **Bottom · Pain Points → Solutions** — Terminal chaos, protocol silos, token waste, scattered config, tool islands, vendor lock-in, cloud leakage, lost sessions — each mapped to a built-in fix
 
 ---
 
-## Features
+## 30 seconds to get RunJam
 
-<img src="public/core-features.gif" alt="RunJam Core Features Demo" width="100%" />
+- 🪟 **One window, every project.** Chat, file tree, Monaco editor, and terminal — all in one app, multiple sessions in parallel.
+- 🔌 **Any agent, any model.** Built-in protocol proxy converts Anthropic ↔ OpenAI ↔ Gemini on the fly. Claude Code can use GPT. Codex can use Claude. Configure once, sync everywhere.
+- 🛠️ **Zero agent modifications.** Unlike ACP-based tools, RunJam drives agents through their native CLI (stdin/stdout). Works today, with any agent.
+- 💸 **Cut your API bill.** Automatic prompt-cache detection, local response cache, and one-click local models (llama.cpp).
+- 🔒 **Local-first & private.** Conversations, configs, and API keys stay on your machine. No telemetry, no cloud sync.
 
-### Agent Management
-- **Auto-detection** — Scans your PATH for installed AI agents (Claude Code, Codex CLI, Gemini CLI)
-- **One-click install/uninstall** — Installs agents via `npm install -g` with real-time progress
-- **Agent configuration** — View and edit agent config files (`~/.claude/`, `~/.codex/`, `~/.gemini/`)
-- **Enable/disable** agents per session
+---
 
-### Unified Chat Interface
-- **Real-time streaming** — Watch agent thinking process, tool calls, and responses live
-- **Markdown rendering** — Full Markdown support with syntax highlighting and Mermaid diagrams
-- **Thinking process** — Agent reasoning steps are separated and auto-collapsed
-- **Tool call details** — Expand to see tool inputs and outputs
-- **Multi-agent switching** — Switch between agents as naturally as switching chat partners
+## 😩 The Pain — Why RunJam Exists
 
-### Project Workspace
-- **File explorer** — Browse project files with a VS Code-style tree
-- **Built-in code editor** — Monaco-powered editor with syntax highlighting
-- **Integrated terminal** — xterm.js terminal for each project
-- **Recent projects** — Quick access to recently used project directories
+If you use AI coding agents daily, you've felt at least one of these:
 
-### Model Management
-- **Unified model hub** — Configure models once, sync to all agents automatically
-- **Provider presets** — OpenAI, Anthropic, Google AI, Groq, DeepSeek, custom APIs, and local models
-- **Per-agent model assignment** — Assign different models to different agents
-- **Model aliases** — Map friendly names to model IDs
-- **API proxy** — Built-in local proxy for unified API key management
-- **Cache optimization** — Automatic prompt cache hit detection & local response cache to save tokens and reduce costs
-- **Local models** — Built-in llama.cpp integration to run open-source models (DeepSeek Coder, Qwen, Llama, etc.) 100% locally and free
+> **1. The terminal zoo.** Five terminal tabs, each running a different agent, each on a different project. You forget which is which, kill the wrong one, and lose a session.
 
-### Session Management
-- **Multi-session parallel** — Run multiple agent sessions simultaneously
-- **Session persistence** — Sessions survive app restarts
-- **Search** — Full-text search across all conversation history
-- **Archive** — Archive old sessions to keep the sidebar clean
-- **Cost tracking** — Token usage and cost estimation per session
+> **2. The model mismatch.** You want to test a prompt on Claude Sonnet *and* GPT-4o *and* a local Qwen. Today that means three different configs in three different files in `~/.claude/`, `~/.codex/`, `~/.gemini/`.
 
-### Local-First & Secure
-- **All data local** — Conversations, configs, and agent states stored in `~/.runjam/`
-- **No telemetry** — Zero data collection, no analytics, no phone-home
+> **3. The protocol wall.** Claude Code speaks Anthropic. Codex speaks OpenAI. Gemini CLI speaks Google. You can't easily mix-and-match — and adding a new model provider to one agent means digging into its internals.
+
+> **4. The token bleed.** You're paying for the same system prompt to be re-sent on every turn. You don't know which sessions cost the most. You can't tell what's cached vs. fresh.
+
+> **5. The setup grind.** New project, new agent, new API key, new config file, new PATH issue, new npm install, new version mismatch. Every. Single. Time.
+
+> **6. The single-agent lock-in.** Cursor wraps GPT-4. Copilot wraps OpenAI. If the model changes or the price doubles, you migrate your whole workflow.
+
+> **7. The cloud data worry.** Some "AI IDEs" send your code to vendor servers. Your proprietary code, your private configs, your prompts — out of your control.
+
+> **8. The session black hole.** Close your IDE → lose your chat history. Switch machines → start over. Want to find that one prompt from last week? Good luck.
+
+---
+
+## ✅ What RunJam Does About It
+
+| Pain | RunJam's answer |
+|------|-----------------|
+| Terminal zoo | **One unified window** with parallel sessions, sidebar, and per-session workspaces |
+| Model mismatch | **Unified Model Hub** — set a model once, assign per-agent with two clicks |
+| Protocol wall | **Built-in protocol proxy** that auto-translates between Anthropic, OpenAI, and Gemini on the fly |
+| Token bleed | **Prompt-cache auto-detection** + local response cache + per-session cost dashboard |
+| Setup grind | **Auto-detect + one-click install** for Claude Code, Codex CLI, Gemini CLI |
+| Single-agent lock-in | **Agent-agnostic by design** — switch agents without changing your workflow |
+| Cloud data worry | **Local-first.** All data in `~/.runjam/`, API keys in OS keychain, no telemetry |
+| Session black hole | **Persistent sessions**, full-text search, archive, multi-device friendly |
+
+---
+
+## 🆚 How RunJam Compares
+
+| | **RunJam** | Cursor / Copilot | AionUI | Bare CLI |
+|---|:---:|:---:|:---:|:---:|
+| Local-first, no cloud | ✅ | ❌ | ✅ | ✅ |
+| Works with any AI agent CLI | ✅ | ❌ | ⚠️ ACP only | ✅ |
+| Auto-converts model protocols | ✅ | ❌ | ⚠️ | ❌ |
+| One-click agent install | ✅ | ❌ | ❌ | ❌ |
+| Multi-project in parallel | ✅ | ❌ | ⚠️ | ❌ |
+| Built-in editor + terminal + file tree | ✅ | ✅ | ⚠️ | ❌ |
+| Local model (llama.cpp) | ✅ | ❌ | ❌ | ❌ |
+| App manager (configure your own web apps) | ✅ | ❌ | ❌ | ❌ |
+| Session dashboard / kanban | ✅ | ❌ | ❌ | ❌ |
+| Cost tracking dashboard | ✅ | ❌ | ❌ | ❌ |
+| Open source (MIT) | ✅ | ❌ | ✅ | ✅ |
+| Agent needs no modification | ✅ | n/a | ❌ | n/a |
+
+---
+
+## ✨ Features in Detail
+
+### 🛠️ Agent Management
+
+<img src="docs/screenshots/en/02-agent-manager.png" alt="it should show the Settings → Agents page with detected agents and Install buttons." width="80%" />
+
+- **Auto-detection** — Scans your `PATH` for `claude`, `codex`, `gemini` and shows what's installed
+- **One-click install / uninstall** — `npm install -g` with real-time progress
+- **Agent config viewer** — Edit `~/.claude/`, `~/.codex/`, `~/.gemini/` from the GUI
+- **Per-session enable / disable** — Use only the agents you want, per project
+
+### 💬 Unified Chat Interface
+
+<img src="docs/screenshots/en/03-chat-streaming.png" alt="show a live session mid-stream: thinking block, tool call, Markdown reply." width="80%" />
+
+<br/>
+<img src="docs/screenshots/en/03-ppt-demo.png" alt="show a live session mid-stream: thinking block, tool call, Markdown reply." width="80%" />
+
+- **Real-time streaming** — Watch thinking steps, tool calls, and final answers live
+- **Markdown + syntax highlighting + Mermaid diagrams** — Rendered cleanly inline
+- **Collapsible thinking blocks** — Agent reasoning is separate from the final answer
+- **Expandable tool call details** — Inspect inputs and outputs without leaving the chat
+- **Multi-agent switching** — Switch between Claude Code / Codex / Gemini as easily as switching chat partners
+
+### 📁 Project Workspace
+
+<img src="docs/screenshots/en/04-workspace.gif" alt="show file tree + Monaco editor + xterm.js terminal in one view" width="90%" />
+
+- **VS Code-style file explorer** — Tree view of your project
+- **Monaco-powered code editor** — The same engine VS Code uses, with full syntax highlighting
+- **Integrated xterm.js terminal** — One terminal per project, persistent
+- **Recent projects** — Quick access to the directories you actually use
+
+### 🧠 Unified Model Hub
+
+<img src="docs/screenshots/en/05-model-hub.png" alt=" show the Model Hub with providers, models, and per-agent assignment." width="80%" />
+
+- **Configure once, sync everywhere** — One model config, applied to all agents
+- **Provider presets** — Anthropic, OpenAI, Google AI, Groq, DeepSeek, Qwen, custom APIs
+- **Per-agent model assignment** — Give Claude Code a different model than Codex
+- **Model aliases** — Friendly names like `fast` and `smart` mapped to real model IDs
+- **Local API proxy** — Built-in proxy unifies API key management and protocol conversion
+
+### 💻 Local Model Launcher
+
+<img src="docs/screenshots/en/06-local-models.png" alt=" show the local model manager with a list of GGUF models and Start Server buttons" width="80%" />
+
+<br/>
+<br/>
+
+<img src="docs/screenshots/en/06-local-models-2.png" alt=" show the local model manager with a list of GGUF models and Start Server buttons" width="80%" />
+
+<br/>
+<br/>
+
+<img src="docs/screenshots/en/06-local-models-3.png" alt=" show the local model manager with a list of GGUF models and Start Server buttons" width="80%" />
+
+Run open-source LLMs on your own hardware. **Free. Offline. Private.**
+
+- **Built-in llama.cpp server management** — Start, stop, and monitor local inference
+- **Download GGUF models from the UI** — DeepSeek Coder, Qwen, Llama, Mistral, etc.
+- **One-click start** — Pick a model, click Start, and RunJam wires it into the same proxy as cloud providers
+- **Zero API cost** — No rate limits, no token bills, no data leaving your machine
+- **OpenAI-compatible API** — Local models speak the same protocol, so every agent can use them out of the box
+
+> **Why this matters:** Your proprietary code and prompts never touch a vendor server. You can run a 7B model on a laptop for routine tasks and route only the hard ones to a paid API — best of both worlds.
+
+### 🧩 App Manager 
+
+<img src="docs/screenshots/en/07-app-manager.png" alt="show the App Manager with a few user-configured web apps (name, URL, icon, Open button)" width="80%" />
+
+Pin your own web apps alongside RunJam. **One launcher, everything in reach.**
+
+- **Register any web app** — Internal dashboards, docs sites, Grafana, Sentry, your company wiki
+- **Custom name, URL, icon** — Make it look like a first-class part of RunJam
+- **One-click open** — No more digging through browser bookmarks
+- **Useful for AI context** — Pair an app (e.g. logs dashboard) with an agent session so the agent can read it via MCP or browser tools
+
+### 📊 Session Dashboard
+
+<img src="docs/screenshots/en/08-session-dashboard.png" alt="show a kanban-style board: each session as a card with status, agent, project, last activity, tokens." width="80%" />
+
+See every session at a glance. **No more "which agent is doing what" guesswork.**
+
+- **Kanban / list view** — Sessions as cards across columns: Idle / Running / Waiting / Error
+- **Per-session status** — Live indicator: is the agent working, waiting for input, or stalled?
+- **Project + agent badges** — At-a-glance context for every card
+- **Last activity timestamp** — Know which sessions need attention
+- **Drag to reorganize** — Your workflow, your layout
+- **Click to jump** — Open the session straight from the card
+
+> **Why this matters:** When you're running five agents on five repos, "where is everything" is the hardest question. The dashboard makes it obvious.
+
+### 💰 Cost Tracking
+
+<img src="docs/screenshots/en/09-cost-tracking.png" alt="show a cost chart over time, broken down by agent and model." width="80%" />
+
+- **Token usage per session** — Know exactly where the budget goes
+- **Cost estimation** — By model, by agent, by day
+- **Chart dashboard** — Trends at a glance
+- **Cache hit rate** — See how much the prompt cache is saving you
+
+### 🔀 Protocol Proxy (the secret sauce)
+
+
+<img src="docs/screenshots/en/00-architecture.svg" alt="show the proxy in action, ideally with a cross-protocol example like Claude Code → OpenAI." width="80%" />
+
+
+Most managers just hand the agent's request to a vendor API. RunJam does more:
+
+- **Anthropic ↔ OpenAI ↔ Gemini auto-translation** — Any agent can use any model
+- **Response cache** — Repeat queries answered locally, no token cost
+- **Prompt-cache detection** — Sees when an upstream API already cached your prompt, so you don't get billed twice
+- **Single API key entry point** — Keys stored in OS keychain, proxied to agents transparently
+
+> **This is what makes "configure once, sync everywhere" real.** Without the proxy, you'd need separate configs per agent per model. With it, one model definition drives all agents.
+
+### 🔒 Local-First & Secure
+
+- **All data local** — Conversations, configs, and agent states in `~/.runjam/`
+- **No telemetry, no analytics, no phone-home**
 - **No cloud dependency** — Works fully offline (agents need their own API access)
-- **System keychain** — API keys stored securely in OS keychain
-- **Local models** — Run models via llama.cpp with zero API costs
+- **System keychain** — API keys never touch plaintext config files
+- **Local models** — Run models via llama.cpp with zero API cost
+
+### 💼 Session Management
+
+- **Multi-session parallel** — Run as many agent sessions as your machine can handle
+- **Session persistence** — Sessions survive app restarts, even crashes
+- **Full-text search** — Find any past prompt, response, or tool call
+- **Archive** — Move old sessions out of the sidebar without losing them
+- **Cost tracking** — Built-in, per session
 
 ---
 
-## Supported Agents
+## 🧩 Typical Day with RunJam
+
+**Scenario 1 — Monday morning, three repos to touch**
+
+Open RunJam. The session dashboard shows three cards: `runjam-core` (Claude Code, running), `api-refactor` (Codex, idle, needs your input), `experiments` (Gemini, waiting for review). You click the Codex one, drop a new prompt, and move on. All three projects in one window. No terminal switching.
+
+**Scenario 2 — Mid-week, cost audit**
+
+Open the Cost Tracking dashboard. The chart shows you spent 60% of this week's tokens on the `api-refactor` session, mostly on GPT-4o. You open the model hub, swap it to a local Qwen-Coder for routine refactors, and reserve GPT-4o for the hard ones. Next week, the same chart is half the size.
+
+**Scenario 3 — Friday, sensitive task**
+
+Client sends you a contract clause with their proprietary pricing model. You don't want any of it touching a vendor API. You open the Local Model Launcher, click Start on the Qwen-72B you already downloaded, and run the analysis entirely on your machine. Data never leaves your laptop.
+
+---
+
+## 🤖 Supported Agents
 
 | Agent | CLI Command | Install | Provider |
 |-------|------------|---------|----------|
@@ -102,11 +270,11 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
 | **Codex CLI** | `codex` | `npm install -g @openai/codex` | OpenAI |
 | **Gemini CLI** | `gemini` | `npm install -g @google/gemini-cli` | Google |
 
-> More agents coming soon. RunJam's architecture makes it easy to add new agents — just add their detection and invocation logic.
+> More agents on the way. RunJam's agent layer is pluggable — adding a new agent is detection + invocation, no protocol work needed.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 
@@ -117,11 +285,11 @@ Instead of juggling multiple terminal windows, manually configuring each agent, 
   - **Windows**: Microsoft Visual Studio C++ Build Tools + WebView2
   - **Linux**: `webkit2gtk` and related packages
 
-### Option A: Download Pre-built Binary
+### Option A — Download Pre-built Binary
 
 > Pre-built binaries will be available on the [GitHub Releases](https://github.com/peintune/runjam/releases) page.
 
-### Option B: Build from Source
+### Option B — Build from Source
 
 ```bash
 # Clone the repository
@@ -159,20 +327,21 @@ npm run tauri build -- --target x86_64-pc-windows-msvc
 npm run tauri build -- --target x86_64-unknown-linux-gnu
 ```
 
-> **Cross-compilation note:** Building Windows binaries from macOS/Linux requires additional Rust toolchains.
-> It's recommended to build each platform's package on that platform directly (e.g., use CI runners).
+> **Cross-compilation note:** Building Windows binaries from macOS/Linux requires additional Rust toolchains. It's recommended to build each platform's package on that platform directly (e.g., use CI runners).
 
 ### First Run
 
 1. Open RunJam — it auto-detects installed AI agents
 2. Go to **Settings → Agents** to install missing agents (one-click)
 3. Go to **Settings → Models** to configure your API keys and models
-4. Click **New Session**, pick an agent, optionally select a project folder
-5. Start chatting!
+4. *(Optional)* Go to **Local Models** to download and start a GGUF model
+5. *(Optional)* Go to **App Manager** to pin your most-used web apps
+6. Click **New Session**, pick an agent, optionally select a project folder
+7. Start chatting!
 
 ---
 
-## Architecture
+## 🏗️ System Design
 
 ### Core Data Flow
 
@@ -182,6 +351,7 @@ flowchart LR
         UI[Chat UI]
         Settings[Settings Panel]
         WS[Workspace Panel]
+        Dash[Session Dashboard]
     end
 
     subgraph Agents["🤖 AI Agents"]
@@ -213,6 +383,7 @@ flowchart LR
     UI -->|"Tauri IPC"| Agents
     Settings -->|"Tauri IPC"| Agents
     WS -->|"Tauri IPC"| Agents
+    Dash -->|"Tauri IPC"| Agents
     Agents -->|"stdin/stdout"| Proxy
     Proxy -->|"Auto Protocol\nConversion"| Router
     Router --> Cache
@@ -245,6 +416,9 @@ flowchart TB
             Explorer[File Explorer]
             Editor[Monaco Editor]
             Terminal[xterm.js Terminal]
+            Dash2[Session Dashboard]
+            AppMgr[App Manager]
+            LocalMgr[Local Model Manager]
         end
 
         subgraph RustBackend["Rust Backend"]
@@ -269,6 +443,9 @@ flowchart TB
     Explorer --> Cmds
     Editor --> Cmds
     Terminal --> Cmds
+    Dash2 --> Cmds
+    AppMgr --> Cmds
+    LocalMgr --> Cmds
 
     Cmds --> AgentMgr
     Cmds --> SessionMgr
@@ -310,6 +487,7 @@ flowchart TB
 | **Database** | SQLite (rusqlite) | Local-first, zero-config |
 | **Code Editor** | Monaco Editor | VS Code's editor engine |
 | **Terminal** | xterm.js | Industry standard web terminal |
+| **Local Inference** | llama.cpp | Best-in-class CPU/GPU local LLM runtime |
 | **Process Comm** | stdin/stdout pipes | No agent modification needed |
 
 ### Project Structure
@@ -321,24 +499,29 @@ runjam/
 │       ├── commands/           # Tauri command handlers (IPC bridge)
 │       ├── agent/              # Agent detection & installation
 │       ├── session/            # Session management & process control
+│       ├── dashboard/          # Session dashboard state
+│       ├── apps/               # App manager
+│       ├── local_model/        # llama.cpp / GGUF management
 │       ├── models/             # Data structures
 │       ├── db/                 # SQLite layer & migrations
-│       ├── proxy.rs            # Local API proxy
+│       ├── proxy.rs            # Local API proxy + protocol adapter
 │       └── ...
 ├── src/                        # Vue 3 frontend
 │   ├── components/             # UI components
-│   ├── views/                  # Page views
+│   ├── views/                  # Page views (Chat, Dashboard, AppMgr, ...)
 │   ├── stores/                 # Pinia state management
 │   ├── api/                    # Tauri invoke wrappers
 │   ├── composables/            # Vue composables
 │   └── i18n/                   # Internationalization (EN/ZH)
+├── docs/
+│   └── screenshots/            # README screenshots (you fill these in)
 ├── landing.html                # Landing page (separate build)
 └── package.json
 ```
 
 ---
 
-## How It Works
+## ⚙️ How It Works
 
 RunJam manages AI agent CLI tools as child processes:
 
@@ -346,14 +529,14 @@ RunJam manages AI agent CLI tools as child processes:
 2. **Invocation** — Spawns agent CLI as a child process with `stdin` piped
 3. **Streaming** — Reads `stdout` line-by-line, streams to frontend via Tauri events
 4. **Protocol Proxy** — RunJam's built-in proxy intercepts agent API calls and automatically converts between different LLM protocols (Anthropic ↔ OpenAI ↔ Gemini), so any agent can use any model
-5. **Parsing** — Parses agent output (thinking steps, tool calls, final responses)
-6. **Rendering** — Vue frontend renders Markdown, code blocks, and Mermaid diagrams
+5. **Local inference** — When a model points to a local llama.cpp server, the proxy talks to it via OpenAI-compatible API
+6. **Parsing & rendering** — Parses agent output (thinking steps, tool calls, final responses); Vue renders Markdown, code blocks, and Mermaid diagrams
 
 **No network protocols required. No agent modifications needed.** Just native CLI processes with automatic protocol adaptation.
 
 ---
 
-## Roadmap
+## 🗺️ Roadmap
 
 - [x] Agent auto-detection & one-click install
 - [x] Unified chat interface with streaming
@@ -367,34 +550,48 @@ RunJam manages AI agent CLI tools as child processes:
 - [x] llama.cpp local model support (download, run, manage GGUF models)
 - [x] PTY session mode (persistent multi-turn context)
 - [x] Cost tracking dashboard with charts
+- [x] **App Manager — pin your own web apps inside RunJam**
+- [x] **Session Dashboard — kanban view of every session's status**
+- [x] **Local Model Launcher — one-click start a local model server**
 - [ ] Git worktree integration
 - [ ] Agent auto-update detection
-- [ ] Plugin/skill system
+- [x] Plugin / skill system
 - [ ] Linux builds
+- [ ] Mobile companion (read-only session view)
 
 ---
 
-## FAQ
+## ❓ FAQ
 
 ### How is RunJam different from Cursor / GitHub Copilot?
 
-Cursor and Copilot are AI-powered code editors. RunJam is **not** an AI or an editor — it's a **manager** that makes your existing AI CLI agents more productive. Think of it as a unified dashboard for Claude Code, Codex CLI, and Gemini CLI.
+Cursor and Copilot are AI-powered code editors. They wrap a specific model, ship your code to a vendor cloud, and lock you into one workflow. RunJam is **not** an AI and not an editor — it's a **manager** that makes your existing AI CLI agents (Claude Code, Codex CLI, Gemini CLI) more productive. You keep your agents, your models, your local data, and your flexibility.
 
 ### How is RunJam different from AionUI?
 
-AionUI requires agents to implement the ACP (Agent Client Protocol). RunJam takes a different approach: it manages agents as native CLI processes via stdin/stdout. **Zero agent modifications needed.** This means RunJam works with any CLI agent out of the box.
+AionUI requires every agent to implement the ACP (Agent Client Protocol). That's a real commitment from each agent's maintainer — and many agents don't speak ACP. RunJam takes a different approach: it drives agents through their native CLI over stdin/stdout. **Zero agent modifications needed.** That means RunJam works with any CLI agent today, and new agents work on day one.
+
+### Do I have to install the agent CLIs myself?
+
+No. RunJam auto-detects what's on your `PATH` and offers **one-click install** for Claude Code, Codex CLI, and Gemini CLI via `npm install -g`. Real-time progress shown in the UI.
+
+### Can I run a model on one agent that the agent doesn't natively support?
+
+Yes. That's exactly what the protocol proxy is for. Example: Claude Code (Anthropic protocol) talking to GPT-4o (OpenAI protocol). The proxy translates on the fly. You don't touch the agent or the model.
 
 ### Is my data sent to the cloud?
 
-**No.** RunJam is local-first. All agent processes run on your machine. All data (conversations, configs, agent states) is stored locally in `~/.runjam/`. No telemetry, no analytics, no cloud sync.
+**No.** RunJam is local-first. All agent processes run on your machine. All data (conversations, configs, agent states) is stored locally in `~/.runjam/`. No telemetry, no analytics, no cloud sync. API keys live in the OS keychain, not in config files.
+
+The only thing that touches the cloud is the LLM API call itself — and you choose the provider. Run a local llama.cpp model and nothing leaves your laptop at all.
 
 ### Is RunJam free?
 
-**Yes.** RunJam is fully open-source under the MIT license. Free to use, modify, and distribute.
+**Yes.** RunJam is fully open-source under the MIT license. Free to use, modify, and distribute. Local models are free forever (you bring the hardware). Cloud model usage is billed by the provider as usual.
 
 ### Can multiple agents run simultaneously?
 
-**Yes.** You can create separate sessions for different projects, each using a different agent. They run independently in parallel without interfering with each other.
+**Yes.** You can create separate sessions for different projects, each using a different agent. They run independently in parallel without interfering. The Session Dashboard gives you a kanban view of all of them at once.
 
 ### What are the system requirements?
 
@@ -410,23 +607,28 @@ xattr -cr /Applications/RunJam.app
 
 > We are working on Apple code signing and notarization to eliminate this step in the future.
 
+### Can I add my own agent that's not in the supported list?
+
+Yes. RunJam's agent layer is small and explicit — adding a new agent is a matter of detection + invocation. See `CONTRIBUTING.md` for the agent integration guide. PRs welcome.
+
 ---
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style guidelines, and PR workflow.
 
 ### Areas We Need Help With
 
 - Linux build testing & packaging
-- New agent support (Aider, Continue, etc.)
+- New agent support (Aider, Continue, Goose, …)
 - UI/UX improvements
 - Documentation & translations
 - Bug reports & testing
+- Local model benchmarks & presets
 
 ---
 
-## License
+## 📄 License
 
 [MIT](LICENSE) © RunJam Contributors
 

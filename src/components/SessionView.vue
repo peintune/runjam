@@ -964,6 +964,10 @@ interface SessionState {
     lastText: string;
     timer: ReturnType<typeof setTimeout> | null;
     deadlineTimer: ReturnType<typeof setTimeout> | null;
+    /** Timestamp of the original send (kept across auto-retries). Drives the
+     *  2h total-session cap: retries extend the activity window but never the
+     *  overall deadline. */
+    startAt: number;
   } | null;
   /** True while a tool call is in flight (tool_call received, tool_result not
    *  yet). Bash/long commands emit no ACP events while running — that's normal,
@@ -984,9 +988,17 @@ const RETRY_DELAY_MS = 1000;
 // 初始阶段超时：发送后 agent 还没发出任何事件（start/thinking/tool_call...）
 // 达到该时长即视为失败（agent 没起来 / 连接异常）。60s 足够慢首 token 模型。
 const RETRY_TIMEOUT_MS = 60_000;
-// 活跃阶段超时：确认存活后（收到过任意事件），agent 消化工具结果、规划下一步、
-// 慢模型推理都可能长时间无事件 → 放宽到 30 分钟。
-const ACTIVE_TIMEOUT_MS = 1_800_000;
+// LLM 推理阶段超时：agent 已存活（收到过任意事件）且没有工具在途——此刻它在
+// 调用 LLM API / 消化工具结果 / 规划下一步。单个 LLM API 调用的超时应短，
+// 5 分钟无任何事件说明上游大概率卡死（慢模型通常几分钟内必出首 token）。
+// 若本地慢模型仍偶发误杀，可调大此值。
+const LLM_TIMEOUT_MS = 300_000;
+// 工具执行阶段超时：tool_call 已发出、等待 tool_result。Bash/长命令正常静默
+// 且可能跑很久，给足长超时（30 分钟），但不无限期等待。
+const TOOL_TIMEOUT_MS = 1_800_000;
+// 整个回答过程（一次发送，含全部自动重试）的总时长硬上限：2 小时。任何阶段
+// 都不得超过这个上限，到点即最终失败，不再自动重试。
+const SESSION_TOTAL_TIMEOUT_MS = 7_200_000;
 
 const sessionStates = new Map<string, SessionState>();
 
@@ -1107,25 +1119,37 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
   if (!retry) return;
   if (retry.deadlineTimer) clearTimeout(retry.deadlineTimer);
   // 阶段化超时：
-  // - 工具在途（hasActiveTool）：完全不超时，无限续期直到 tool_result。
-  // - 已确认存活（hasStarted，收到过任意事件）：用宽松的 ACTIVE_TIMEOUT_MS，
-  //   因为 agent 消化工具结果、规划下一步、慢模型推理都可能长时间无事件——
-  //   这正是之前"工具执行成功了仍报 60s 超时"的误杀场景。
-  // - 初始阶段（未收到任何事件）：只要 agent 进程还活着（running/idle）就用
-  //   同样的 ACTIVE_TIMEOUT_MS——慢模型首 token、上游 429 排队、长上下文重放
-  //   都可能在首个事件之前就超过 60s，固定 60s 会再次误杀。只有进程也确认
-  //   不在（stopped/error）时才用 60s 快速失败，兜底"agent 没起来/连接失败"。
+  // - 工具在途（hasActiveTool）：工具执行允许长时间静默（长 Bash 命令），用
+  //   宽松的 TOOL_TIMEOUT_MS；但不无限期——到点仍未返回即失败。
+  // - 已确认存活（hasStarted，收到过任意事件）：用 LLM_TIMEOUT_MS。此刻 agent
+  //   在调用 LLM API / 规划下一步，单个 API 调用不应静默超过几分钟。
+  // - 初始阶段（未收到任何事件）：只要 agent 进程还活着（running/idle）也用
+  //   LLM_TIMEOUT_MS——慢模型首 token、上游 429 排队、长上下文重放都可能在首
+  //   个事件之前超时。只有进程也确认不在（stopped/error）时才用 RETRY_TIMEOUT_MS
+  //   快速失败，兜底"agent 没起来/连接失败"。
   const sess = store.sessions.find((s) => s.id === sessionId);
   const agentAlive =
     !!sess && (sess.status === "running" || sess.status === "idle");
-  const timeout =
-    state.hasStarted || agentAlive ? ACTIVE_TIMEOUT_MS : RETRY_TIMEOUT_MS;
+  let timeout = state.hasActiveTool
+    ? TOOL_TIMEOUT_MS
+    : state.hasStarted || agentAlive
+      ? LLM_TIMEOUT_MS
+      : RETRY_TIMEOUT_MS;
+  // 总时长硬上限：一次发送从开始到结束（含自动重试）不得超过 2 小时。到点即
+  // 最终失败（isRealError=true → 不再自动重试），避免长任务无限续期。
+  const elapsed = Date.now() - retry.startAt;
+  if (elapsed >= SESSION_TOTAL_TIMEOUT_MS) {
+    handleSendFailure(
+      sessionId,
+      state,
+      `Response exceeded the total ${SESSION_TOTAL_TIMEOUT_MS / 3_600_000}h limit`,
+      true,
+    );
+    return;
+  }
+  timeout = Math.min(timeout, SESSION_TOTAL_TIMEOUT_MS - elapsed);
   retry.deadlineTimer = setTimeout(() => {
     retry.deadlineTimer = null;
-    if (state.hasActiveTool) {
-      startRetryDeadline(sessionId, state);
-      return;
-    }
     handleSendFailure(sessionId, state, `Timed out waiting for a response (${timeout / 1000}s without activity)`);
   }, timeout);
 }
@@ -1516,6 +1540,9 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
+      // 进入工具执行阶段：按工具的长超时重算 deadline。上面的通用分支在
+      // hasActiveTool 置位前执行，用的还是 LLM 短超时，必须在这里切换。
+      if (state.retry) resetRetryDeadline(sessionId, state);
       break;
     }
     case "tool_result": {
@@ -1564,6 +1591,9 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
         syncMessagesToView(state);
         msgStore.setMessages(sessionId, messages.value);
       }
+      // 工具已返回：解除长超时豁免，按 LLM 短超时重算 deadline（agent 接下来
+      // 要消化工具结果并调用下一次 LLM API）。
+      if (state.retry) resetRetryDeadline(sessionId, state);
       break;
     }
     case "permission_request": {
@@ -2143,7 +2173,7 @@ async function handleSend() {
     // 新一轮发送：清除上一轮的挂起工具标记（重试/新消息都会重新派发 tool_call）
     st.hasActiveTool = false;
     st.hasStarted = false;
-    st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null };
+    st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null, startAt: Date.now() };
     startRetryDeadline(sessionId, st);
     sendInput(sessionId, sendText, history).catch(err=>{
       const state = getSessionState(sessionId);
