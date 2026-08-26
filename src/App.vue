@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
+import { listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "./stores/useAgentStore";
 import { useWorkspaceStore } from "./stores/useWorkspaceStore";
+import { useAppTabsStore } from "./stores/useAppTabsStore";
+import { faviconFor, type AppItem } from "./stores/useAppsStore";
 import { getAgentStatuses } from "./api/agents";
 import { getModels } from "./api/models";
 import {
@@ -21,6 +25,8 @@ import WelcomeSetup from "./components/WelcomeSetup.vue";
 
 const agentStore = useAgentStore();
 const workspaceStore = useWorkspaceStore();
+const appTabs = useAppTabsStore();
+const router = useRouter();
 const { toasts, removeToast } = useToast();
 
 // First-launch setup (theme + language).
@@ -52,6 +58,30 @@ onMounted(async () => {
   // Kick off update check + announcement fetch in the background.
   checkUpdates();
   loadAnnouncements();
+
+  // A website inside an app tab asked for a new window/tab (`window.open`,
+  // `target=_blank`) — the Rust side forwards the URL here so we can open it
+  // as a fresh RunJam tab, browser-style.
+  listen<string>("app-tab-new-window", (event) => {
+    const raw = event.payload;
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return;
+    }
+    const item: AppItem = {
+      id: "",
+      name: parsed.hostname.replace(/^www\./, ""),
+      url: parsed.toString(),
+      icon: faviconFor(parsed.toString()),
+      builtin: false,
+    };
+    appTabs.openApp(item).catch(console.error);
+    if (router.currentRoute.value.path !== "/") {
+      router.push("/");
+    }
+  }).catch(() => {});
 });
 
 async function decideConsent(enabled: boolean) {

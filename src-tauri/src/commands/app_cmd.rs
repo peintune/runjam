@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
-use tauri::{LogicalPosition, LogicalSize, WebviewBuilder, WebviewUrl};
+use tauri::webview::NewWindowResponse;
+use tauri::{Emitter, LogicalPosition, LogicalSize, WebviewBuilder, WebviewUrl};
 #[cfg(target_os = "windows")]
 use crate::util::hidden_command;
 
@@ -176,13 +177,34 @@ pub async fn open_app_tab(
         // creation already succeeded at startup — tabs then share that
         // environment's storage.
         #[cfg(target_os = "windows")]
-        let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed));
+        let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed.clone()));
         #[cfg(not(target_os = "windows"))]
         let builder = {
             let data_dir = get_app_data_dir().join("app-tabs").join(&label);
             std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-            WebviewBuilder::new(&label, WebviewUrl::External(parsed)).data_directory(data_dir)
+            WebviewBuilder::new(&label, WebviewUrl::External(parsed.clone()))
+                .data_directory(data_dir)
         };
+        // Websites often open links in a new window/tab (`target=_blank`,
+        // `window.open`). A child webview has no sibling window to host it, and
+        // without a handler the request is silently swallowed (WebView2 marks
+        // `NewWindowRequested` handled, WKWebView returns nil from the create
+        // delegate), so the click appears to do nothing. Notify the RunJam UI
+        // instead so it opens a fresh app tab for the URL — a real browser
+        // opens a new tab in this situation.
+        let window_for_new = window.clone();
+        let builder = builder.on_new_window(move |url, _features| {
+            if matches!(url.scheme(), "http" | "https") {
+                let _ = window_for_new.emit_to("main", "app-tab-new-window", url.to_string());
+            }
+            NewWindowResponse::Deny
+        });
+        // NOTE: tauri injects `__TAURI_INTERNALS__` via `Object.defineProperty`
+        // (configurable:false) BEFORE user initialization scripts run, so it
+        // cannot be hidden from remote pages. Sites that detect it call
+        // `shell.open`; the `app-tabs` capability below grants ONLY that
+        // command (http/https/tel/mailto scope) to `app-tab-*` webviews so it
+        // opens the link in the system browser instead of throwing.
         eprintln!(
             "[app-tab] open {label}: building child webview (t={}ms)",
             start.elapsed().as_millis()

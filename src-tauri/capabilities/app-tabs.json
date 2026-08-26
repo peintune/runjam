@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "app-tabs",
+  "description": "Minimal capabilities for external web content loaded inside app tabs: only allow opening http(s)/tel/mailto links via the system browser (shell.open). target=_blank/window.open links are handled by the on_new_window handler and open as new RunJam tabs instead.",
+  "local": false,
+  "webviews": ["app-tab-*"],
+  "remote": {
+    "urls": ["https://*", "http://*"]
+  },
+  "permissions": ["shell:default"]
+}
