@@ -22,7 +22,7 @@ import { submitFeedback } from "../api/telemetry";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 import { useContextSize } from "../composables/useContextSize";
-import { t, type TranslationKey } from "../i18n";
+import { t, currentLocale, type TranslationKey } from "../i18n";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
@@ -509,6 +509,18 @@ watch(inputText, (newVal) => {
     startTyping();
   }
 });
+
+// 语言切换时，若输入框为空（新建会话页），用新语言重新播放占位符。
+// 打字机播完后 typingPlaceholder 会固定为旧语言文本，仅靠上面的
+// inputText watch 无法刷新，必须监听 locale 变化主动重启。
+watch(
+  () => currentLocale(),
+  () => {
+    if (!inputText.value) {
+      startTyping();
+    }
+  }
+);
 
 // Keep the sidebar's context-size display in sync with the active session's
 // input draft — the draft counts toward the context total in both places.

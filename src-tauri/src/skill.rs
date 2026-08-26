@@ -228,7 +228,15 @@ pub fn deploy_skills_to_session(
         if dest.exists() {
             std::fs::remove_dir_all(&dest).ok();
         }
-        if let Err(e) = copy_dir_recursive(&skill.source_dir, &dest) {
+        // runjam-defaults carries per-session placeholders (the absolute
+        // working directory) that must be rendered for this session; all
+        // other skills are copied verbatim.
+        let copied = if skill.name == RUNJAM_DEFAULTS_SKILL {
+            deploy_skill_rendered(&skill.source_dir, &dest, cwd)
+        } else {
+            copy_dir_recursive(&skill.source_dir, &dest)
+        };
+        if let Err(e) = copied {
             rjlog!(
                 "[SKILL] Failed to copy {} → {}: {}",
                 skill.name,
@@ -306,8 +314,12 @@ pub fn deploy_single_skill(
     if dest.exists() {
         std::fs::remove_dir_all(&dest).ok();
     }
-    copy_dir_recursive(&skill.source_dir, &dest)
-        .map_err(|e| format!("Failed to copy skill '{}': {}", skill_name, e))?;
+    let copied = if skill_name == RUNJAM_DEFAULTS_SKILL {
+        deploy_skill_rendered(&skill.source_dir, &dest, cwd)
+    } else {
+        copy_dir_recursive(&skill.source_dir, &dest)
+    };
+    copied.map_err(|e| format!("Failed to copy skill '{}': {}", skill_name, e))?;
 
     rjlog!(
         "[SKILL] Deployed single skill '{}' to {}",
@@ -479,6 +491,56 @@ pub fn remove_user_skill(skill_name: &str) -> Result<(), String> {
 /// Allow only plain folder names (no separators / traversal) for skill names.
 fn is_safe_skill_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
+}
+
+/// Name of the auto-injected default constraints skill. Its SKILL.md carries
+/// per-session placeholders rendered at deploy time (see `render_skill_md`).
+const RUNJAM_DEFAULTS_SKILL: &str = "runjam-defaults";
+
+/// Placeholder in runjam-defaults/SKILL.md replaced with the session's
+/// absolute working directory at deploy time. Gives the agent an explicit,
+/// authoritative answer to "where am I" even if the ACP layer's cwd handling
+/// differs between agent implementations.
+const SESSION_CWD_PLACEHOLDER: &str = "{{SESSION_CWD}}";
+
+/// Best-effort absolute path: pass through absolute inputs, otherwise resolve
+/// against the current process directory.
+fn absolute_path(cwd: &str) -> String {
+    let p = Path::new(cwd);
+    if p.is_absolute() {
+        return p.to_string_lossy().to_string();
+    }
+    if let Ok(cd) = std::env::current_dir() {
+        return cd.join(p).to_string_lossy().to_string();
+    }
+    cwd.to_string()
+}
+
+/// Render the session working directory into a skill file's content.
+fn render_skill_md(content: &str, cwd: &str) -> String {
+    content.replace(SESSION_CWD_PLACEHOLDER, &absolute_path(cwd))
+}
+
+/// Deploy a skill directory, rendering `{{SESSION_CWD}}` inside SKILL.md.
+/// All other files are copied verbatim.
+fn deploy_skill_rendered(src: &Path, dst: &Path, cwd: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if src_path.is_file() {
+            if src_path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+                let content = std::fs::read_to_string(&src_path)?;
+                std::fs::write(&dst_path, render_skill_md(&content, cwd))?;
+            } else {
+                std::fs::copy(&src_path, &dst_path)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Recursively copy a directory tree (files + subdirs).

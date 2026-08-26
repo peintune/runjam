@@ -1,6 +1,6 @@
 ---
 name: runjam-defaults
-description: Default constraints for every RunJam session. Defines output path conventions, dependency checking rules, fallback strategies, and file management discipline. This skill is auto-injected into every session — do not remove.
+description: Default constraints for every RunJam session. Defines output path conventions, dependency checking rules, fallback strategies, and file management discipline. This skill is auto-injected into every session — do not remove. Current session working directory: {{SESSION_CWD}}
 ---
 
 # RunJam Default Constraints
@@ -19,6 +19,12 @@ Treat every rule below as a **HARD RULE** — violating any one means the task i
 |---|---|
 | **Session working directory** | The directory where the Agent process runs. This is the session root — e.g. `~/.runjam/session/<id>/` or the user-selected project folder. All `./` paths resolve here. |
 | **Skill directory** | Where the SKILL.md lives — e.g. `.claude/skills/ppt-generation/`. **NEVER create `outputs/` or `workspace/` inside a skill directory.** The skill directory is read-only resources. |
+
+### This session's working directory (absolute path)
+
+**`{{SESSION_CWD}}`**
+
+The Agent process was started with this directory as its cwd. Every relative path below resolves relative to it. **If `pwd` disagrees with the absolute path above, trust the absolute path above and `cd` to it first** — it is the authoritative session root for this session.
 
 ### The rule
 
