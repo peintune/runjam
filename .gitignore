@@ -53,6 +53,8 @@ runjam.db
 .env.local
 .env.*.local
 
+runjam_web
+
 # AI tool configs (local only)
 .claude/
 .reasonix/
