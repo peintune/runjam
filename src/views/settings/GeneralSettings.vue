@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { FolderOpen, Sun, Moon } from "lucide-vue-next";
+import { getVersion } from "@tauri-apps/api/app";
 import { getDataDir, openDataDir } from "@/api/app";
 import { currentLocale, setLocale, type Locale } from "@/i18n";
 import { useThemeStore } from "@/stores/useThemeStore";
@@ -25,8 +26,15 @@ const telemetryEnabled = ref(true);
 const proxyUrl = ref("");
 const proxyState = ref<"idle" | "saving" | "saved" | "testing" | "ok" | "error">("idle");
 const proxyError = ref("");
+const appVersion = ref("v0.1.0");
 
 onMounted(async () => {
+  try {
+    const v = await getVersion();
+    appVersion.value = v.startsWith("v") ? v : `v${v}`;
+  } catch {
+    // keep default
+  }
   try {
     dataDir.value = await getDataDir();
   } catch {
@@ -238,7 +246,7 @@ async function handleTestProxy() {
             <p class="text-[14px] font-medium text-gray-900">{{ $t("settings.general.version") }}</p>
             <p class="text-[12px] text-gray-400 mt-0.5">{{ $t("settings.general.versionDesc") }}</p>
           </div>
-          <span class="text-[13px] text-gray-400">v0.1.0</span>
+          <span class="text-[13px] text-gray-400">{{ appVersion }}</span>
         </div>
       </div>
     </div>

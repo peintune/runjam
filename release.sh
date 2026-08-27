@@ -96,6 +96,42 @@ build_download_urls() {
   echo "{\"macos_aarch64\":\"${base}/RunJam_${ver}_aarch64.dmg\",\"macos_x86_64\":\"${base}/RunJam_${ver}_x64.dmg\",\"windows_x64\":\"${base}/RunJam_${ver}_x64-setup.exe\"}"
 }
 
+# ── 同步版本号到 Cargo.toml / tauri.conf.json / package.json ──
+# Tauri 2 编译产物的权威版本来自 src-tauri/Cargo.toml 的 [package] version
+# （决定 dmg/exe 文件名、应用内 getVersion()），tauri.conf.json 的 version
+# 必须与之完全一致（不一致会编译报错）；package.json 的 version 用于 CI 产物
+# 命名（RunJam_${VERSION}_*.dmg）与 tauri-action。三者必须与 tag 对齐。
+bump_version() {
+  local ver="${1#v}"
+  node -e '
+    const fs = require("fs");
+    const ver = process.argv[1];
+
+    // 1) Cargo.toml：只改 [package] 段的 version，不影响依赖的 version 字段
+    let cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+    const lines = cargo.split("\n");
+    let inPkg = false;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t.startsWith("[")) inPkg = t.startsWith("[package]") || t.startsWith("[package.");
+      else if (inPkg && /^version\s*=/.test(t)) {
+        lines[i] = t.replace(/"[^"]*"/, "\"" + ver + "\"");
+        break;
+      }
+    }
+    fs.writeFileSync("src-tauri/Cargo.toml", lines.join("\n"));
+
+    // 2) tauri.conf.json（与 Cargo.toml 保持一致，Tauri 2 校验二者相同）
+    // 3) package.json（CI 产物命名）
+    for (const f of ["src-tauri/tauri.conf.json", "package.json"]) {
+      const j = JSON.parse(fs.readFileSync(f, "utf8"));
+      j.version = ver;
+      fs.writeFileSync(f, JSON.stringify(j, null, 2) + "\n");
+    }
+    console.log("  version -> " + ver + " (Cargo.toml / tauri.conf.json / package.json)");
+  ' "$ver"
+}
+
 # ── 写入版本元数据到 Supabase（经 Vercel 接口）──────
 # 简单 JSON 转义（处理 commit message 中的引号/反斜杠）
 json_escape() {
@@ -161,6 +197,16 @@ echo "💬 commit:  $COMMIT_MSG"
 echo ""
 
 # ── 执行发布流程 ──────────────────────────────────
+if [[ "$PUSH_ONLY" != true ]]; then
+  # 发布前同步版本号，保证产物命名 / 应用内版本 / 下载直链一致
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  ▷ 更新 package.json / src-tauri/tauri.conf.json version -> ${NEW_TAG#v}"
+  else
+    echo "🔢 同步版本号 -> ${NEW_TAG#v}"
+    bump_version "$NEW_TAG"
+  fi
+fi
+
 if [[ -z "$(git status --porcelain)" ]]; then
   echo "⚠️  工作区无改动，跳过 add/commit"
 else
