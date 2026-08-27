@@ -58,7 +58,7 @@ tauri-plugin-updater = "2"
 "plugins": {
   "updater": {
     "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE",
-    "endpoints": ["https://runjam-web.app/api/updates/latest"],
+    "endpoints": ["https://.app/api/updates/latest"],
     "windows": { "installMode": "passive" }
   }
 }

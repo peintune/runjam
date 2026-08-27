@@ -17,7 +17,7 @@
 #   ./release.sh -h              # 帮助
 #
 # 环境变量（可选）:
-#   RELEASES_API_URL     写入版本元数据的接口，默认 https://runjam-web.vercel.app/api/releases
+#   RELEASES_API_URL     写入版本元数据的接口，默认 https://runjam.app/api/releases
 #   RELEASES_ADMIN_TOKEN 接口鉴权 token（未设置则跳过写入并提示）
 #
 set -euo pipefail
@@ -80,9 +80,9 @@ if [[ "$PUSH_ONLY" != true ]] && git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
 fi
 
 # ── 解析 GitHub 仓库路径（用于构造下载直链）──────────
-REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "https://github.com/nicepkg/runjam.git")
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "https://github.com/peintue/runjam.git")
 REPO_PATH=$(echo "$REMOTE_URL" | sed -E 's#(https?://[^/]+/|git@[^:]+:)([^/]+/[^/.]+)(\.git)?$#\2#')
-REPO_PATH="${REPO_PATH:-nicepkg/runjam}"
+REPO_PATH="${REPO_PATH:-peintune/runjam}"
 
 # ── 构造 download_urls（GitHub Releases 直链，文件名可预测）──
 build_download_urls() {
@@ -104,7 +104,7 @@ json_escape() {
 
 publish_metadata() {
   local tag="$1"
-  local api_url="${RELEASES_API_URL:-https://runjam-web.vercel.app/api/releases}"
+  local api_url="${RELEASES_API_URL:-https://runjam.app/api/releases}"
   local token="${RELEASES_ADMIN_TOKEN:-}"
 
   if [[ -z "$token" ]]; then
