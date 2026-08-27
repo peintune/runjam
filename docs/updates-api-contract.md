@@ -119,13 +119,14 @@ create table if not exists public.releases (
 
 ## 6. 发布后同步流程
 
-1. `release.sh` 打 tag → GitHub Actions 构建并发布 Release（含 `.exe` + `.exe.sig` + `.dmg`）。
-2. 把版本元数据插入/更新到 Supabase `releases` 表：
-   - `version`、`notes`、`published_at`
-   - `download_urls`（macOS 各架构 dmg）
-   - `windows_sig`（从 Release 下载 `.exe.sig` 的内容）
-   - `windows_url`（`.exe` 下载地址）
-3. `staged = true` 后，客户端即可检测到更新。
+1. `./release.sh` 打 tag → push tag → GitHub Actions 构建并发布 Release（含 `.exe` + `.exe.sig` + `.dmg`）。
+2. `release.sh` 自动调用 Vercel 接口 `POST /api/releases`（请求头 `x-admin-token`）写入版本元数据（幂等 upsert）：
+   - `version`、`notes`（= commit message）、`github_url`
+   - `download_urls`（macOS aarch64/x86_64 dmg、Windows NSIS exe 的可预测 GitHub 直链）
+   - 未设置 `RELEASES_ADMIN_TOKEN` 时跳过写入并提示
+3. 如需要灰度，将 `staged` 置为 `true`；`staged = true` 后客户端即可检测到更新。
+
+接口鉴权：`RELEASES_ADMIN_TOKEN` 需在 Vercel 环境变量中配置，与请求头 `x-admin-token` 一致。
 
 ---
 

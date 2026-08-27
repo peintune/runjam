@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 #
-# release.sh — 一键发布：add → commit → push → tag → push tags
+# release.sh — 一键发布：add → commit → push → (tag → push tags → 写入版本元数据)
 #
-# 默认: commit "fix" + patch 递增 (v1.0.23 → v1.0.24)
+# 默认: commit "fix" + patch 递增 (v1.0.23 → v1.0.24)，打 tag 并推送，
+#       触发 GitHub Actions 构建（build.yml 只在 tag v* 时构建）。
 #
 # 用法:
-#   ./release.sh                # fix + v1.0.24
+#   ./release.sh                # fix + v1.0.24（完整发布）
 #   ./release.sh -m "feat: xxx"  # 自定义 commit
 #   ./release.sh -M              # minor 递增 (v1.0.23 → v1.1.0)
 #   ./release.sh -j              # major 递增 (v1.0.23 → v2.0.0)
 #   ./release.sh -t v2.0.0       # 指定 tag
+#   ./release.sh -p              # 只 push（不 tag / 不触发构建 / 不写版本库）
+#   ./release.sh -d '{"linux_x64":"https://..."}'  # 自定义 download_urls（默认自动生成各平台直链）
 #   ./release.sh -n              # dry-run，只显示不执行
 #   ./release.sh -h              # 帮助
+#
+# 环境变量（可选）:
+#   RELEASES_API_URL     写入版本元数据的接口，默认 https://runjam-web.vercel.app/api/releases
+#   RELEASES_ADMIN_TOKEN 接口鉴权 token（未设置则跳过写入并提示）
 #
 set -euo pipefail
 
@@ -20,18 +27,22 @@ COMMIT_MSG="fix"
 TAG_MODE="patch"      # patch | minor | major
 CUSTOM_TAG=""
 DRY_RUN=false
+PUSH_ONLY=false
+CUSTOM_DOWNLOAD_URLS=""
 
 usage() {
-  sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
-while getopts ":m:t:Mjnh" opt; do
+while getopts ":m:t:d:Mjpnh" opt; do
   case "$opt" in
     m) COMMIT_MSG="$OPTARG" ;;
     t) CUSTOM_TAG="$OPTARG" ;;
+    d) CUSTOM_DOWNLOAD_URLS="$OPTARG" ;;
     M) TAG_MODE="minor" ;;
     j) TAG_MODE="major" ;;
+    p) PUSH_ONLY=true ;;
     n) DRY_RUN=true ;;
     h) usage ;;
     *) echo "未知选项: -$OPTARG"; usage ;;
@@ -62,11 +73,65 @@ else
   NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
 fi
 
-# 检查 tag 是否已存在
-if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+# 检查 tag 是否已存在（仅发布模式需要 tag）
+if [[ "$PUSH_ONLY" != true ]] && git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
   echo "❌ tag $NEW_TAG 已存在，请指定其他版本号 (-t)"
   exit 1
 fi
+
+# ── 解析 GitHub 仓库路径（用于构造下载直链）──────────
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "https://github.com/nicepkg/runjam.git")
+REPO_PATH=$(echo "$REMOTE_URL" | sed -E 's#(https?://[^/]+/|git@[^:]+:)([^/]+/[^/.]+)(\.git)?$#\2#')
+REPO_PATH="${REPO_PATH:-nicepkg/runjam}"
+
+# ── 构造 download_urls（GitHub Releases 直链，文件名可预测）──
+build_download_urls() {
+  local tag="$1"
+  if [[ -n "$CUSTOM_DOWNLOAD_URLS" ]]; then
+    echo "$CUSTOM_DOWNLOAD_URLS"
+    return
+  fi
+  local ver="${tag#v}"
+  local base="https://github.com/${REPO_PATH}/releases/download/${tag}"
+  echo "{\"macos_aarch64\":\"${base}/RunJam_${ver}_aarch64.dmg\",\"macos_x86_64\":\"${base}/RunJam_${ver}_x64.dmg\",\"windows_x64\":\"${base}/RunJam_${ver}_x64-setup.exe\"}"
+}
+
+# ── 写入版本元数据到 Supabase（经 Vercel 接口）──────
+# 简单 JSON 转义（处理 commit message 中的引号/反斜杠）
+json_escape() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+publish_metadata() {
+  local tag="$1"
+  local api_url="${RELEASES_API_URL:-https://runjam-web.vercel.app/api/releases}"
+  local token="${RELEASES_ADMIN_TOKEN:-}"
+
+  if [[ -z "$token" ]]; then
+    echo "⚠️  未设置 RELEASES_ADMIN_TOKEN，跳过写入版本元数据（在 Vercel 环境变量中配置后即可自动写入）"
+    return 0
+  fi
+
+  local dl notes
+  dl=$(build_download_urls "$tag")
+  notes=$(json_escape "$COMMIT_MSG")
+  local payload
+  payload=$(printf '{"version":"%s","notes":"%s","github_url":"https://github.com/%s/releases/tag/%s","download_urls":%s}' \
+    "$tag" "$notes" "$REPO_PATH" "$tag" "$dl")
+
+  echo "📝 写入版本元数据 → $api_url"
+  local resp
+  resp=$(curl -sS -X POST "$api_url" \
+    -H "Content-Type: application/json" \
+    -H "x-admin-token: $token" \
+    -d "$payload")
+  echo "   $resp"
+  if ! echo "$resp" | grep -q '"ok":true'; then
+    echo "❌ 写入版本元数据失败"
+    return 1
+  fi
+  echo "✅ 版本元数据已写入 Supabase releases 表"
+}
 
 # ── 执行函数 ──────────────────────────────────────
 run() {
@@ -78,8 +143,12 @@ run() {
 }
 
 # ── 信息确认 ──────────────────────────────────────
-echo "📦 当前 tag: ${LATEST_TAG:-无}"
-echo "🏷️  新 tag:  $NEW_TAG"
+if [[ "$PUSH_ONLY" == true ]]; then
+  echo "📦 模式: 只 push（不打 tag、不触发构建、不写版本库）"
+else
+  echo "📦 当前 tag: ${LATEST_TAG:-无}"
+  echo "🏷️  新 tag:  $NEW_TAG"
+fi
 echo "💬 commit:  $COMMIT_MSG"
 [[ "$DRY_RUN" == true ]] && echo "🔍 dry-run 模式（不实际执行）"
 echo ""
@@ -93,11 +162,21 @@ else
 fi
 
 run git push
+
+if [[ "$PUSH_ONLY" == true ]]; then
+  if [[ "$DRY_RUN" != true ]]; then
+    echo ""
+    echo "✅ push 完成（未打 tag，未触发构建）"
+  fi
+  exit 0
+fi
+
 run git tag "$NEW_TAG"
 run git push origin --tags
 
 if [[ "$DRY_RUN" != true ]]; then
+  publish_metadata "$NEW_TAG"
   echo ""
   echo "✅ 发布完成: $NEW_TAG"
-  echo "   GitHub Actions 将自动触发构建: https://github.com/nicepkg/runjam/actions"
+  echo "   GitHub Actions 将自动触发构建: https://github.com/$REPO_PATH/actions"
 fi
