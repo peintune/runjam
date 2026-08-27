@@ -3,7 +3,7 @@
 > 用途：RunJam 升级检测的统一后端接口。
 > 同一个 URL 被两个平台用不同的格式消费，后端需按请求特征返回不同 JSON。
 
-- 端点：`https://runjam-web.vercel.app/api/updates/latest`
+- 端点：`https://runjam.app/api/updates/latest`
 - 数据源：Supabase `releases` 表（发布后需同步版本元数据，含各平台下载 URL 与 Windows 签名）
 - 文件托管：GitHub Releases（安装包文件本身）
 

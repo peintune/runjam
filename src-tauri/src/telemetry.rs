@@ -27,7 +27,7 @@ pub const KEY_INSTALLATION_ID: &str = "installation_id";
 pub const KEY_TELEMETRY_ENABLED: &str = "telemetry_enabled";
 pub const KEY_CONSENT_SHOWN: &str = "telemetry_consent_shown";
 pub const KEY_PROXY_URL: &str = "outbound_proxy";
-pub const DEFAULT_API_BASE: &str = "https://runjam-web.vercel.app";
+pub const DEFAULT_API_BASE: &str = "https://runjam.app";
 
 const MAX_QUEUE_BATCH: i64 = 50;
 const MAX_ATTEMPTS: i64 = 5;

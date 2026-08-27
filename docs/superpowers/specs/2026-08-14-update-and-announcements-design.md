@@ -50,7 +50,7 @@ RunJam 是一个 Tauri 2 桌面应用（Vue 3 前端 + Rust 后端）。已有 V
   "plugins": {
     "updater": {
       "pubkey": "<TAURI_SIGNING_PUBLIC_KEY>",
-      "endpoints": ["https://runjam-web.vercel.app/api/updates/latest"],
+      "endpoints": ["https://runjam-web.app/api/updates/latest"],
       "windows": { "installMode": "passive" }
     }
   }

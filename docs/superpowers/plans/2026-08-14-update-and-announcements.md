@@ -18,7 +18,7 @@
 - 公告已读 key 格式：`announcement_read:<id>`，存 `app_settings` 表。
 - updater 仅 Windows 启用；macOS 不调用 `app.updater()`。
 - 前端无测试框架（不引入 vitest/jest）；Rust 用内联 `#[cfg(test)]` 模块。
-- 对外 API base：`https://runjam-web.vercel.app`（`telemetry::api_base()`）。
+- 对外 API base：`https://runjam.app`（`telemetry::api_base()`）。
 
 ---
 
@@ -58,7 +58,7 @@ tauri-plugin-updater = "2"
 "plugins": {
   "updater": {
     "pubkey": "PASTE_YOUR_PUBLIC_KEY_HERE",
-    "endpoints": ["https://runjam-web.vercel.app/api/updates/latest"],
+    "endpoints": ["https://runjam-web.app/api/updates/latest"],
     "windows": { "installMode": "passive" }
   }
 }
