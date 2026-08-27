@@ -66,6 +66,8 @@ export interface UpdateCheckResult {
   latestVersion?: string | null;
   notes?: string | null;
   downloadUrl?: string | null;
+  /** 备用下载源，如 { github: "...", cn: "..." } */
+  downloadUrls?: Record<string, string> | null;
 }
 
 export async function checkUpdateUi(current: string): Promise<UpdateCheckResult> {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { Github, CloudDownload, ExternalLink } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { installUpdate } from "../api/telemetry";
 import type { UpdateCheckResult } from "../api/telemetry";
@@ -13,6 +14,20 @@ const { render } = useMarkdown();
 const notesHtml = computed(() => {
   if (!props.result.notes) return "";
   return render(props.result.notes);
+});
+
+// 备用下载源列表：GitHub 官方 + 国内 OSS 镜像
+const altSources = computed(() => {
+  const urls = props.result.downloadUrls;
+  if (!urls) return [];
+  const items: { key: string; label: string; icon: string; url: string }[] = [];
+  if (urls.github) {
+    items.push({ key: "github", label: t("update.githubDownload"), icon: "github", url: urls.github });
+  }
+  if (urls.cn) {
+    items.push({ key: "cn", label: t("update.cnDownload"), icon: "cn", url: urls.cn });
+  }
+  return items;
 });
 
 const installing = ref(false);
@@ -37,6 +52,14 @@ async function onPrimaryAction() {
     }
   }
 }
+
+async function openAltSource(url: string) {
+  try {
+    await openUrl(url);
+  } catch {
+    error.value = t("update.openDownloadFailed");
+  }
+}
 </script>
 
 <template>
@@ -59,6 +82,25 @@ async function onPrimaryAction() {
         class="mt-3 max-h-60 overflow-y-auto text-[13px] leading-relaxed text-gray-600 markdown-body"
         v-html="notesHtml"
       />
+      <!-- 备用下载源（GitHub / 国内镜像），手动选择 -->
+      <div v-if="altSources.length > 0" class="mt-4 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
+        <p class="text-[12px] font-medium text-gray-500 mb-2">{{ $t("update.downloadSource") }}</p>
+        <div class="space-y-1.5">
+          <button
+            v-for="src in altSources"
+            :key="src.key"
+            class="w-full flex items-center justify-between px-3 py-2 rounded-lg text-[13px] text-gray-700 hover:bg-white hover:text-gray-900 active:scale-[0.99] transition-all duration-150 cursor-pointer border border-transparent hover:border-gray-200"
+            @click="openAltSource(src.url)"
+          >
+            <span class="flex items-center gap-2">
+              <Github v-if="src.icon === 'github'" :size="15" class="text-gray-500" />
+              <CloudDownload v-else :size="15" class="text-gray-500" />
+              {{ src.label }}
+            </span>
+            <ExternalLink :size="13" class="text-gray-300" />
+          </button>
+        </div>
+      </div>
       <p v-if="error" class="mt-3 text-[12px] text-red-500">{{ error }}</p>
       <div class="mt-6 flex items-center justify-end gap-3">
         <button

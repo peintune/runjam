@@ -166,6 +166,12 @@ struct BackendPlatformInfo {
     url: String,
     #[allow(dead_code)]
     signature: String,
+    /// 原始 GitHub 直链（备用源）
+    #[serde(default)]
+    url_github: Option<String>,
+    /// 国内镜像（OSS）直链（备用源）
+    #[serde(default)]
+    url_cn: Option<String>,
 }
 
 /// Phase 2 seed: update check against the backend (GitHub Releases metadata
@@ -197,13 +203,33 @@ pub async fn check_for_updates(
         .into_json()
         .map_err(|e| format!("bad update response: {}", e))?;
 
+    // 语义化比较：backend >= current 且 current < backend（严格大于）。
+    // 不能用字符串 != 比较——后端返回 v1.0.77 而应用内是 1.0.77（无 v 前缀），
+    // 字符串不同但版本相同，会导致永远提示有更新。
     let update_available = crate::updates::version_ge(&backend.version, &current)
-        && backend.version.trim() != current.trim();
+        && !crate::updates::version_ge(&current, &backend.version);
     let platform_key = format!("{}-{}", platform_name(), std::env::consts::ARCH);
-    let download_url = backend
-        .platforms
-        .get(&platform_key)
-        .map(|p| p.url.trim().to_string());
+    let platform = backend.platforms.get(&platform_key);
+    let download_url = platform.map(|p| p.url.trim().to_string());
+    // 备用下载源（GitHub 官方 / 国内 OSS 镜像），前端用于手动选择下载源
+    let download_urls = platform.and_then(|p| {
+        let mut m = serde_json::Map::new();
+        if let Some(g) = &p.url_github {
+            if !g.trim().is_empty() {
+                m.insert("github".into(), g.trim().to_string().into());
+            }
+        }
+        if let Some(c) = &p.url_cn {
+            if !c.trim().is_empty() {
+                m.insert("cn".into(), c.trim().to_string().into());
+            }
+        }
+        if m.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(m))
+        }
+    });
 
     Ok(UpdateInfo {
         update_available,
@@ -211,7 +237,7 @@ pub async fn check_for_updates(
         published_at: backend.pub_date,
         notes: backend.notes,
         download_url,
-        download_urls: None,
+        download_urls,
     })
 }
 
@@ -287,6 +313,7 @@ pub async fn check_update_ui(
                 latest_version: Some(update.version.to_string()),
                 notes: update.body.clone(),
                 download_url: None,
+                download_urls: None,
             }),
             Ok(None) => Ok(crate::updates::UpdateCheckResult::none()),
             Err(e) => Err(format!("update check failed: {}", e)),
@@ -301,6 +328,7 @@ pub async fn check_update_ui(
             latest_version: info.latest_version,
             notes: info.notes,
             download_url: info.download_url,
+            download_urls: info.download_urls,
         })
     }
 }

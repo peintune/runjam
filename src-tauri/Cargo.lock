@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "runjam"
-version = "0.1.0"
+version = "1.0.77"
 dependencies = [
  "base64 0.22.1",
  "calamine",

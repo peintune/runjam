@@ -44,6 +44,8 @@ pub struct UpdateCheckResult {
     pub latest_version: Option<String>,
     pub notes: Option<String>,
     pub download_url: Option<String>,
+    /// 备用下载源（如 {"github": "...", "cn": "..."}），供手动选择下载。
+    pub download_urls: Option<serde_json::Value>,
 }
 
 impl UpdateCheckResult {
@@ -54,6 +56,7 @@ impl UpdateCheckResult {
             latest_version: None,
             notes: None,
             download_url: None,
+            download_urls: None,
         }
     }
 }
