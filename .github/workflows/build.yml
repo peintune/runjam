@@ -275,22 +275,40 @@ jobs:
       # so OSS upload happens ONLY for release builds (tag v*), never on
       # PR / workflow_dispatch without a tag.
       # Required repo secrets:
-      #   OSS_ACCESS_KEY_ID     – Aliyun AccessKey ID
-      #   OSS_ACCESS_KEY_SECRET – Aliyun AccessKey Secret
+      #   ALIYUN_OSS_ACCESS_KEY_ID     – Aliyun AccessKey ID
+      #   ALIYUN_OSS_ACCESS_KEY_SECRET – Aliyun AccessKey Secret
       #   OSS_ENDPOINT          – e.g. https://oss-cn-hangzhou.aliyuncs.com
       #   OSS_BUCKET            – bucket name, e.g. runjam-releases
+      #   OSS_REGION            – (optional) e.g. cn-hangzhou; if unset, it is
+      #                           inferred from OSS_ENDPOINT (oss-<region>.aliyuncs.com).
+      #                           Required when OSS_ENDPOINT is a custom domain.
       - name: Upload to Aliyun OSS (release only)
         env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
-          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          ALIYUN_OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          ALIYUN_OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          ALIYUN_OSS_REGION: ${{ secrets.ALIYUN_OSS_REGION }}
         run: |
           # Install official ossutil 2.3.0 (Linux amd64, matches ubuntu-latest)
           curl -sL -o /tmp/ossutil.zip https://gosspublic.alicdn.com/ossutil/v2/2.3.0/ossutil-2.3.0-linux-amd64.zip
           unzip -q /tmp/ossutil.zip -d /tmp/ossutil
           sudo mv /tmp/ossutil/ossutil-2.3.0-linux-amd64/ossutil /usr/local/bin/ossutil
 
+          # ossutil 2.x signs requests with SigV4 by default, which REQUIRES
+          # --region. Prefer the explicit ALIYUN_OSS_REGION secret; otherwise infer it
+          # from the endpoint (https://oss-cn-hangzhou.aliyuncs.com -> cn-hangzhou).
+          if [ -n "$ALIYUN_OSS_REGION" ]; then
+            REGION="$ALIYUN_OSS_REGION"
+          else
+            REGION=$(printf '%s' "$ALIYUN_OSS_ENDPOINT" | sed -nE 's#^https?://oss-([^./]+).*$#\1#p' || true)
+          fi
+          if [ -z "$OSS_REGION" ]; then
+            echo "Error: cannot determine OSS region. Set the ALIYUN_OSS_REGION repo secret (e.g. cn-hangzhou)." >&2
+            exit 1
+          fi
+          echo "OSS region: $OSS_REGION"
+
           # Upload all platform artifacts to oss://<bucket>/runjam/releases/<tag>/
-          ossutil cp -r -f artifacts/ "oss://$OSS_BUCKET/runjam/releases/${{ github.ref_name }}/" \
-            -e "$OSS_ENDPOINT" -i "$OSS_ACCESS_KEY_ID" -k "$OSS_ACCESS_KEY_SECRET"
+          ossutil cp -r -f artifacts/ "oss://$ALIYUN_OSS_BUCKET/runjam/releases/${{ github.ref_name }}/" \
+            -e "$ALIYUN_OSS_ENDPOINT" -i "$ALIYUN_OSS_ACCESS_KEY_ID" -k "$ALIYUN_OSS_ACCESS_KEY_SECRET" --region "$OSS_REGION"
