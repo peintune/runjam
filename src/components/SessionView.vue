@@ -993,12 +993,10 @@ const RETRY_TIMEOUT_MS = 60_000;
 // 5 分钟无任何事件说明上游大概率卡死（慢模型通常几分钟内必出首 token）。
 // 若本地慢模型仍偶发误杀，可调大此值。
 const LLM_TIMEOUT_MS = 300_000;
-// 工具执行阶段超时：tool_call 已发出、等待 tool_result。Bash/长命令正常静默
-// 且可能跑很久，给足长超时（30 分钟），但不无限期等待。
-const TOOL_TIMEOUT_MS = 1_800_000;
-// 整个回答过程（一次发送，含全部自动重试）的总时长硬上限：2 小时。任何阶段
-// 都不得超过这个上限，到点即最终失败，不再自动重试。
-const SESSION_TOTAL_TIMEOUT_MS = 7_200_000;
+// 整个回答过程（一次发送，含全部自动重试）的总时长硬上限：4 小时。任何阶段
+// 都不得超过这个上限，到点即最终失败，不再自动重试。工具在途（长命令/构建）
+// 的执行时长也由它兜底——见 startRetryDeadline。
+const SESSION_TOTAL_TIMEOUT_MS = 14_400_000;
 
 const sessionStates = new Map<string, SessionState>();
 
@@ -1119,8 +1117,10 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
   if (!retry) return;
   if (retry.deadlineTimer) clearTimeout(retry.deadlineTimer);
   // 阶段化超时：
-  // - 工具在途（hasActiveTool）：工具执行允许长时间静默（长 Bash 命令），用
-  //   宽松的 TOOL_TIMEOUT_MS；但不无限期——到点仍未返回即失败。
+  // - 工具在途（hasActiveTool）：工具执行允许长时间静默（长 Bash 命令/构建），
+  //   只要 agent 进程还活着（running/idle）就说明任务真在执行，不设中间超时，
+  //   由 SESSION_TOTAL_TIMEOUT_MS 总上限兜底；只有 agent 进程也确认不在
+  //   （stopped/error）才用 RETRY_TIMEOUT_MS 快速失败——结果永远不会回来了。
   // - 已确认存活（hasStarted，收到过任意事件）：用 LLM_TIMEOUT_MS。此刻 agent
   //   在调用 LLM API / 规划下一步，单个 API 调用不应静默超过几分钟。
   // - 初始阶段（未收到任何事件）：只要 agent 进程还活着（running/idle）也用
@@ -1130,12 +1130,17 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
   const sess = store.sessions.find((s) => s.id === sessionId);
   const agentAlive =
     !!sess && (sess.status === "running" || sess.status === "idle");
-  let timeout = state.hasActiveTool
-    ? TOOL_TIMEOUT_MS
-    : state.hasStarted || agentAlive
-      ? LLM_TIMEOUT_MS
-      : RETRY_TIMEOUT_MS;
-  // 总时长硬上限：一次发送从开始到结束（含自动重试）不得超过 2 小时。到点即
+  let timeout: number;
+  if (state.hasActiveTool) {
+    // 工具在途：agent 活着 → 长任务静默是正常的，直接等总上限；
+    // agent 已死 → 工具结果永远不会回来，快速失败。
+    timeout = agentAlive ? SESSION_TOTAL_TIMEOUT_MS : RETRY_TIMEOUT_MS;
+  } else if (state.hasStarted || agentAlive) {
+    timeout = LLM_TIMEOUT_MS;
+  } else {
+    timeout = RETRY_TIMEOUT_MS;
+  }
+  // 总时长硬上限：一次发送从开始到结束（含自动重试）不得超过 4 小时。到点即
   // 最终失败（isRealError=true → 不再自动重试），避免长任务无限续期。
   const elapsed = Date.now() - retry.startAt;
   if (elapsed >= SESSION_TOTAL_TIMEOUT_MS) {
