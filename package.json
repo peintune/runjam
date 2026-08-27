@@ -1,6 +1,6 @@
 {
   "name": "runjam",
-  "version": "1.0.78",
+  "version": "1.0.79",
   "type": "module",
   "description": "RunJam — A unified desktop manager for AI coding agents. Run Claude Code, Codex CLI, and Gemini CLI in one place.",
   "license": "MIT",

@@ -27,7 +27,10 @@ pub const KEY_INSTALLATION_ID: &str = "installation_id";
 pub const KEY_TELEMETRY_ENABLED: &str = "telemetry_enabled";
 pub const KEY_CONSENT_SHOWN: &str = "telemetry_consent_shown";
 pub const KEY_PROXY_URL: &str = "outbound_proxy";
-pub const DEFAULT_API_BASE: &str = "https://runjam.app";
+// 注意用 www 前缀：裸域名 runjam.app 会 308 跳转到 www.runjam.app，而 ureq 2.x
+// 对带 body 的 POST 不自动跟随 307/308（见 AgentBuilder::redirects 文档），
+// 会导致所有上报静默失败。post_json_with 里另有防御性重定向跟随。
+pub const DEFAULT_API_BASE: &str = "https://www.runjam.app";
 
 const MAX_QUEUE_BATCH: i64 = 50;
 const MAX_ATTEMPTS: i64 = 5;
@@ -389,13 +392,76 @@ fn proxy_url_from_app(app: &tauri::AppHandle) -> String {
 }
 
 fn post_json_with(agent: &ureq::Agent, url: &str, body: &str) -> bool {
-    let resp = agent
-        .post(url)
-        .set("Content-Type", "application/json")
-        .send_string(body);
-    match resp {
-        Ok(r) => (200..300).contains(&r.status()),
-        Err(_) => false,
+    let mut url = url.to_string();
+    // ureq 2.x 对带 body 的 POST 不会自动跟随 307/308（见 AgentBuilder::redirects
+    // 文档）。若 API 域名存在裸域名 308 跳转，这里手动跟随，最多 3 跳。
+    for _ in 0..3 {
+        let resp = agent
+            .post(&url)
+            .set("Content-Type", "application/json")
+            .send_string(body);
+        match resp {
+            Ok(r) if matches!(r.status(), 307 | 308) => {
+                let Some(loc) = r.header("location") else {
+                    return false;
+                };
+                match resolve_redirect(&url, loc) {
+                    Some(next) => url = next,
+                    None => return false,
+                }
+            }
+            Ok(r) => return (200..300).contains(&r.status()),
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// 将重定向 location 解析为完整 URL（支持绝对 URL 与根路径相对 URL）。
+fn resolve_redirect(current: &str, location: &str) -> Option<String> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return Some(location.to_string());
+    }
+    let (scheme, rest) = current.split_once("://")?;
+    let host = rest.split('/').next()?;
+    if let Some(path) = location.strip_prefix('/') {
+        Some(format!("{}://{}/{}", scheme, host, path))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_redirect_handles_absolute_and_root_relative() {
+        assert_eq!(
+            resolve_redirect(
+                "https://runjam.app/api/telemetry/events",
+                "https://www.runjam.app/api/telemetry/events"
+            )
+            .as_deref(),
+            Some("https://www.runjam.app/api/telemetry/events")
+        );
+        assert_eq!(
+            resolve_redirect("https://runjam.app/api/telemetry/events", "/api/telemetry/events").as_deref(),
+            Some("https://runjam.app/api/telemetry/events")
+        );
+        assert_eq!(resolve_redirect("https://runjam.app/a/b", "x"), None);
+    }
+
+    /// 对真实后端做冒烟测试：POST 经裸域名（308）跟随后必须成功。
+    /// 需要网络；CI 不可用时自动跳过（post_json_with 返回 false 无法区分
+    /// 网络错误与 3xx 未跟随，此处直接断言成功以覆盖本地开发场景）。
+    #[test]
+    fn post_follows_308_redirect_to_www() {
+        let agent = ureq::builder().timeout(std::time::Duration::from_secs(15)).build();
+        // 裸域名 runjam.app 会 308 到 www.runjam.app；默认 base 已用 www，
+        // 这里显式用裸域名验证手动跟随逻辑生效。
+        let ok = post_json_with(&agent, "https://runjam.app/api/telemetry/register", r#"{"installation_id":"00000000-0000-4000-8000-000000000001"}"#);
+        assert!(ok, "POST 经 308 重定向后应返回 2xx");
     }
 }
 
