@@ -303,12 +303,12 @@ jobs:
           else
             REGION=$(printf '%s' "$ALIYUN_OSS_ENDPOINT" | sed -nE 's#^https?://oss-([^./]+).*$#\1#p' || true)
           fi
-          if [ -z "$OSS_REGION" ]; then
+          if [ -z "$ALIYUN_OSS_REGION" ]; then
             echo "Error: cannot determine OSS region. Set the ALIYUN_OSS_REGION repo secret (e.g. cn-hangzhou)." >&2
             exit 1
           fi
-          echo "OSS region: $OSS_REGION"
+          echo "OSS region: $ALIYUN_OSS_REGION"
 
           # Upload all platform artifacts to oss://<bucket>/runjam/releases/<tag>/
           ossutil cp -r -f artifacts/ "oss://$ALIYUN_OSS_BUCKET/runjam/releases/${{ github.ref_name }}/" \
-            -e "$ALIYUN_OSS_ENDPOINT" -i "$ALIYUN_OSS_ACCESS_KEY_ID" -k "$ALIYUN_OSS_ACCESS_KEY_SECRET" --region "$OSS_REGION"
+            -e "$ALIYUN_OSS_ENDPOINT" -i "$ALIYUN_OSS_ACCESS_KEY_ID" -k "$ALIYUN_OSS_ACCESS_KEY_SECRET" --region "$ALIYUN_OSS_REGION"
