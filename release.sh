@@ -17,7 +17,7 @@
 #   ./release.sh -h              # 帮助
 #
 # 环境变量（可选）:
-#   RELEASES_API_URL     写入版本元数据的接口，默认 https://runjam.app/api/releases
+#   RELEASES_API_URL     写入版本元数据的接口，默认 https://www.runjam.app/api/releases
 #   RELEASES_ADMIN_TOKEN 接口鉴权 token（未设置则跳过写入并提示）
 #
 set -euo pipefail
@@ -104,7 +104,7 @@ json_escape() {
 
 publish_metadata() {
   local tag="$1"
-  local api_url="${RELEASES_API_URL:-https://runjam.app/api/releases}"
+  local api_url="${RELEASES_API_URL:-https://www.runjam.app/api/releases}"
   local token="${RELEASES_ADMIN_TOKEN:-}"
 
   if [[ -z "$token" ]]; then
@@ -120,13 +120,20 @@ publish_metadata() {
     "$tag" "$notes" "$REPO_PATH" "$tag" "$dl")
 
   echo "📝 写入版本元数据 → $api_url"
-  local resp
-  resp=$(curl -sS -X POST "$api_url" \
+  local http_code body body_file
+  body_file=$(mktemp)
+  # -L 跟随重定向；--post301/302/303 保证重定向后仍是 POST（curl 默认会把
+  # 301/302/303 降级为 GET 导致请求体丢失）。
+  http_code=$(curl -sS -L --post301 --post302 --post303 \
+    -o "$body_file" -w "%{http_code}" \
+    -X POST "$api_url" \
     -H "Content-Type: application/json" \
     -H "x-admin-token: $token" \
-    -d "$payload")
-  echo "   $resp"
-  if ! echo "$resp" | grep -q '"ok":true'; then
+    -d "$payload") || { echo "❌ 请求失败（网络/超时）"; rm -f "$body_file"; return 1; }
+  body=$(cat "$body_file")
+  rm -f "$body_file"
+  echo "   HTTP $http_code: $body"
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]] || ! echo "$body" | grep -q '"ok":true'; then
     echo "❌ 写入版本元数据失败"
     return 1
   fi
