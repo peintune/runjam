@@ -13,8 +13,9 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org)
 [![Rust](https://img.shields.io/badge/Rust-🦀-ce422b.svg)](https://www.rust-lang.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![官网](https://img.shields.io/badge/官网-www.runjam.app-blue.svg)](https://www.runjam.app/)
 
-[功能特性](#-为什么选-runjam) · [快速开始](#-快速开始) · [架构](#-架构) · [路线图](#-路线图) · [常见问题](#-常见问题)
+[官网](https://www.runjam.app/) · [功能特性](#-为什么选-runjam) · [快速开始](#-快速开始) · [架构](#-架构) · [路线图](#-路线图) · [常见问题](#-常见问题)
 
 [English](README.md)
 

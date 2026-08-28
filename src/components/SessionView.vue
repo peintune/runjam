@@ -18,7 +18,7 @@ import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MentionPicker from "./MentionPicker.vue";
 import { type FileEntry, parseFile } from "../api/fs";
-import { submitFeedback } from "../api/telemetry";
+import { submitFeedback, track } from "../api/telemetry";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 import { useContextSize } from "../composables/useContextSize";
@@ -327,8 +327,10 @@ async function handleAttachFiles() {
     if (!selected) return;
     const list = Array.isArray(selected) ? selected : [selected];
     const existing = new Set(attachedFiles.value.map(f => f.path));
+    let addedCount = 0;
     for (const file of list) {
       if (existing.has(file)) continue;
+      addedCount++;
       const name = file.split("/").pop() || file;
       const ext = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
       let size = 0;
@@ -345,6 +347,7 @@ async function handleAttachFiles() {
         error: "",
       });
     }
+    if (addedCount > 0) track("attach_files", { count: addedCount });
   } catch (err) {
     console.error("Failed to open file picker:", err);
   }
@@ -1994,6 +1997,7 @@ function closeMentionPicker() {
 }
 
 async function handleSend() {
+  const wasNewSession = !store.activeSession;
   let text = inputText.value.trim(); if(!text)return;
 
   // Expand @relativePath mentions to @absolutePath for the LLM
@@ -2180,6 +2184,12 @@ async function handleSend() {
     st.hasStarted = false;
     st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null, startAt: Date.now() };
     startRetryDeadline(sessionId, st);
+    // Telemetry: a message was dispatched (fire-and-forget, never blocks).
+    track("message_sent", {
+      attachCount: attachNames.length,
+      model: store.activeSession?.model || selectedModel.value || "",
+      newSession: wasNewSession,
+    });
     sendInput(sessionId, sendText, history).catch(err=>{
       const state = getSessionState(sessionId);
       clearRetry(state);
@@ -2233,6 +2243,7 @@ function handleModelSelect(model: ModelEntry) {
   selectedModel.value = model.id;
   showModelDropdown.value = false;
 
+  track("model_changed", { model: model.id });
   saveSessionModel(selectedAgentId.value, model.id);
   // Remember the model per-session (persisted to DB) so this selection only
   // affects the current session, not every session of the same agent.
@@ -2259,6 +2270,7 @@ async function toggleSkill(name: string) {
   const session = store.activeSession;
   const cwd = session ? activeSessionCwd.value : null;
   console.log("[SKILL-TOGGLE]", { name, sessionId: session?.id, cwd, cli: session?.cli, sessionDir: session?.directory });
+  track("skill_toggled", { skill: name, enabled: !selectedSkills.value.has(name) });
   if (session && cwd) {
     // Active session: persist the change to this session's own skills
     // directory so it is isolated per session and survives reloads.
@@ -2287,6 +2299,7 @@ async function toggleSkill(name: string) {
 
 async function handleStop() {
   if (store.activeSession) {
+    track("message_stopped");
     const sid = effectiveSessionId.value;
     const state = getSessionState(sid);
     clearRetry(state);

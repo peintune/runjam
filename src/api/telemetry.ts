@@ -21,6 +21,14 @@ export async function trackEvent(
   return invoke<void>("track_event", { eventName, eventProps });
 }
 
+/**
+ * Fire-and-forget telemetry event. Best-effort only: swallows errors and
+ * never throws / blocks, so telemetry can never disturb the product UX.
+ */
+export function track(eventName: string, eventProps?: Record<string, unknown>): void {
+  trackEvent(eventName, eventProps).catch(() => {});
+}
+
 export async function getProxyConfig(): Promise<string> {
   return invoke<string>("get_proxy_config");
 }
