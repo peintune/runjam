@@ -15,9 +15,9 @@ A local-first desktop manager for **Claude Code, Codex CLI, and Gemini CLI** —
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Website](https://img.shields.io/badge/Website-www.runjam.app-blue.svg)](https://www.runjam.app/)
 
-[Website](https://www.runjam.app/) · [Features](#-why-runjam) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
+[Features](#-why-runjam) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Roadmap](#-roadmap) · [FAQ](#-faq)
 
-[中文文档](README.zh-CN.md)
+[🌐 Visit Website](https://www.runjam.app/) · [中文文档](README.zh-CN.md)
 
 <br/>
 
