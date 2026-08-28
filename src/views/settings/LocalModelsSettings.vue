@@ -13,6 +13,7 @@ import {
 import { getProviderLogo } from "../../utils/providerIcons";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import { t } from "../../i18n";
+import { track } from "../../api/telemetry";
 
 interface UIModel {
   id: string;
@@ -294,6 +295,7 @@ async function handleAddLocalModel() {
 async function handleStartServer(filename: string) {
   if (startingServer.value) return;
 
+  track("llama_server_start", { model: filename });
   startingServer.value = true;
   serverError.value = "";
   serverLogs.value = [];

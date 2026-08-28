@@ -8,20 +8,27 @@
 
 **本地优先** 的桌面管理器，统一管理 **Claude Code、Codex CLI、Gemini CLI**。一次配置，所有 Agent 都能用任意模型；多项目并行，一个窗口搞定。无需 ACP 改造，无需逐个改配置，不上云、不绑死。
 
+[![GitHub stars](https://img.shields.io/github/stars/peintune/runjam)](https://github.com/peintune/runjam/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/peintune/runjam)](https://github.com/peintune/runjam/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-orange.svg)](https://tauri.app)
-[![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org)
-[![Rust](https://img.shields.io/badge/Rust-🦀-ce422b.svg)](https://www.rust-lang.org)
+[![macOS](https://img.shields.io/badge/macOS-支持-333.svg)](https://github.com/peintune/runjam/releases/latest)
+[![Windows](https://img.shields.io/badge/Windows-支持-0078d6.svg)](https://github.com/peintune/runjam/releases/latest)
+[![Linux](https://img.shields.io/badge/Linux-开发中-777.svg)](https://github.com/peintune/runjam)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![官网](https://img.shields.io/badge/官网-www.runjam.app-blue.svg)](https://www.runjam.app/)
 
 [功能特性](#-为什么选-runjam) · [快速开始](#-快速开始) · [架构](#-架构) · [路线图](#-路线图) · [常见问题](#-常见问题)
 
+**支持：** Claude Code · Codex CLI · Gemini CLI
+
+**已适配国内模型：** DeepSeek · Qwen（通义千问）· 任意 OpenAI 兼容 API
+
 [🌐 访问官网](https://www.runjam.app/) · [English](README.md)
 
 <br/>
 
-<img src="docs/screenshots/zh/01-hero.png" alt="RunJam main window — sessions, chat, and workspace in one view" width="90%" />
+<img src="docs/screenshots/zh/04-workspace.gif" alt="RunJam 实际使用 —— 文件树、Monaco 编辑器、终端、多会话并行，一个窗口" width="90%" />
 <br/>
 <br/>
 
@@ -52,7 +59,7 @@
 - 🔌 **任意 Agent，任意模型。** 内置协议代理，Anthropic ↔ OpenAI ↔ Gemini 实时互转。Claude Code 跑 GPT、Codex 跑 Claude 都行。配置一次，全 Agent 同步。
 - 🛠️ **Agent 零改造。** 不像 ACP 系方案，RunJam 直接通过原生 CLI 的 stdin/stdout 驱动 Agent。今天就能用，任意 Agent 都能接。
 - 💸 **把 API 账单砍下来。** 自动检测 prompt cache、本地响应缓存、一键启动本地模型（llama.cpp）。
-- 🔒 **本地优先，隐私安全。** 对话、配置、API Key 全在你机器上。零遥测，零云同步。
+- 🔒 **本地优先，隐私安全。** 对话、配置、API Key 全在你机器上。遥测默认关闭，零云同步。
 
 ---
 
@@ -88,22 +95,22 @@
 | Token 烧钱 | **自动检测 prompt cache** + 本地响应缓存 + 每会话费用看板 |
 | 配环境崩溃 | **自动检测 + 一键安装** Claude Code / Codex CLI / Gemini CLI |
 | 单一 Agent 锁定 | **Agent 中立** —— 换 Agent 不换工作流 |
-| 云端数据焦虑 | **本地优先**，数据全在 `~/.runjam/`，API Key 进系统钥匙串，零遥测 |
+| 云端数据焦虑 | **本地优先**，数据全在 `~/.runjam/`，API Key 进系统钥匙串，遥测默认关闭 |
 | 会话黑洞 | **会话持久化**、全文搜索、归档、跨设备同步友好 |
 
 ---
 
 ## 🆚 RunJam 对比一览
 
-| | **RunJam** | Cursor / Copilot | AionUI | 原生 CLI |
+| | **RunJam** | Cursor / Copilot | AionUI | 多终端 (tmux) |
 |---|:---:|:---:|:---:|:---:|
 | 本地优先，不上云 | ✅ | ❌ | ✅ | ✅ |
 | 兼容任意 AI Agent CLI | ✅ | ❌ | ⚠️ 仅 ACP | ✅ |
 | 模型协议自动转换 | ✅ | ❌ | ⚠️ | ❌ |
 | Agent 一键安装 | ✅ | ❌ | ❌ | ❌ |
-| 多项目并行 | ✅ | ❌ | ⚠️ | ❌ |
-| 内置编辑器 + 终端 + 文件树 | ✅ | ✅ | ⚠️ | ❌ |
-| 本地模型 (llama.cpp) | ✅ | ❌ | ❌ | ❌ |
+| 多项目并行 | ✅ | ❌ | ⚠️ | ✅ |
+| 内置编辑器 + 终端 + 文件树 | ✅ | ✅ | ⚠️ | ⚠️ |
+| 本地模型 (llama.cpp) | ✅ | ❌ | ❌ | ⚠️ |
 | 应用管理（自配网页应用） | ✅ | ❌ | ❌ | ❌ |
 | 会话看板 | ✅ | ❌ | ❌ | ❌ |
 | 费用统计看板 | ✅ | ❌ | ❌ | ❌ |
@@ -232,7 +239,7 @@
 ### 🔒 本地优先 & 安全
 
 - **数据全在本地** —— 对话、配置、Agent 状态都在 `~/.runjam/`
-- **零遥测、零分析、零回传**
+- **遥测默认关闭** —— 设置里提供可选匿名用量开关（设置 → 通用），默认关闭
 - **无云依赖** —— 完全可离线（Agent 自己要 API 时除外）
 - **系统钥匙串** —— API Key 不会落到明文配置文件里
 - **本地模型** —— 通过 llama.cpp 跑模型，零 API 费用
@@ -286,9 +293,20 @@
   - **Windows**：Microsoft Visual Studio C++ Build Tools + WebView2
   - **Linux**：`webkit2gtk` 及相关包
 
-### 方式 A —— 下载预编译安装包
+### 方式 A —— 下载安装包（最快，5 分钟上手）
 
-> 预编译安装包将在 [GitHub Releases](https://github.com/peintune/runjam/releases) 页面提供。
+从 **[GitHub Releases](https://github.com/peintune/runjam/releases/latest)** 下载最新安装包：
+
+| 平台 | 安装包 |
+|---|---|
+| macOS（Apple Silicon） | `RunJam-*-aarch64.dmg` |
+| macOS（Intel） | `RunJam-*-x64.dmg` |
+| Windows（x64） | `RunJam-*-x64-setup.exe` |
+| Linux | 开发中（见[路线图](#-路线图)） |
+
+> 国内下载慢？可搭配 [ghproxy](https://ghproxy.com) 等加速镜像，或到 [官网](https://www.runjam.app/) 获取下载直链。
+
+装好打开 RunJam，它会自动检测 `PATH` 里已有的 Agent；按下方[首次运行](#首次运行)几步走，5 分钟内就能和 Agent 聊起来。
 
 ### 方式 B —— 从源码编译
 
@@ -439,6 +457,10 @@ Cursor 和 Copilot 是 AI 驱动的代码编辑器，它们包了一个特定模
 
 AionUI 要求每个 Agent 都实现 ACP（Agent Client Protocol）。这需要每个 Agent 维护者真正投入，而且很多 Agent 根本不讲 ACP。RunJam 走另一条路：通过 stdin/stdout 直接驱动 Agent 的原生 CLI。**Agent 无需任何修改。** 这意味着 RunJam 今天就能用任何 CLI Agent，新 Agent 接入也是第一天就能用。
 
+### 为什么不用 tmux / 多开几个终端？
+
+终端给你的是"进程"，RunJam 给你的是"上下文"。tmux 不会在 Anthropic ↔ OpenAI ↔ Gemini 之间自动翻译协议，不能两下点击给某个会话换模型，不会告诉你哪个会话在烧钱，也不会在重启后保留聊天记录。如果你享受同时开五个终端，RunJam 不适合你——但如果你想要"一个窗口 + 按项目分会话 + 看板 + 费用视图"，那正是 RunJam 在 Agent 之上额外提供的东西。
+
 ### Agent CLI 必须自己装吗？
 
 不必。RunJam 自动检测 `PATH` 里的 Agent，并提供 **一键安装** Claude Code / Codex CLI / Gemini CLI（`npm install -g`），UI 实时显示进度。
@@ -449,7 +471,7 @@ AionUI 要求每个 Agent 都实现 ACP（Agent Client Protocol）。这需要�
 
 ### 我的数据会上云吗？
 
-**不会。** RunJam 是本地优先的。所有 Agent 进程都在你机器上跑。所有数据（对话、配置、Agent 状态）都本地存在 `~/.runjam/`。无遥测、无分析、无云同步。API Key 进系统钥匙串，不进配置文件。
+**不会。** RunJam 是本地优先的。所有 Agent 进程都在你机器上跑。所有数据（对话、配置、Agent 状态）都本地存在 `~/.runjam/`。遥测**默认关闭**——设置 → 通用里有可选匿名用量开关。无云同步。API Key 进系统钥匙串，不进配置文件。
 
 唯一碰到云的是 LLM API 调用本身 —— 而服务商是你选的。跑本地 llama.cpp 模型的话，全程数据都不出本机。
 

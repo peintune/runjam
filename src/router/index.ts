@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
+import { track } from "../api/telemetry";
 import WorkspaceLayout from "../components/WorkspaceLayout.vue";
 import SettingsLayout from "../components/SettingsLayout.vue";
 
@@ -81,6 +82,24 @@ const router = createRouter({
  */
 const WORKSPACE_PATHS = new Set(["/", "/board"]);
 
+/**
+ * Route names of interest mapped to stable telemetry page ids. Only pages
+ * listed here are reported, keeping `page_view` data focused on what we
+ * actually want to measure (main workspace, session board, settings pages).
+ */
+const PAGE_VIEW_IDS: Record<string, string> = {
+  workspace: "workspace",
+  board: "board",
+  "settings-agents": "settings-agents",
+  "settings-apps": "settings-apps",
+  "settings-models": "settings-models",
+  "settings-models-commercial": "settings-models-commercial",
+  "settings-general": "settings-general",
+  "settings-costs": "settings-costs",
+  "settings-skills": "settings-skills",
+  "settings-about": "settings-about",
+};
+
 router.afterEach((to) => {
   const appTabs = useAppTabsStore();
   if (WORKSPACE_PATHS.has(to.path)) {
@@ -88,6 +107,9 @@ router.afterEach((to) => {
   } else {
     appTabs.hideAll();
   }
+  // Telemetry: page view (fire-and-forget, never blocks navigation).
+  const page = typeof to.name === "string" ? PAGE_VIEW_IDS[to.name] : undefined;
+  if (page) track("page_view", { page });
 });
 
 export default router;

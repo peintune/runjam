@@ -75,7 +75,10 @@ pub fn is_enabled(conn: &Connection) -> bool {
     );
     match v {
         Ok(s) => s == "1" || s.eq_ignore_ascii_case("true"),
-        Err(_) => true,
+        // Opt-in by default: privacy-first. Users who want to help can enable
+        // the anonymous usage-data switch in Settings → General. This keeps
+        // the product consistent with its "no telemetry by default" promise.
+        Err(_) => false,
     }
 }
 
