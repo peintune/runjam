@@ -11,7 +11,6 @@ use tauri_plugin_updater::UpdaterExt;
 pub struct TelemetryStatus {
     pub installation_id: String,
     pub enabled: bool,
-    pub consent_shown: bool,
 }
 
 #[tauri::command]
@@ -21,7 +20,6 @@ pub fn get_telemetry_status(db: State<'_, Mutex<Database>>) -> TelemetryStatus {
     TelemetryStatus {
         installation_id: telemetry::get_or_create_installation_id(&conn),
         enabled: telemetry::is_enabled(&conn),
-        consent_shown: telemetry::consent_shown(&conn),
     }
 }
 
@@ -36,9 +34,8 @@ pub fn set_telemetry_enabled(
         {
             let conn = guard.conn.lock().map_err(|e| e.to_string())?;
             telemetry::set_enabled(&conn, enabled).map_err(|e| e.to_string())?;
-            telemetry::mark_consent_shown(&conn).map_err(|e| e.to_string())?;
         }
-        // Re-register so the server sees the latest consent state immediately.
+        // Re-register so the server sees the latest preference immediately.
         // NOTE: conn must be dropped before register/track — those functions
         // lock Database.conn themselves (std::sync::Mutex is not reentrant).
         if enabled {

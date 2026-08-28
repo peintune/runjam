@@ -57,7 +57,7 @@ A local-first desktop manager for **Claude Code, Codex CLI, and Gemini CLI** —
 - 🔌 **Any agent, any model.** Built-in protocol proxy converts Anthropic ↔ OpenAI ↔ Gemini on the fly. Claude Code can use GPT. Codex can use Claude. Configure once, sync everywhere.
 - 🛠️ **Zero agent modifications.** Unlike ACP-based tools, RunJam drives agents through their native CLI (stdin/stdout). Works today, with any agent.
 - 💸 **Cut your API bill.** Automatic prompt-cache detection, local response cache, and one-click local models (llama.cpp).
-- 🔒 **Local-first & private.** Conversations, configs, and API keys stay on your machine. Telemetry is off by default, no cloud sync.
+- 🔒 **Local-first & private.** Conversations, configs, and API keys stay on your machine. Telemetry is on by default (anonymous usage data — disable anytime in Settings), no cloud sync.
 
 ---
 
@@ -93,7 +93,7 @@ If you use AI coding agents daily, you've felt at least one of these:
 | Token bleed | **Prompt-cache auto-detection** + local response cache + per-session cost dashboard |
 | Setup grind | **Auto-detect + one-click install** for Claude Code, Codex CLI, Gemini CLI |
 | Single-agent lock-in | **Agent-agnostic by design** — switch agents without changing your workflow |
-| Cloud data worry | **Local-first.** All data in `~/.runjam/`, API keys in OS keychain, telemetry off by default |
+| Cloud data worry | **Local-first.** All data in `~/.runjam/`, API keys in OS keychain, telemetry on by default (opt-out in Settings) |
 | Session black hole | **Persistent sessions**, full-text search, archive, multi-device friendly |
 
 ---
@@ -237,7 +237,7 @@ Most managers just hand the agent's request to a vendor API. RunJam does more:
 ### 🔒 Local-First & Secure
 
 - **All data local** — Conversations, configs, and agent states in `~/.runjam/`
-- **Telemetry off by default** — an anonymous usage-data switch exists in Settings → General, defaulting to off
+- **Telemetry on by default** — anonymous usage data helps improve RunJam; disable anytime in Settings → General
 - **No cloud dependency** — Works fully offline (agents need their own API access)
 - **System keychain** — API keys never touch plaintext config files
 - **Local models** — Run models via llama.cpp with zero API cost
@@ -297,10 +297,21 @@ Grab the latest installer from **[GitHub Releases](https://github.com/peintune/r
 
 | Platform | Installer |
 |---|---|
-| macOS (Apple Silicon) | `RunJam-*-aarch64.dmg` |
-| macOS (Intel) | `RunJam-*-x64.dmg` |
-| Windows (x64) | `RunJam-*-x64-setup.exe` |
+| macOS (Apple Silicon) | `RunJam_*-aarch64.dmg` |
+| macOS (Intel) | `RunJam_*-x64.dmg` |
+| Windows (x64) | `RunJam_*-x64-setup.exe` |
 | Linux | Work in progress (see [Roadmap](#-roadmap)) |
+
+> **macOS Gatekeeper:** RunJam isn't Apple-notarized yet, so macOS may warn "RunJam is damaged and can't be opened" on first launch. Fix it one of two ways:
+>
+> - Right-click `RunJam.app` → **Open**, then confirm **Open** in the dialog; or
+> - Remove the quarantine flag in Terminal:
+>
+> ```bash
+> xattr -cr /Applications/RunJam.app
+> ```
+>
+> (Developer ID signing + notarization are in the works to remove this step.)
 
 Install, open RunJam, and it auto-detects the AI agents already on your `PATH`. Then follow the [First Run](#first-run) steps — most people are chatting with an agent in under 5 minutes.
 
@@ -467,7 +478,7 @@ Yes. That's exactly what the protocol proxy is for. Example: Claude Code (Anthro
 
 ### Is my data sent to the cloud?
 
-**No.** RunJam is local-first. All agent processes run on your machine. All data (conversations, configs, agent states) is stored locally in `~/.runjam/`. Telemetry is **off by default** — an optional anonymous usage-data switch exists in Settings → General. There is no cloud sync. API keys live in the OS keychain, not in config files.
+**No.** RunJam is local-first. All agent processes run on your machine. All data (conversations, configs, agent states) is stored locally in `~/.runjam/`. Telemetry is **on by default** — anonymous usage data (launch & version info, key feature usage, sanitized error logs) helps improve the product. You can disable it anytime in Settings → General. There is no cloud sync. API keys live in the OS keychain, not in config files.
 
 The only thing that touches the cloud is the LLM API call itself — and you choose the provider. Run a local llama.cpp model and nothing leaves your laptop at all.
 
@@ -496,6 +507,21 @@ xattr -cr /Applications/RunJam.app
 ### Can I add my own agent that's not in the supported list?
 
 Yes. RunJam's agent layer is small and explicit — adding a new agent is a matter of detection + invocation. See `CONTRIBUTING.md` for the agent integration guide. PRs welcome.
+
+---
+
+## 💬 Feedback & Community
+
+We'd love to hear from you — bug reports, feature requests, or just saying hi. Pick whichever channel fits you best:
+
+- 🐛 **GitHub Issues** — Report bugs, request features, or track progress → [github.com/peintune/runjam/issues](https://github.com/peintune/runjam/issues)
+- 💡 **GitHub Discussions** — Ask questions and chat with the community → [github.com/peintune/runjam/discussions](https://github.com/peintune/runjam/discussions)
+- 🎮 **Discord** — Real-time chat with the team and community → [Join our Discord](https://discord.gg/bwY3BQ9wm6)
+<p align="center">
+  <img src="docs/qrcodes/discord.jpg" width="160" alt="discord QR Code" />
+</p>
+
+> **Tip:** For bug reports, please include your OS, RunJam version, and steps to reproduce — it helps us fix things faster. 🙏
 
 ---
 

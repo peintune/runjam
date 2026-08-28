@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 export interface TelemetryStatus {
   installationId: string;
   enabled: boolean;
-  consentShown: boolean;
 }
 
 export async function getTelemetryStatus(): Promise<TelemetryStatus> {

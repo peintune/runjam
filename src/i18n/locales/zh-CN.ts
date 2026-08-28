@@ -25,14 +25,6 @@ const zhCN: Record<TranslationKey, string> = {
   "common.version": "版本",
   "common.none": "无",
 
-  // ── App: telemetry consent ──────────────────────────────────────────────
-  "app.consent.title": "帮助改进 RunJam",
-  "app.consent.body": "RunJam 会收集以下匿名信息用于改进产品：启动与版本信息、关键功能使用情况（如新建会话）、错误日志（已自动脱敏，去除本地路径与密钥）。",
-  "app.consent.noCode": "不会收集你的代码、对话内容或 IP 地址。",
-  "app.consent.disableAt": "你可以随时在 设置 → 通用 中关闭。",
-  "app.consent.decline": "暂不开启",
-  "app.consent.accept": "同意并继续",
-
   // ── First-run setup ─────────────────────────────────────────────────────
   "setup.title": "欢迎使用 RunJam",
   "setup.subtitle": "选择主题和语言，马上开始",

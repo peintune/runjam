@@ -25,14 +25,6 @@ const en = {
   "common.version": "Version",
   "common.none": "None",
 
-  // ── App: telemetry consent ──────────────────────────────────────────────
-  "app.consent.title": "Help improve RunJam",
-  "app.consent.body": "RunJam collects the following anonymous data to improve the product: launch & version info, key feature usage (e.g. creating a session), and error logs (auto-sanitized to remove local paths and keys).",
-  "app.consent.noCode": "No code, conversations or IP addresses are collected.",
-  "app.consent.disableAt": "You can disable this at any time in Settings → General.",
-  "app.consent.decline": "Not now",
-  "app.consent.accept": "Accept & continue",
-
   // ── First-run setup ─────────────────────────────────────────────────────
   "setup.title": "Welcome to RunJam",
   "setup.subtitle": "Choose a theme and language to get started",

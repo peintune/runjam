@@ -59,7 +59,7 @@
 - 🔌 **任意 Agent，任意模型。** 内置协议代理，Anthropic ↔ OpenAI ↔ Gemini 实时互转。Claude Code 跑 GPT、Codex 跑 Claude 都行。配置一次，全 Agent 同步。
 - 🛠️ **Agent 零改造。** 不像 ACP 系方案，RunJam 直接通过原生 CLI 的 stdin/stdout 驱动 Agent。今天就能用，任意 Agent 都能接。
 - 💸 **把 API 账单砍下来。** 自动检测 prompt cache、本地响应缓存、一键启动本地模型（llama.cpp）。
-- 🔒 **本地优先，隐私安全。** 对话、配置、API Key 全在你机器上。遥测默认关闭，零云同步。
+- 🔒 **本地优先，隐私安全。** 对话、配置、API Key 全在你机器上。遥测默认开启（匿名用量数据，设置里可随时关闭），零云同步。
 
 ---
 
@@ -95,7 +95,7 @@
 | Token 烧钱 | **自动检测 prompt cache** + 本地响应缓存 + 每会话费用看板 |
 | 配环境崩溃 | **自动检测 + 一键安装** Claude Code / Codex CLI / Gemini CLI |
 | 单一 Agent 锁定 | **Agent 中立** —— 换 Agent 不换工作流 |
-| 云端数据焦虑 | **本地优先**，数据全在 `~/.runjam/`，API Key 进系统钥匙串，遥测默认关闭 |
+| 云端数据焦虑 | **本地优先**，数据全在 `~/.runjam/`，API Key 进系统钥匙串，遥测默认开启（可随时关闭） |
 | 会话黑洞 | **会话持久化**、全文搜索、归档、跨设备同步友好 |
 
 ---
@@ -239,7 +239,7 @@
 ### 🔒 本地优先 & 安全
 
 - **数据全在本地** —— 对话、配置、Agent 状态都在 `~/.runjam/`
-- **遥测默认关闭** —— 设置里提供可选匿名用量开关（设置 → 通用），默认关闭
+- **遥测默认开启** —— 匿名用量数据帮助改进产品（设置 → 通用可随时关闭）
 - **无云依赖** —— 完全可离线（Agent 自己要 API 时除外）
 - **系统钥匙串** —— API Key 不会落到明文配置文件里
 - **本地模型** —— 通过 llama.cpp 跑模型，零 API 费用
@@ -299,10 +299,21 @@
 
 | 平台 | 安装包 |
 |---|---|
-| macOS（Apple Silicon） | `RunJam-*-aarch64.dmg` |
-| macOS（Intel） | `RunJam-*-x64.dmg` |
-| Windows（x64） | `RunJam-*-x64-setup.exe` |
+| macOS（Apple Silicon） | `RunJam_*-aarch64.dmg` |
+| macOS（Intel） | `RunJam_*-x64.dmg` |
+| Windows（x64） | `RunJam_*-x64-setup.exe` |
 | Linux | 开发中（见[路线图](#-路线图)） |
+
+> **macOS Gatekeeper 说明：** RunJam 目前尚未做 Apple 公证（notarization），首次打开 macOS 可能提示「RunJam 已损坏，无法打开」。二选一解决：
+>
+> - 右键 `RunJam.app` → **打开**，在弹窗中再点一次**打开**；或
+> - 终端执行移除隔离属性：
+>
+> ```bash
+> xattr -cr /Applications/RunJam.app
+> ```
+>
+> （Developer ID 签名 + 公证正在接入中，届时可免去这一步。）
 
 > 国内下载慢？可搭配 [ghproxy](https://ghproxy.com) 等加速镜像，或到 [官网](https://www.runjam.app/) 获取下载直链。
 
@@ -471,7 +482,7 @@ AionUI 要求每个 Agent 都实现 ACP（Agent Client Protocol）。这需要�
 
 ### 我的数据会上云吗？
 
-**不会。** RunJam 是本地优先的。所有 Agent 进程都在你机器上跑。所有数据（对话、配置、Agent 状态）都本地存在 `~/.runjam/`。遥测**默认关闭**——设置 → 通用里有可选匿名用量开关。无云同步。API Key 进系统钥匙串，不进配置文件。
+**不会。** RunJam 是本地优先的。所有 Agent 进程都在你机器上跑。所有数据（对话、配置、Agent 状态）都本地存在 `~/.runjam/`。遥测**默认开启**——匿名用量数据（启动与版本信息、关键功能使用、脱敏错误日志）帮助改进产品，可在设置 → 通用里随时关闭。无云同步。API Key 进系统钥匙串，不进配置文件。
 
 唯一碰到云的是 LLM API 调用本身 —— 而服务商是你选的。跑本地 llama.cpp 模型的话，全程数据都不出本机。
 
@@ -500,6 +511,25 @@ xattr -cr /Applications/RunJam.app
 ### 我能加一个不在支持列表里的 Agent 吗？
 
 可以。RunJam 的 Agent 层小而显式 —— 加新 Agent 只需要加检测 + 调用。详见 `CONTRIBUTING.md` 的 Agent 集成指南。欢迎 PR。
+
+---
+
+## 💬 反馈与社区
+
+欢迎随时来找我们 —— 报 Bug、提需求、或者只是打个招呼,选你最顺手的渠道：
+
+- 🐛 **GitHub Issues** —— 报告 Bug、功能请求、进度追踪 → [github.com/peintune/runjam/issues](https://github.com/peintune/runjam/issues)
+- 💡 **GitHub Discussions** —— 提问、和社区交流 → [github.com/peintune/runjam/discussions](https://github.com/peintune/runjam/discussions)
+- 💬 **QQ 群 / QQ** —— 中文用户交流群,扫下方二维码加入：
+
+<p align="center">
+  <img src="docs/qrcodes/qq_group.jpg" width="160" alt="QQ 群二维码" />
+  <img src="docs/qrcodes/qq_channel.jpg" width="160" alt="QQ频道二维码" />
+  <br/>
+  <sub>QQ 群 &nbsp;·&nbsp; QQ 频道</sub>
+</p>
+
+> **小提示：** 报 Bug 时请附上操作系统、RunJam 版本和复现步骤,能帮我们更快定位问题。🙏
 
 ---
 

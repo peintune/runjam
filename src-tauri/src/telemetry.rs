@@ -25,7 +25,6 @@ use tauri::Manager;
 
 pub const KEY_INSTALLATION_ID: &str = "installation_id";
 pub const KEY_TELEMETRY_ENABLED: &str = "telemetry_enabled";
-pub const KEY_CONSENT_SHOWN: &str = "telemetry_consent_shown";
 pub const KEY_PROXY_URL: &str = "outbound_proxy";
 // 注意用 www 前缀：裸域名 runjam.app 会 308 跳转到 www.runjam.app，而 ureq 2.x
 // 对带 body 的 POST 不自动跟随 307/308（见 AgentBuilder::redirects 文档），
@@ -66,7 +65,8 @@ pub fn get_or_create_installation_id(conn: &Connection) -> String {
     }
 }
 
-/// Default ON (industry standard for dev tools), user can opt out.
+/// Default ON (industry standard for dev tools), user can opt out anytime in
+/// Settings → General.
 pub fn is_enabled(conn: &Connection) -> bool {
     let v: Result<String, _> = conn.query_row(
         "SELECT value FROM app_settings WHERE key = ?1",
@@ -75,20 +75,12 @@ pub fn is_enabled(conn: &Connection) -> bool {
     );
     match v {
         Ok(s) => s == "1" || s.eq_ignore_ascii_case("true"),
-        // Opt-in by default: privacy-first. Users who want to help can enable
-        // the anonymous usage-data switch in Settings → General. This keeps
-        // the product consistent with its "no telemetry by default" promise.
-        Err(_) => false,
+        // Opt-out by default: telemetry starts enabled so we can learn how the
+        // product is used. Users who don't want it can disable the anonymous
+        // usage-data switch in Settings → General. Users who explicitly opted
+        // out keep their choice (the row is stored as "0").
+        Err(_) => true,
     }
-}
-
-pub fn consent_shown(conn: &Connection) -> bool {
-    let v: Result<String, _> = conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        [KEY_CONSENT_SHOWN],
-        |r| r.get(0),
-    );
-    v.is_ok()
 }
 
 pub fn set_enabled(conn: &Connection, enabled: bool) -> rusqlite::Result<()> {
@@ -101,14 +93,6 @@ pub fn set_enabled(conn: &Connection, enabled: bool) -> rusqlite::Result<()> {
         conn.execute("DELETE FROM telemetry_queue", [])?;
     }
     Ok(())
-}
-
-pub fn mark_consent_shown(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
-        rusqlite::params![KEY_CONSENT_SHOWN, "1"],
-    )
-    .map(|_| ())
 }
 
 /// Outbound proxy used for telemetry reporting. Empty string = no proxy.

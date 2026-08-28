@@ -9,8 +9,6 @@ import { faviconFor, type AppItem } from "./stores/useAppsStore";
 import { getAgentStatuses } from "./api/agents";
 import { getModels } from "./api/models";
 import {
-  getTelemetryStatus,
-  setTelemetryEnabled,
   checkUpdateUi,
   getAnnouncements,
   markAnnouncementRead,
@@ -32,9 +30,6 @@ const { toasts, removeToast } = useToast();
 // First-launch setup (theme + language).
 const showSetup = ref(false);
 
-// First-launch telemetry consent dialog.
-const showConsent = ref(false);
-const deciding = ref(false);
 
 onMounted(async () => {
   // Ask for theme/language preferences on the very first launch.
@@ -44,15 +39,6 @@ onMounted(async () => {
     }
   } catch {
     // ignore storage errors
-  }
-  try {
-    const status = await getTelemetryStatus();
-    // Only ask on first launch; once answered we never show it again.
-    if (!status.consentShown) {
-      showConsent.value = true;
-    }
-  } catch {
-    // Backend without telemetry support (older builds) — skip silently.
   }
 
   // Kick off update check + announcement fetch in the background.
@@ -83,19 +69,6 @@ onMounted(async () => {
     }
   }).catch(() => {});
 });
-
-async function decideConsent(enabled: boolean) {
-  if (deciding.value) return;
-  deciding.value = true;
-  try {
-    await setTelemetryEnabled(enabled);
-  } catch {
-    // Non-fatal: consent dialog just closes.
-  } finally {
-    deciding.value = false;
-    showConsent.value = false;
-  }
-}
 
 // Update prompt + announcements state.
 const updateResult = ref<UpdateCheckResult | null>(null);
@@ -169,36 +142,6 @@ Promise.all([
 
   <!-- First-launch setup (theme + language) -->
   <WelcomeSetup v-if="showSetup" @done="showSetup = false" />
-
-  <!-- First-launch telemetry consent -->
-  <div
-    v-if="showConsent"
-    class="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 px-6"
-  >
-    <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-      <h2 class="text-[18px] font-semibold text-gray-900 tracking-tight">{{ $t("app.consent.title") }}</h2>
-      <p class="mt-3 text-[13px] leading-relaxed text-gray-500">
-        {{ $t("app.consent.body") }}<span class="font-medium text-gray-700"> {{ $t("app.consent.noCode") }}</span>
-        {{ $t("app.consent.disableAt") }}
-      </p>
-      <div class="mt-6 flex items-center justify-end gap-3">
-        <button
-          class="rounded-md px-4 py-2 text-[13px] font-medium text-gray-500 hover:text-gray-700 transition-colors"
-          :disabled="deciding"
-          @click="decideConsent(false)"
-        >
-          {{ $t("app.consent.decline") }}
-        </button>
-        <button
-          class="rounded-md bg-blue-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
-          :disabled="deciding"
-          @click="decideConsent(true)"
-        >
-          {{ $t("app.consent.accept") }}
-        </button>
-      </div>
-    </div>
-  </div>
 
   <!-- Update prompt -->
   <UpdatePrompt
