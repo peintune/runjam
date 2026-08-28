@@ -1,16 +1,16 @@
 {
   "name": "runjam",
-  "version": "1.0.79",
+  "version": "1.0.80",
   "type": "module",
   "description": "RunJam — A unified desktop manager for AI coding agents. Run Claude Code, Codex CLI, and Gemini CLI in one place.",
   "license": "MIT",
-  "homepage": "https://github.com/nicepkg/runjam",
+  "homepage": "https://github.com/peintune/runjam",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nicepkg/runjam.git"
+    "url": "https://github.com/peintune/runjam.git"
   },
   "bugs": {
-    "url": "https://github.com/nicepkg/runjam/issues"
+    "url": "https://github.com/peintune/runjam/issues"
   },
   "keywords": [
     "ai-agent",

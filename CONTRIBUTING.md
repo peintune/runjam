@@ -16,7 +16,7 @@ Thanks for your interest in contributing to RunJam! 🎉
 
 ```bash
 # Clone the repo
-git clone https://github.com/nicepkg/runjam.git
+git clone https://github.com/peintune/runjam.git
 cd runjam
 
 # Install frontend dependencies
@@ -62,7 +62,7 @@ Build artifacts are in `src-tauri/target/release/bundle/`.
 
 ## Reporting Bugs
 
-Open a [GitHub Issue](https://github.com/nicepkg/runjam/issues) with:
+Open a [GitHub Issue](https://github.com/peintune/runjam/issues) with:
 
 1. **OS** (macOS / Windows) and version
 2. **RunJam version** (find in Settings → General)

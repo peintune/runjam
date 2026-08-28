@@ -60,7 +60,7 @@ npm run dev                  # http://localhost:3000
 - 手动：SQL Editor 执行
   ```sql
   insert into releases (version, published_at, notes, download_urls, staged)
-  values ('v0.2.0', now(), '# 更新内容', '{"macos_aarch64":"https://github.com/nicepkg/runjam/releases/download/v0.2.0/xxx.dmg"}', false);
+  values ('v0.2.0', now(), '# 更新内容', '{"macos_aarch64":"https://github.com/peintune/runjam/releases/download/v0.2.0/xxx.dmg"}', false);
   ```
 - 自动（推荐）：在桌面仓库 CI 里加一步调用
   `POST https://<your-domain>/api/…`（或直接用 GitHub Actions 里的 supabase-js / psql 更新表）。
