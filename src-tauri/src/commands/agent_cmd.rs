@@ -50,6 +50,10 @@ fn save_agent_status_to_db(conn: &rusqlite::Connection, agent_id: &str, status: 
 /// Persist detection results (version, install path, etc.) without overwriting
 /// the status that a manual Test already saved.
 fn save_detected_agent(conn: &rusqlite::Connection, agent: &Agent) {
+    // Never persist an empty display name — install_agent()/test_agent() build
+    // Agent values without one, and an empty value written here is later read
+    // back by the cache path and rendered as a nameless agent.
+    let display_name = Agent::resolve_display_name(&agent.id, &agent.display_name);
     conn.execute(
         "INSERT INTO agents (id, display_name, installed, status, version, install_path, detected_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -61,7 +65,7 @@ fn save_detected_agent(conn: &rusqlite::Connection, agent: &Agent) {
              detected_at  = excluded.detected_at",
         (
             &agent.id,
-            &agent.display_name,
+            &display_name,
             agent.installed as i32,
             &agent.status,
             agent.version.as_deref().unwrap_or(""),
@@ -78,9 +82,12 @@ fn load_cached_agents(conn: &rusqlite::Connection) -> Option<Vec<Agent>> {
     let mut stmt = conn.prepare("SELECT id, display_name, installed, status, version, install_path, last_tested_at FROM agents WHERE detected_at IS NOT NULL AND detected_at > ?").ok()?;
     
     let agents_iter = stmt.query_map([cutoff_time.as_str()], |row| {
+        let id: String = row.get(0)?;
+        let display_name: String = row.get(1)?;
         Ok(Agent {
-            id: row.get(0)?,
-            display_name: row.get(1)?,
+            // Repair rows written by older builds that stored an empty name.
+            display_name: Agent::resolve_display_name(&id, &display_name),
+            id,
             installed: row.get(2)?,
             status: row.get(3)?,
             version: row.get(4)?,
@@ -106,9 +113,11 @@ fn load_cached_agent_single(conn: &rusqlite::Connection, agent_id: &str) -> Opti
         "SELECT id, display_name, installed, status, version, install_path, last_tested_at FROM agents WHERE id = ?"
     ).ok()?;
     stmt.query_row([agent_id], |row| {
+        let id: String = row.get(0)?;
+        let display_name: String = row.get(1)?;
         Ok(Agent {
-            id: row.get(0)?,
-            display_name: row.get(1)?,
+            display_name: Agent::resolve_display_name(&id, &display_name),
+            id,
             installed: row.get(2)?,
             status: row.get(3)?,
             version: row.get(4)?,
@@ -134,8 +143,8 @@ pub fn check_agent(agent_id: String, app_state: State<'_, Mutex<AppState>>) -> A
         .into_iter()
         .find(|a| a.id == agent_id)
         .unwrap_or_else(|| Agent {
+            display_name: Agent::display_name_for(&agent_id),
             id: agent_id.clone(),
-            display_name: String::new(),
             install_path: None,
             version: None,
             installed: false,
@@ -423,8 +432,8 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         let agent = {
             let is_installed = install_path.is_some();
             Agent {
+                display_name: Agent::display_name_for(&agent_id),
                 id: agent_id.clone(),
-                display_name: String::new(),
                 install_path: install_path.clone(),
                 version: version.clone(),
                 installed: is_installed,
@@ -470,8 +479,8 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         );
 
         Ok(Agent {
+            display_name: Agent::display_name_for(&agent_id),
             id: agent_id,
-            display_name: String::new(),
             install_path,
             version,
             installed: true,
@@ -935,6 +944,9 @@ pub async fn get_agent_statuses(
                 agent.status = "not_installed".to_string();
                 agent.last_tested_at = None;
             }
+            // Guarantee a non-empty name regardless of which branch (fresh
+            // detection, DB cache, or bundled-Node fallback) produced the agent.
+            agent.display_name = Agent::resolve_display_name(&agent.id, &agent.display_name);
         }
     }
 
@@ -955,8 +967,8 @@ pub async fn test_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, M
     let mut agent = {
         let agents = detector::detect_agents();
         agents.into_iter().find(|a| a.id == agent_id).unwrap_or_else(|| Agent {
+            display_name: Agent::display_name_for(&agent_id),
             id: agent_id.clone(),
-            display_name: String::new(),
             install_path: None,
             version: None,
             installed: false,

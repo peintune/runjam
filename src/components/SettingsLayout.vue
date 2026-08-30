@@ -8,8 +8,8 @@ const router = useRouter();
 const route = useRoute();
 
 const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] = [
-  { path: "/settings/models", labelKey: "settings.localModels", icon: Cpu },
   { path: "/settings/models/commercial", labelKey: "settings.commercialModels", icon: Globe },
+  { path: "/settings/models", labelKey: "settings.localModels", icon: Cpu },
   { path: "/settings/apps", labelKey: "settings.apps", icon: AppWindow },
   { path: "/settings/agents", labelKey: "settings.agents", icon: Bot },
   { path: "/settings/costs", labelKey: "settings.costs", icon: BarChart3 },

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RunJam",
-  "version": "1.0.81",
+  "version": "1.0.82",
   "identifier": "com.runjam.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -53,7 +53,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMzVBNEMzMzYwRjFCREIKUldUYkd3ODJ3NlExL0NqcmltWTFrU0RmTndyYXR4UDFBaCt4V0RQcXovZlZiT3Q2bVVnbk9tZ08K",
       "endpoints": [
-        "https://runjam-web.vercel.app/api/updates/latest"
+        "https://runjam.app/api/updates/latest"
       ],
       "windows": {
         "installMode": "passive"

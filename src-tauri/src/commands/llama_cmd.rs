@@ -175,17 +175,22 @@ pub fn get_llama_server_status() -> String {
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
         return format!("running:{}", LLAMA_SERVER_PORT.load(Ordering::Relaxed));
     }
-    
-    for port in 19090..19100 {
-        if check_server_running(port) {
-            return format!("running:{}", port);
-        }
+
+    // Only probe the recorded port and the default port. Probing a range of
+    // ports serially with a per-port HTTP timeout caused multi-second freezes
+    // (worst case ~50s) every time the local models page was opened on Windows.
+    let recorded_port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
+    if recorded_port != 0 && check_server_running(recorded_port) {
+        return format!("running:{}", recorded_port);
     }
-    
+    if recorded_port != 19090 && check_server_running(19090) {
+        return format!("running:{}", 19090);
+    }
+
     if !check_llama_server_available() {
         return "not_available".to_string();
     }
-    
+
     "stopped".to_string()
 }
 
@@ -390,7 +395,9 @@ fn find_free_port(start_port: u16) -> u16 {
 
 fn check_server_running(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/v1/models", port);
-    match ureq::get(&url).timeout(Duration::from_secs(5)).call() {
+    // Loopback probe: 1s is plenty. Unreachable local ports usually fail
+    // instantly; the timeout only matters for firewalled/dropped connections.
+    match ureq::get(&url).timeout(Duration::from_millis(1000)).call() {
         Ok(response) => {
             let status = response.status();
             status == 200 || status == 201 || status == 204

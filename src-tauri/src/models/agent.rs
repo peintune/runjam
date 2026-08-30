@@ -12,6 +12,27 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Canonical display name for a built-in agent id. Unknown ids fall back to
+    /// the id itself so the UI always has something to render.
+    pub fn display_name_for(id: &str) -> String {
+        Self::builtin_agents()
+            .into_iter()
+            .find(|a| a.id == id)
+            .map(|a| a.display_name)
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Never let an empty `display_name` through: the UI renders it verbatim
+    /// (new-session agent picker, session titles), and once an empty value is
+    /// persisted it keeps being served from the agents cache.
+    pub fn resolve_display_name(id: &str, display_name: &str) -> String {
+        if display_name.trim().is_empty() {
+            Self::display_name_for(id)
+        } else {
+            display_name.to_string()
+        }
+    }
+
     pub fn builtin_agents() -> Vec<Agent> {
         vec![
             Agent {

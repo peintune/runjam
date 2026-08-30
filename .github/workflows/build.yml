@@ -11,6 +11,25 @@ jobs:
   # ── Windows x64 ──────────────────────────────────
   build-windows:
     runs-on: windows-latest
+    env:
+      # ── SignPath Foundation 代码签名（免费，开源项目专用）────────────
+      # 不配置 → 安装包未签名 → SmartScreen 拦截（"Windows 已保护你的电脑"）
+      #          + UAC 显示"发布者: 未知" + 浏览器标记"不常见的下载"。
+      # 配置后 → 下方 SignPath 签名步骤自动生效，未配置则原样发布未签名包。
+      #
+      # 为什么用 SignPath 而不是自己买证书：
+      #   2023-06-01 起 CA/B 论坛要求 OV/IV 代码签名私钥必须存于 FIPS 140-2 L2
+      #   硬件 token 或云 HSM，CA 不再签发可下载的 .pfx —— 自建 CI 里没法用
+      #   signtool 直接签。SignPath 把签名放在云端 HSM 完成，且对 OSS 项目免费。
+      #   注：2024-03 起 EV 证书已无 SmartScreen 特权，故这里不需要 EV。
+      #
+      # 需要的 Repo 变量/密钥（申请与取值见 docs/signing-signpath.md）:
+      #   secrets.SIGNPATH_API_TOKEN                   SignPath CI 用户 API token
+      #   vars.SIGNPATH_ORGANIZATION_ID                SignPath 组织 ID (UUID)
+      #   vars.SIGNPATH_PROJECT_SLUG                   项目 slug，如 runjam
+      #   vars.SIGNPATH_SIGNING_POLICY_SLUG            签名策略 slug，如 release-signing
+      #   vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG    (可选) 制品配置 slug
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -45,6 +64,93 @@ jobs:
           TAURI_ENV_PLATFORM_TARGET: x86_64-pc-windows-msvc
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # ── SignPath Foundation 代码签名（免费，消除 SmartScreen 拦截）──────
+      #
+      # 未签名的 NSIS 安装包会触发：
+      #   1. SmartScreen: "Windows 已保护你的电脑"（需点"更多信息 → 仍要运行"）
+      #   2. UAC 弹窗: "发布者: 未知"
+      #   3. Edge/Chrome: "此文件不常见，可能有危险"
+      #
+      # SignPath 的校验要求（docs.signpath.io/trusted-build-systems/github）:
+      #   - 制品必须先作为 workflow artifact 上传，才能提交签名请求
+      #   - OSS 项目要求：本次 workflow 的所有 job 都跑在 GitHub-hosted runner 上
+      #     （本文件全部使用 windows-latest / macos-* / ubuntu-latest，已满足）
+      #   - upload-artifact 默认打成 ZIP，因此 SignPath 侧 Artifact Configuration
+      #     根元素必须是 <zip-file>（配置见 docs/signing-signpath.md）
+      #
+      # 关键顺序：Tauri updater 的 .sig 是对文件字节做 minisign 校验的，签名会
+      # 改变文件字节，所以必须「签名 → 重签 .sig」，否则用户自动更新会校验失败。
+      - name: Stage unsigned installer for SignPath
+        if: env.SIGNPATH_API_TOKEN != ''
+        shell: bash
+        run: |
+          mkdir -p unsigned-installer
+          cp src-tauri/target/release/bundle/nsis/RunJam_*_x64-setup.exe unsigned-installer/
+          ls -l unsigned-installer/
+
+      # 名字刻意不含 runjam 前缀：create-release 用 pattern 'runjam-*' 收集产物，
+      # 若被匹配会把未签名包一起打进 Release。
+      - name: Upload unsigned installer artifact
+        id: upload-unsigned
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: actions/upload-artifact@v5
+        with:
+          name: unsigned-installer-tmp
+          path: unsigned-installer/*
+          if-no-files-found: error
+
+      - name: Submit SignPath signing request
+        id: signpath
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-installer
+
+      - name: Install signed build and regenerate updater signature
+        if: env.SIGNPATH_API_TOKEN != ''
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          NSIS_DIR="src-tauri/target/release/bundle/nsis"
+          UNSIGNED="$(ls "$NSIS_DIR"/RunJam_*_x64-setup.exe | head -n1)"
+          NAME="$(basename "$UNSIGNED")"
+
+          # zip 内目录结构不保证平铺，用 find 定位而不是假定路径
+          SIGNED="$(find signed-installer -type f -name "$NAME" | head -n1)"
+          if [[ -z "$SIGNED" ]]; then
+            echo "::error::SignPath 未产出签名文件 $NAME"
+            find signed-installer -type f | head -n 50
+            exit 1
+          fi
+          cp -f "$SIGNED" "$UNSIGNED"
+          echo "✅ 已替换为 SignPath 签名版: $NAME"
+
+          # 字节已改变，原 .sig 失效，用同一把 Tauri 私钥重签
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::已启用 SignPath 签名，但缺少 TAURI_SIGNING_PRIVATE_KEY，无法重签 .sig"
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/tauri-updater.key"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEY_FILE"
+          rm -f "$UNSIGNED.sig"
+          npx --yes @tauri-apps/cli@^2 signer sign \
+            --private-key "$KEY_FILE" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$UNSIGNED"
+          rm -f "$KEY_FILE"
+          ls -l "$UNSIGNED.sig"
+          echo "✅ updater 签名已重新生成"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v5
@@ -125,16 +231,17 @@ jobs:
           fi
           # 4) Verify
           codesign --verify --deep --strict "$APP_DIR" && echo "✅ codesign verify passed"
-          # 5) Rebuild DMG with the newly-signed .app
-          which create-dmg >/dev/null 2>&1 || npm install -g create-dmg 2>/dev/null || true
+          # 5) 重新打包 DMG，内含 Applications 拖拽快捷方式。
+          #    注意：不能直接 `hdiutil create -srcfolder "$APP_DIR"` —— 那样镜像里
+          #    只有 RunJam.app，没有 /Applications 软链接，用户打开 DMG 后看不到
+          #    "拖到 Applications" 的图标。make-dmg.sh 会先组装 staging 目录。
+          #    可选第 3 个参数传背景图 PNG → 生成带背景图/图标定位的美化版。
           DMG_OUT="src-tauri/target/x86_64-apple-darwin/release/bundle/dmg"
           mkdir -p "$DMG_OUT"
           rm -f "$DMG_OUT"/*.dmg
           VERSION=$(node -p "require('./package.json').version")
-          if command -v hdiutil >/dev/null 2>&1; then
-            hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
-              "$DMG_OUT/RunJam_${VERSION}_x64.dmg"
-          fi
+          chmod +x scripts/make-dmg.sh
+          bash scripts/make-dmg.sh "$APP_DIR" "$DMG_OUT/RunJam_${VERSION}_x64.dmg"
 
       - name: Upload macOS Intel artifacts
         uses: actions/upload-artifact@v5
@@ -210,15 +317,17 @@ jobs:
           # It will pass once you add Developer ID signing + notarization (step below).
           # To let users bypass: xattr -rd com.apple.quarantine /Applications/RunJam.app
 
-          # 5) Rebuild DMG so it contains the newly re-signed app.
+          # 5) 重新打包 DMG，内含 Applications 拖拽快捷方式。
+          #    不能直接 `hdiutil create -srcfolder "$APP_DIR"` —— 那样镜像里只有
+          #    RunJam.app，没有 /Applications 软链接，打开 DMG 后没有可拖放的
+          #    Applications 图标。make-dmg.sh 会先组装 staging 目录再打包。
+          #    可选第 3 个参数传背景图 PNG → 生成带背景图/图标定位的美化版。
           DMG_OUT="src-tauri/target/release/bundle/dmg"
           mkdir -p "$DMG_OUT"
           rm -f "$DMG_OUT"/*.dmg
           VERSION=$(node -p "require('./package.json').version")
-          if command -v hdiutil >/dev/null 2>&1; then
-            hdiutil create -volname "RunJam" -srcfolder "$APP_DIR" -ov -format UDZO \
-              "$DMG_OUT/RunJam_${VERSION}_aarch64.dmg"
-          fi
+          chmod +x scripts/make-dmg.sh
+          bash scripts/make-dmg.sh "$APP_DIR" "$DMG_OUT/RunJam_${VERSION}_aarch64.dmg"
 
       # Optional — Developer ID + Notarization (removes the need for xattr workaround).
       # Uncomment and add the following GitHub Repo Secrets to enable:

@@ -110,6 +110,60 @@ fn safe_get_version(agent_id: &str, bin_path: &str, bin_dir: &std::path::Path, p
     get_version(bin_path, path_env)
 }
 
+/// Candidate file names of an agent binary inside a directory.
+///
+/// On Windows npm writes a shim `<name>`, a `<name>.cmd`, a `<name>.ps1` and
+/// (for some packages) a standalone `<name>.exe`. `.cmd` is preferred: the
+/// standalone `.exe` bundles a Node runtime that statically links ConPTY APIs
+/// (ClosePseudoConsole, Win10 1809+) and fails to load on older Windows.
+fn bin_candidates(bin_name: &str) -> Vec<String> {
+    if cfg!(target_os = "windows") {
+        vec![
+            format!("{}.cmd", bin_name),
+            format!("{}.exe", bin_name),
+            bin_name.to_string(),
+        ]
+    } else {
+        vec![bin_name.to_string()]
+    }
+}
+
+fn find_bin_in(dir: &std::path::Path, bin_name: &str) -> Option<PathBuf> {
+    bin_candidates(bin_name)
+        .iter()
+        .map(|c| dir.join(c))
+        .find(|p| p.exists())
+}
+
+/// Node.js shipped inside the app bundle (Tauri resource dir). Detection runs
+/// without an AppHandle, so resolve it relative to the executable, which is
+/// where Tauri places resources (Windows: next to the .exe, macOS: ../Resources).
+fn bundled_node_dirs() -> Vec<PathBuf> {
+    let exe = match std::env::current_exe().ok() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let exe_dir = match exe.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return Vec::new(),
+    };
+    if cfg!(target_os = "windows") {
+        vec![exe_dir.join("nodejs")]
+    } else if cfg!(target_os = "macos") {
+        vec![exe_dir.join("..").join("Resources").join("nodejs").join("bin")]
+    } else {
+        vec![
+            exe_dir.join("nodejs").join("bin"),
+            exe_dir
+                .join("..")
+                .join("lib")
+                .join("runjam")
+                .join("nodejs")
+                .join("bin"),
+        ]
+    }
+}
+
 /// Scan PATH for installed AI coding agents.
 pub fn detect_agents() -> Vec<Agent> {
     let mut agents = Agent::builtin_agents();
@@ -125,14 +179,24 @@ pub fn detect_agents() -> Vec<Agent> {
         let agent_id = agent.id.clone();
 
         // Also check RunJam's bundled Node.js global bin dir and common npm dirs
+        let data_node_dir = dirs_data_dir().join("nodejs").join("node-v22.12.0");
         let mut extra_paths: Vec<std::path::PathBuf> = vec![
-            // RunJam auto-downloaded Node.js
-            dirs_data_dir().join("nodejs").join("node-v22.12.0").join("bin"),
             // Common npm global dirs
             home_dir().unwrap_or_default().join(".npm-global").join("bin"),
             // ~/.local/bin (common user-local install location)
             home_dir().unwrap_or_default().join(".local").join("bin"),
         ];
+        // RunJam auto-downloaded Node.js. The Windows Node build keeps binaries
+        // next to node.exe (no `bin/` subdir), so probe both layouts.
+        extra_paths.push(data_node_dir.join("bin"));
+        extra_paths.push(data_node_dir);
+        extra_paths.extend(bundled_node_dirs());
+        if cfg!(target_os = "windows") {
+            // npm's default global prefix on Windows.
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                extra_paths.push(PathBuf::from(appdata).join("npm"));
+            }
+        }
         // Scan ~/.local/nodejs/*/bin for versioned standalone Node.js installs
         if let Some(home) = home_dir() {
             let local_nodejs = home.join(".local").join("nodejs");
@@ -152,8 +216,7 @@ pub fn detect_agents() -> Vec<Agent> {
 
         // Check extra paths
         for dir in &extra_paths {
-            let bin_path = dir.join(bin_name);
-            if bin_path.exists() {
+            if let Some(bin_path) = find_bin_in(dir, bin_name) {
                 let version = safe_get_version(
                     &agent_id,
                     &bin_path.to_string_lossy(),
@@ -195,30 +258,48 @@ pub fn detect_agents() -> Vec<Agent> {
         }
 
         // Fallback to system PATH (using enhanced_path that includes Homebrew, nvm, etc.)
-        let which = if cfg!(target_os = "windows") {
-            hidden_command("where").arg(bin_name).output()
+        let resolved = if cfg!(target_os = "windows") {
+            // `where` resolves one pattern per run, so probe the candidates in
+            // preference order — otherwise it returns the extensionless npm
+            // shim, which can't be executed (and yields no version) on Windows.
+            bin_candidates(bin_name).iter().find_map(|c| {
+                hidden_command("where").arg(c).output().ok().and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .next()
+                            .map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+            })
         } else {
-            Command::new("which").arg(bin_name).env("PATH", &enhanced_path).output()
+            Command::new("which")
+                .arg(bin_name)
+                .env("PATH", &enhanced_path)
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .next()
+                            .map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
         };
 
-        if let Ok(output) = which {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .map(|s| s.trim().to_string());
-
-                let version = if let Some(ref p) = path {
-                    let dir = std::path::Path::new(p).parent().unwrap_or_else(|| std::path::Path::new("")).to_path_buf();
-                    safe_get_version(&agent_id, p, &dir, &enhanced_path)
-                } else {
-                    None
-                };
-
-                agent.install_path = path;
-                agent.version = version;
-                agent.installed = true;
-            }
+        if let Some(path) = resolved {
+            let dir = std::path::Path::new(&path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""))
+                .to_path_buf();
+            agent.version = safe_get_version(&agent_id, &path, &dir, &enhanced_path);
+            agent.install_path = Some(path);
+            agent.installed = true;
         }
     }
 

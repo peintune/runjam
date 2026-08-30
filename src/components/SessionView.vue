@@ -205,6 +205,18 @@ const selectedAgentId = ref<string>("claude-code");
 const enabledAgents = computed(() => agents.value.filter(a => a.enabled));
 const selectedAgent = computed(() => agents.value.find(a => a.id === selectedAgentId.value));
 
+// Backend agent records predating the display_name fix (or detected only via
+// the DB cache) can carry an empty name — fall back to the built-in label so
+// the picker never renders an icon with no text.
+const builtinAgentNames: Record<string, string> = {
+  "claude-code": "Claude Code",
+  "codex-cli": "Codex CLI",
+  "gemini-cli": "Gemini CLI",
+};
+function agentDisplayName(agent: { id: string; display_name: string }): string {
+  return agent.display_name || builtinAgentNames[agent.id] || agent.id;
+}
+
 const modelList = ref<ModelEntry[]>(agentStore.models.length > 0 ? agentStore.models : []);
 const selectedModel = ref("");
 const assignedModels = ref<ModelEntry[]>([]);
@@ -960,6 +972,11 @@ interface SessionState {
   isProcessing: boolean;
   loaded: boolean;
   turnStartTime: number;
+  /** 发送轮次序号（单调递增）。每次新发送 +1。deadline / retry 定时器在回调里
+   *  校验它：轮次已变说明定时器是上一轮的残留（该轮已 finish，或已被新一轮
+   *  发送取代），其"无活动"判定失效，必须丢弃——否则会在会话早已结束后误报
+   *  "Timed out ... (300s without activity)" 并把消息重发一遍。 */
+  turnSeq: number;
   /** Send retry state. Set when a message is dispatched; drives the
    *  auto-retry loop (max 3 attempts) that shows "try x/3" on the chat. */
   retry: {
@@ -983,6 +1000,12 @@ interface SessionState {
     *  generous active-phase timeout — a model digesting tool results and
     *  planning the next step can legitimately go silent for minutes. */
    hasStarted: boolean;
+   /** True once this turn has produced REAL agent output (text / thinking /
+    *  tool_call / tool_result ...). Note `hasStarted` cannot be used for this:
+    *  the backend emits a synthetic Start event the moment a prompt is
+    *  dispatched (session/runner.rs send_input), so it is true even when the
+    *  agent never replied at all. */
+   hasTurnOutput: boolean;
    }
 
 // Max send attempts including the first try; failures auto-retry up to this.
@@ -1002,6 +1025,10 @@ const LLM_TIMEOUT_MS = 300_000;
 const SESSION_TOTAL_TIMEOUT_MS = 14_400_000;
 
 const sessionStates = new Map<string, SessionState>();
+/** 组件已卸载标志。卸载后所有残留回调（deadline / retry / 迟到的 ACP 事件）
+ *  都必须变成 no-op：监听已注销，它们再改动 store 或写库只会把已经完成的
+ *  会话误标成失败、并把消息重发出去。 */
+let unmounted = false;
 
 function getSessionState(sessionId: string): SessionState {
   let state = sessionStates.get(sessionId);
@@ -1018,9 +1045,11 @@ function getSessionState(sessionId: string): SessionState {
       isProcessing: false,
       loaded: false,
       turnStartTime: 0,
+      turnSeq: 0,
       retry: null,
       hasActiveTool: false,
       hasStarted: false,
+      hasTurnOutput: false,
     };
     sessionStates.set(sessionId, state);
   }
@@ -1156,8 +1185,16 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
     return;
   }
   timeout = Math.min(timeout, SESSION_TOTAL_TIMEOUT_MS - elapsed);
+  const seq = state.turnSeq;
   retry.deadlineTimer = setTimeout(() => {
     retry.deadlineTimer = null;
+    // 过期定时器守卫：这一轮已经结束（收到 finish）/ 已被新一轮发送取代 /
+    // 组件已卸载。它的静默计时对当前轮次毫无意义，直接丢弃——这正是"会话已经
+    // 完成却又冒出 Timed out 并自动重发"的根因。
+    if (unmounted || state.retry !== retry || state.turnSeq !== seq) {
+      console.log(`[SEND] discard stale deadline timer (${sessionId.substring(0, 8)})`);
+      return;
+    }
     handleSendFailure(sessionId, state, `Timed out waiting for a response (${timeout / 1000}s without activity)`);
   }, timeout);
 }
@@ -1205,10 +1242,16 @@ function isFailedTurn(state: SessionState): boolean {
  * a bare spinner.
  */
 function handleSendFailure(sessionId: string, state: SessionState, errMsg: string, isRealError = false) {
+  // 组件已卸载（KeepAlive 淘汰 / 离开工作区）：残留回调不得再写 store / 数据库，
+  // 也不得重发消息——它已经收不到任何事件，重试只会被再次判定超时。
+  if (unmounted) return;
   const isActiveSession = store.activeSessionId === sessionId;
+  // 本轮是否已经产出过内容（text / thinking / tool_call / tool_result）。
+  const producedOutput = state.hasTurnOutput;
   // 任何失败/超时都终止当前工具等待：工具要么已结束，要么这轮请求已放弃。
   state.hasActiveTool = false;
   state.hasStarted = false;
+  state.hasTurnOutput = false;
   state.isProcessing = false;
   state.thinkingStartTime = 0;
   for (const m of state.messages) {
@@ -1226,7 +1269,12 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   // failure (e.g. 401 auth) won't fix itself and re-sending only spawns
   // another round of silent retries inside the agent. Only no-activity
   // timeouts are retryable.
-  if (!isRealError && retry && retry.attempts < RETRY_MAX) {
+  //
+  // 已经产出过内容的轮次同样不自动重发：agent 那边可能只是没发 finish
+  // （或本地慢模型尾部静默超时），重发等于让它把整轮任务（含 Bash / 写文件
+  // 类工具）再执行一遍，比报一次超时危害大得多。只有"完全没回应"才值得重试。
+  const canAutoRetry = !isRealError && !producedOutput;
+  if (canAutoRetry && retry && retry.attempts < RETRY_MAX) {
     const attempt = retry.attempts;
     state.messages.push({
       role: "agent",
@@ -1239,9 +1287,10 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
     }
     retry.attempts = attempt + 1;
     if (retry.deadlineTimer) { clearTimeout(retry.deadlineTimer); retry.deadlineTimer = null; }
+    const seq = state.turnSeq;
     retry.timer = setTimeout(() => {
       retry.timer = null;
-      retrySend(sessionId, state);
+      retrySend(sessionId, state, retry, seq);
     }, RETRY_DELAY_MS);
     return;
   }
@@ -1249,7 +1298,9 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   // Final failure — surface the real error and give up retrying. Persist it
   // regardless of whether this session is currently active, so switching back
   // to this session still shows the error (loadSessionMessages reads from DB).
-  const finalContent = retry ? `Error: ${errMsg}（已自动重试 ${retry.attempts} 次）` : `Error: ${errMsg}`;
+  // attempts 从 1 起算（含首次发送），实际重发次数 = attempts - 1。
+  const retried = retry ? retry.attempts - 1 : 0;
+  const finalContent = `Error: ${errMsg}` + (retried > 0 ? `（已自动重试 ${retried} 次）` : "");
   state.messages.push({
     role: "agent",
     content: finalContent,
@@ -1273,9 +1324,10 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
 }
 
 /** Re-send the last failed text (attempts N+1). */
-function retrySend(sessionId: string, state: SessionState) {
-  const retry = state.retry;
-  if (!retry) return;
+function retrySend(sessionId: string, state: SessionState, retry: NonNullable<SessionState["retry"]>, seq: number) {
+  // 过期回调：发送轮次已被取代（新的发送 / finish 后重发）或组件已卸载 —— 不
+  // 再重发，否则会话会在已经收到完整回复之后又被跑一遍。
+  if (unmounted || state.retry !== retry || state.turnSeq !== seq) return;
   const sess = store.sessions.find(s => s.id === sessionId);
   if (!sess || sess.status === 'stopped' || sess.status === 'error') {
     clearRetry(state);
@@ -1286,6 +1338,7 @@ function retrySend(sessionId: string, state: SessionState) {
   // 重试是新一轮请求：等新的首事件，恢复初始 60s 超时
   state.hasActiveTool = false;
   state.hasStarted = false;
+  state.hasTurnOutput = false;
   if (store.activeSessionId === sessionId) isProcessing.value = true;
   startRetryDeadline(sessionId, state);
   sendInput(sessionId, retry.lastText, undefined).catch((err: unknown) => {
@@ -1298,7 +1351,13 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
   // buffered lines can still arrive in the window between Stop and the process
   // actually dying.
   const sess = store.sessions.find(s => s.id === sessionId);
-  if (!sess || sess.status === 'stopped') return;
+  if (!sess || sess.status === 'stopped') {
+    // 事件会被丢弃 → 还在等待的 retry 定时器永远等不到"活动"，必须在此时清掉，
+    // 否则它会在超时后给一个已经停止的会话追加 "Error: Timed out ..."。
+    const st = sessionStates.get(sessionId);
+    if (st) clearRetry(st);
+    return;
+  }
   const t0 = performance.now();
   try {
     handleAcpEventInner(sessionId, p);
@@ -1351,6 +1410,9 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   if (p.type !== "finish" && p.type !== "error") {
     // 收到任意非终态事件 → agent 确认存活，超时切换到宽松的活跃阶段
     state.hasStarted = true;
+    // start 不算"有产出"：send_input 在派发瞬间就会合成一条 Start，agent 是否
+    // 真的回过消息要看 text / thinking / tool_call / tool_result。
+    if (p.type !== "start") state.hasTurnOutput = true;
     if (state.retry) {
       resetRetryDeadline(sessionId, state);
     }
@@ -1645,6 +1707,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       clearRetry(state);
       state.hasActiveTool = false;
       state.hasStarted = false;
+      state.hasTurnOutput = false;
       state.isProcessing = false;
       state.thinkingStartTime = 0;
       // Mark all agent messages in this turn as not processing
@@ -1804,6 +1867,14 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  // 监听注销后本实例再也收不到 ACP 事件，任何残留的 deadline / 重发定时器
+  // 都只会误判"无活动"→ 报超时 → 自动重发消息（并写库把已完成会话标成失败）。
+  // 必须在卸载时全部停掉（KeepAlive 超过 max 淘汰、路由离开都会走到这里）。
+  unmounted = true;
+  for (const [, st] of sessionStates) {
+    clearRetry(st);
+  }
+  stopTyping();
   for (const [_, unlisten] of unlisteners) {
     try { unlisten(); } catch {}
   }
@@ -2047,7 +2118,7 @@ async function handleSend() {
     // before the backend deploys skills to disk and clear the in-memory picks.
     suppressSkillSync = true;
     try {
-      await store.createSession(a.id, a.display_name, dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+      await store.createSession(a.id, agentDisplayName(a), dirPath.value||undefined, title, selectedModel.value || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
       // 记住该会话进程启动时用的模型（创建时可能尚未选模型 → null，
       // 首次发送时会用空标记触发进程重启，确保用上正确模型）。
       const created = store.activeSession as Session | null;
@@ -2179,9 +2250,14 @@ async function handleSend() {
     // attempts total. The timeout also catches agents that go silent without
     // ever reporting an error (otherwise the UI hangs on a bare spinner).
     const st = getSessionState(sessionId);
+    // 新一轮发送：先彻底清掉上一轮的 retry（含挂起的 deadline / 重发定时器），
+    // 否则旧定时器会残留到这一轮，在其"无活动"窗口到点后误报超时并重发消息。
+    clearRetry(st);
+    st.turnSeq++;
     // 新一轮发送：清除上一轮的挂起工具标记（重试/新消息都会重新派发 tool_call）
     st.hasActiveTool = false;
     st.hasStarted = false;
+    st.hasTurnOutput = false;
     st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null, startAt: Date.now() };
     startRetryDeadline(sessionId, st);
     // Telemetry: a message was dispatched (fire-and-forget, never blocks).
@@ -2305,6 +2381,7 @@ async function handleStop() {
     clearRetry(state);
     state.hasActiveTool = false;
     state.hasStarted = false;
+    state.hasTurnOutput = false;
     state.isProcessing = false;
     // Clear isProcessing on ALL agent messages, not just the last one. A
     // crashed/stopped session can leave earlier messages stuck at
@@ -2767,7 +2844,7 @@ watch(messages, (msgs) => {
             <template v-if="enabledAgents.length > 0">
               <button v-for="a in enabledAgents" :key="a.id" @click="selectedAgentId=a.id" :class="['flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 cursor-pointer',selectedAgentId===a.id?'bg-white text-gray-900 shadow-sm dark:bg-gray-200 dark:shadow-none':'text-gray-500 hover:text-gray-700']">
                 <AgentIcon :agent-id="a.id" />
-                {{ a.display_name }}
+                {{ agentDisplayName(a) }}
               </button>
             </template>
             <button v-else @click="router.push('/settings/agents')" class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-medium text-gray-400 hover:text-gray-600 transition-all duration-200 cursor-pointer">
@@ -2816,11 +2893,11 @@ watch(messages, (msgs) => {
 
         <!-- Selected agent not installed -->
         <div v-else-if="selectedAgent && !selectedAgent.installed" class="mb-5 p-5 rounded-2xl border border-amber-200 bg-amber-50 text-center">
-          <p class="text-[14px] font-semibold text-amber-800 mb-1">{{ $t("session.notInstalled", { name: selectedAgent.display_name }) }}</p>
+          <p class="text-[14px] font-semibold text-amber-800 mb-1">{{ $t("session.notInstalled", { name: agentDisplayName(selectedAgent) }) }}</p>
           <p class="text-[13px] text-amber-600 mb-1">{{ $t("session.notInstalledHint") }}</p>
           <p v-if="!hasAnyModel" class="text-[12px] text-amber-500 mb-3">{{ $t("session.needModelToo") }}</p>
           <button @click="router.push(`/settings/agents/${selectedAgentId}`)" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-[13px] font-semibold bg-amber-600 text-white hover:bg-amber-700 active:scale-[0.98] transition-all cursor-pointer shadow-sm">
-            <Download :size="14" /> {{ $t("session.installName", { name: selectedAgent.display_name }) }}
+            <Download :size="14" /> {{ $t("session.installName", { name: agentDisplayName(selectedAgent) }) }}
           </button>
         </div>
 
