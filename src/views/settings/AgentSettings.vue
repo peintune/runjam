@@ -186,7 +186,7 @@ function goToDetail(id: string) {
       </button>
     </div>
 
-    <div class="flex-1 overflow-y-auto space-y-3">
+    <div class="flex-1 overflow-y-auto no-scrollbar space-y-3">
       <!-- Skeleton while detecting -->
       <template v-if="loading && agents.length === 0">
         <div v-for="i in 3" :key="'sk-' + i" class="rounded-2xl border border-gray-100 bg-white shadow-sm overflow-hidden">

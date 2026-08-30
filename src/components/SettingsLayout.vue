@@ -20,7 +20,10 @@ const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] =
 </script>
 
 <template>
-  <div class="flex flex-col h-screen bg-[#f8f9fb] dark:bg-[#101015]">
+  <!-- overflow-hidden：锁定页面级滚动。Windows WebView2 下 100vh 与可用高度
+       存在 1px 级舍入差时，不裁剪会出现整个页面可上下滚动（连带侧边栏一起滚），
+       裁剪后滚动只发生在右侧内容容器内部。 -->
+  <div class="flex flex-col h-screen overflow-hidden bg-[#f8f9fb] dark:bg-[#101015]">
     <!-- drag region -->
     <div data-tauri-drag-region class="flex-shrink-0 h-8 w-full relative" style="-webkit-app-region: drag">
       <div class="absolute right-0 top-0">
@@ -56,7 +59,10 @@ const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] =
         </nav>
       </aside>
 
-      <div class="flex-1 overflow-auto">
+      <!-- 只允许垂直滚动；横向溢出裁剪，避免子页面内容"撑开一点宽度"时出现
+           横向滚动条（Windows 经典滚动条占位 + 内容刚好超宽会互相放大）。
+           no-scrollbar：所有设置子页面共享此滚动区，隐藏滚动条（仍可滚动）。 -->
+      <div class="flex-1 overflow-x-hidden overflow-y-auto no-scrollbar">
         <router-view />
       </div>
     </div>

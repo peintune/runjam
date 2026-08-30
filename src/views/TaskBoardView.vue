@@ -211,7 +211,7 @@ function handleDelete(id: string) {
 
     <!-- kanban view -->
     <div v-if="viewMode === 'kanban'" class="flex-1 overflow-hidden px-4 pb-4 min-h-0">
-      <div class="flex gap-4 h-full overflow-x-auto">
+      <div class="flex gap-4 h-full overflow-x-auto no-scrollbar">
         <div
           v-for="col in columns"
           :key="col.key"
@@ -228,7 +228,7 @@ function handleDelete(id: string) {
               <ChevronRight :size="13" :class="{ 'rotate-90': col.collapsed }" class="transition-transform duration-150" />
             </button>
           </div>
-          <div v-if="!col.collapsed" class="flex-1 overflow-y-auto px-2.5 pb-3 space-y-2.5">
+          <div v-if="!col.collapsed" class="flex-1 overflow-y-auto no-scrollbar px-2.5 pb-3 space-y-2.5">
             <TaskBoardCard
               v-for="s in col.sessions"
               :key="s.id"
@@ -247,7 +247,7 @@ function handleDelete(id: string) {
     </div>
 
     <!-- folder view -->
-    <div v-else class="flex-1 overflow-y-auto px-6 pb-6 min-h-0">
+    <div v-else class="flex-1 overflow-y-auto no-scrollbar px-6 pb-6 min-h-0">
       <div v-if="dirGroups.groups.length === 0 && dirGroups.orphans.length === 0" class="pt-24 text-center">
         <Folder :size="36" class="mx-auto mb-3 text-gray-300" />
         <p class="text-[13px] text-gray-400">{{ $t("sidebar.emptyState") }}</p>

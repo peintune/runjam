@@ -43,6 +43,17 @@
     user-select: text;
     -webkit-user-select: text;
   }
+
+  /* Hide scrollbars while keeping the element scrollable.
+     Windows WebView2 的经典滚动条占位约 17px 且样式生硬，应用希望各处
+     滚动区不显示滚动条（内容仍可正常滚动）。 */
+  .no-scrollbar {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome / WebView2 */
+  }
 }
 
 /* ═══════════════════════════════════════════

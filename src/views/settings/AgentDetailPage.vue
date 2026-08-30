@@ -280,7 +280,7 @@ async function saveConfig(id: string) {
     </div>
 
     <!-- Main content -->
-    <div v-else class="flex-1 overflow-y-auto px-6 pb-8 space-y-5">
+    <div v-else class="flex-1 overflow-y-auto no-scrollbar px-6 pb-8 space-y-5">
 
       <!-- ========== HERO CARD ========== -->
       <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">

@@ -70,6 +70,39 @@ pub async fn start_session(
         }
     }
 
+    // 若本次启动指定了模型，先将该模型写入 agent 配置文件（~/.claude/settings.json、
+    // ~/.codex/config.toml、~/.gemini/settings.json）。agent 进程的模型在启动时从
+    // 配置文件/环境变量固化读取，AcpClient::start 不会把 model 参数直接注入进程，
+    // 因此若不在此处写入配置，新建会话时进程可能先于前端异步的 setAgentModel
+    // 完成而启动，仍使用配置里上一次的模型（例如 DeepSeek）——表现为"新建会话
+    // 选了本地模型，实际却走了 DeepSeek"；而在会话内切换模型时前端会 await
+    // setAgentModel 再重启进程，所以一直正常。此处写入保证任何路径下进程启动
+    // 时读取到的都是所选模型。
+    if let Some(model_id) = model.as_deref() {
+        let db = app.state::<std::sync::Mutex<crate::db::connection::Database>>();
+        let guard = db.lock().ok();
+        if let Some(guard) = guard {
+            let conn = guard.conn.lock().ok();
+            if let Some(conn) = conn {
+                match conn.query_row(
+                    "SELECT name, api_key FROM models WHERE id = ?1",
+                    [model_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                ) {
+                    Ok((model_name, api_key)) => {
+                        crate::rjlog!("[SESSION] Applying model '{}' (id={}) to agent '{}' before process start", model_name, model_id, cli);
+                        if let Err(e) = crate::models_config::set_agent_model(&cli, &model_name, &api_key) {
+                            crate::rjlog!("[SESSION] Warning: failed to write model to agent config: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        crate::rjlog!("[SESSION] Model id '{}' not found in DB ({}), agent will use its current config", model_id, e);
+                    }
+                }
+            }
+        }
+    }
+
     let session = {
         let mut mgr = manager.lock().map_err(|e| e.to_string())?;
         mgr.start(

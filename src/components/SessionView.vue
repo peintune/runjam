@@ -140,6 +140,8 @@ const stickToBottom = ref(true);
 // 用 rAF 节流：同一帧内多次 scroll 只算一次，一次布局读取同时算出
 // stickToBottom 与 showScrollToBottom。
 let scrollCheckPending = false;
+// 上一帧结算时的 scrollTop，用于判断用户滚动方向。
+let lastScrollTop: number | null = null;
 function onChatScroll() {
   if (scrollCheckPending) return;
   scrollCheckPending = true;
@@ -147,15 +149,23 @@ function onChatScroll() {
   // stickToBottom=true 直到下一帧结算，窗口期内到达的 contentUpdated 会把用户
   // 刚上翻的距离强制拉回底部（<100px 的滚动被吞掉、永远累积不起来），表现为
   // "生成中滚不上去，一直在最后"。同步置 false 后，后续 contentUpdated 直接
-  // return，用户可自由上翻；rAF 结算时若已滚回底部附近再恢复跟随。
+  // return，用户可自由上翻。
   stickToBottom.value = false;
   requestAnimationFrame(() => {
     scrollCheckPending = false;
     const el = messageContainer.value;
     if (!el) return;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottom.value = distFromBottom <= STICK_THRESHOLD;
+    const dir: "up" | "down" | null =
+      lastScrollTop === null ? null : el.scrollTop < lastScrollTop ? "up" : "down";
+    lastScrollTop = el.scrollTop;
     showScrollToBottom.value = distFromBottom > 100;
+    // 仅当用户"向下滚回底部附近"时才恢复自动跟随。若只看距离（distFromBottom
+    // <= 100），用户在底部刚上翻一点（滚动距离 < 100px）就会被判定为"回到底部"
+    // 而恢复跟随，紧接着下一帧内容增长 onContentUpdated 又把用户强制拉回——
+    // Windows 上表现为"底部上滑有很强的阻力、画面反复闪烁"。按方向恢复后，
+    // 只要用户手势还在向上，就始终不跟随；滚回底部时才重新吸附。
+    stickToBottom.value = dir === "down" && distFromBottom <= STICK_THRESHOLD;
   });
 }
 
@@ -779,6 +789,9 @@ function scrollToBottom() {
   // 用户手动点击"回到底部"（或切换会话）时恢复自动跟随
   stickToBottom.value = true;
   showScrollToBottom.value = false;
+  // 重置方向记录：程序性回底（非用户手势）后，下一次用户滚动重新判定方向，
+  // 避免用上一个会话的旧 scrollTop 比较而误判方向。
+  lastScrollTop = null;
   // nextTick 确保响应式更新（如 ChatMessages 从轻量占位重建完整列表、懒渲染
   // 占位换真实内容）已 flush 到 DOM，再在下一帧读 scrollHeight —— 此时才是
   // 真实高度，否则 scrollTop=scrollHeight 会落在历史中间。仅在 rAF 回调内
@@ -2531,7 +2544,7 @@ watch(messages, (msgs) => {
       </div>
       
       <div class="flex-1 relative min-h-0">
-        <div ref="messageContainer" class="h-full overflow-y-auto" @scroll="onChatScroll">
+        <div ref="messageContainer" class="h-full overflow-y-auto chat-scrollbar-hidden" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
             <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" @content-updated="onContentUpdated" />
           </div>
@@ -3330,5 +3343,16 @@ watch(messages, (msgs) => {
 /* Hide scrollbar on the skills tags row while keeping it scrollable */
 .skills-selector ::-webkit-scrollbar {
   display: none;
+}
+
+/* 隐藏会话消息列表右侧滚动条（内容仍可正常滚动）。
+   Windows WebView2 的经典滚动条会占位约 17px，出现/消失还会引起内容宽度
+   抖动，隐藏后既能满足"不需要显示滚动条"，也消除了滚动条占位导致的布局闪烁。 */
+.chat-scrollbar-hidden {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+.chat-scrollbar-hidden::-webkit-scrollbar {
+  display: none; /* Chrome / WebView2 */
 }
 </style>
