@@ -413,32 +413,32 @@ pub async fn get_server_status() -> Result<serde_json::Value, String> {
     
     println!("[DEBUG] get_server_status: port={}, model={:?}, LLAMA_SERVER_RUNNING={}", port, model, LLAMA_SERVER_RUNNING.load(Ordering::Relaxed));
     
-    if port != 0 && check_server_running(port) {
-        println!("[DEBUG] Server running on port {}, model={:?}", port, model);
-        Ok(serde_json::json!({
-            "running": true,
-            "port": port,
-            "model": model
-        }))
-    } else {
-        for p in 19090..19100 {
-            if check_server_running(p) {
-                LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
-                println!("[DEBUG] Detected server on port {}, model={:?}", p, model);
-                return Ok(serde_json::json!({
-                    "running": true,
-                    "port": p,
-                    "model": model
-                }));
-            }
+    // Probe at most the recorded port and the default 19090 (same as
+    // get_llama_server_status). Scanning the whole 19090..19100 range means up
+    // to 10 sequential 1s timeouts when nothing is listening — on Windows that
+    // stalls the settings page for ~10s, so we only check the two likely ones.
+    let candidates: [u16; 2] = match port {
+        0 => [19090, 0],
+        p if p == 19090 => [19090, 0],
+        p => [p, 19090],
+    };
+    for p in candidates.into_iter().filter(|&p| p != 0) {
+        if check_server_running(p) {
+            LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
+            println!("[DEBUG] Detected server on port {}, model={:?}", p, model);
+            return Ok(serde_json::json!({
+                "running": true,
+                "port": p,
+                "model": model
+            }));
         }
-        println!("[DEBUG] No server running");
-        Ok(serde_json::json!({
-            "running": false,
-            "port": 0,
-            "model": null
-        }))
     }
+    println!("[DEBUG] No server running");
+    Ok(serde_json::json!({
+        "running": false,
+        "port": 0,
+        "model": null
+    }))
 }
 
 #[tauri::command]

@@ -1273,7 +1273,9 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   // 已经产出过内容的轮次同样不自动重发：agent 那边可能只是没发 finish
   // （或本地慢模型尾部静默超时），重发等于让它把整轮任务（含 Bash / 写文件
   // 类工具）再执行一遍，比报一次超时危害大得多。只有"完全没回应"才值得重试。
-  const canAutoRetry = !isRealError && !producedOutput;
+  // 兜底补挂的"无文本"retry（lastText=''，见 handleAcpEventInner）也没有可重发的
+  // 内容，直接走最终失败路径，避免空文本被当作消息发出去。
+  const canAutoRetry = !isRealError && !producedOutput && !!retry?.lastText;
   if (canAutoRetry && retry && retry.attempts < RETRY_MAX) {
     const attempt = retry.attempts;
     state.messages.push({
@@ -1328,6 +1330,9 @@ function retrySend(sessionId: string, state: SessionState, retry: NonNullable<Se
   // 过期回调：发送轮次已被取代（新的发送 / finish 后重发）或组件已卸载 —— 不
   // 再重发，否则会话会在已经收到完整回复之后又被跑一遍。
   if (unmounted || state.retry !== retry || state.turnSeq !== seq) return;
+  // 兜底补挂的无文本 retry（lastText=''）不能重发：没有内容可发，静默放弃即可
+  // （handleSendFailure 已在其无 lastText 时走最终失败路径，正常情况下不会到这里）。
+  if (!retry.lastText) return;
   const sess = store.sessions.find(s => s.id === sessionId);
   if (!sess || sess.status === 'stopped' || sess.status === 'error') {
     clearRetry(state);
@@ -1415,6 +1420,18 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
     if (p.type !== "start") state.hasTurnOutput = true;
     if (state.retry) {
       resetRetryDeadline(sessionId, state);
+    } else {
+      // 兜底补挂重试：本轮发送由非规范实例发出（新会话首条消息从 __new__ 页发出，
+      // handleSend 跑在旧实例上，它不挂 retry——见 handleSend）。本实例收到首个
+      // 事件即证明发送已发生，补一个"无文本"重试（lastText='' → 超时后只报错、
+      // 绝不自动重发，避免把整轮任务再跑一遍）。仅当会话处于 running 时补挂：
+      // finish 后 status 已为 idle，迟到的杂散事件不会误挂（例如 Gemini 的多条
+      // message 一轮里穿插 finish 的边界情况）。
+      const sess = store.sessions.find(s => s.id === sessionId);
+      if (sess && sess.status === 'running') {
+        state.retry = { attempts: 1, lastText: "", timer: null, deadlineTimer: null, startAt: Date.now() };
+        startRetryDeadline(sessionId, state);
+      }
     }
   }
   // 仅活动会话打日志且经节流（见 logAcpEvent）——每 chunk 的 console.log
@@ -2258,8 +2275,17 @@ async function handleSend() {
     st.hasActiveTool = false;
     st.hasStarted = false;
     st.hasTurnOutput = false;
-    st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null, startAt: Date.now() };
-    startRetryDeadline(sessionId, st);
+    // 只允许"本会话的规范实例"挂重试定时器。新会话的首条消息从 __new__ 页发出时，
+    // handleSend 运行在即将被 KeepAlive 替换掉的旧实例上（props.sessionId=''），它
+    // 监听的是 acp: 空通道，永远收不到该会话的事件——在这里挂定时器既无法被事件
+    // 续期、也无法被 finish 清除，300s 后必然误报超时并自动重发消息（"会话已完成
+    // 却又冒出 try 1/3 → 2/3 → Error" 的根因，claude/gemini/codex 均复现）。
+    // 该轮的重试由规范实例（props.sessionId === sessionId，真实监听 acp:{sid}）
+    // 在收到首个事件时兜底补挂（见 handleAcpEventInner）。
+    if (props.sessionId === undefined || props.sessionId === sessionId) {
+      st.retry = { attempts: 1, lastText: sendText, timer: null, deadlineTimer: null, startAt: Date.now() };
+      startRetryDeadline(sessionId, st);
+    }
     // Telemetry: a message was dispatched (fire-and-forget, never blocks).
     track("message_sent", {
       attachCount: attachNames.length,

@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from "vue";
+import { storeToRefs } from "pinia";
 import { Plus, Check, ExternalLink, Play, Square, FolderOpen, Trash2, RefreshCw, Download } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
 import {
-  getModels, saveModels, getProviderById, checkLlamaServerAvailable, getLlamaServerStatus,
-  listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir,
-  getDownloadStatus, recommendedLocalModels,
-  type LlamaModel, type LlamaPullProgress, type ProtocolType,
+  getModels, saveModels, getProviderById,
+  downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir,
+  recommendedLocalModels,
+  type LlamaPullProgress, type ProtocolType,
 } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import { t } from "../../i18n";
 import { track } from "../../api/telemetry";
+import { useLlamaStore } from "../../stores/useLlamaStore";
 
 interface UIModel {
   id: string;
@@ -31,13 +32,21 @@ interface UIModel {
 const models = ref<UIModel[]>([]);
 const refreshing = ref(false);
 
-const llamaServerAvailable = ref(false);
-const llamaServerStatus = ref("");
-const llamaModels = ref<LlamaModel[]>([]);
 const pullingModel = ref<string | null>(null);
 const pullProgress = ref<LlamaPullProgress | null>(null);
-const runningServerPort = ref(0);
-const runningServerModel = ref<string | null>(null);
+
+// Llama.cpp server state lives in the shared store so it can be prefetched
+// at app startup; the page binds to it and refreshes in the background so it
+// renders instantly instead of blocking on the slow port probes.
+const llamaStore = useLlamaStore();
+const {
+  available: llamaServerAvailable,
+  serverStatus: llamaServerStatus,
+  models: llamaModels,
+  runningPort: runningServerPort,
+  runningModel: runningServerModel,
+  downloadStatus,
+} = storeToRefs(llamaStore);
 
 const showAddLocalModel = ref(false);
 const newLocalModelName = ref("");
@@ -86,7 +95,9 @@ async function refreshModels() {
       assignedAgents: [],
       useProxy: {},
     }));
-    await loadLlamaInfo();
+    await llamaStore.refresh();
+    syncRunningModel();
+    restoreDownloadStatus();
   } catch {} finally {
     refreshing.value = false;
   }
@@ -102,10 +113,10 @@ onMounted(() => {
         onModelDownloaded(pullingModel.value);
       }
       pullingModel.value = null;
-      loadLlamaModels();
+      llamaStore.loadModels();
     } else if (event.payload.status === "failed") {
       pullingModel.value = null;
-      loadLlamaModels();
+      llamaStore.loadModels();
     }
   });
 
@@ -138,83 +149,42 @@ onMounted(() => {
   });
 });
 
-async function loadLlamaInfo() {
-  try {
-    const [available, status, serverStatus, downloadStatus] = await Promise.all([
-      checkLlamaServerAvailable(),
-      getLlamaServerStatus(),
-      (async () => {
-        await loadLlamaModels();
-        try {
-          return await invoke<{ running: boolean; port: number; model: string | null }>("get_server_status");
-        } catch (e) {
-          console.log("[DEBUG] get_server_status failed:", e);
-          return null;
-        }
-      })(),
-      getDownloadStatus().catch(() => ({ downloading: null as string | null, progress: { status: "", percentage: 0 } as LlamaPullProgress })),
-    ]);
+/** Reconcile the models list with a detected running llama server: update the
+ *  matching entry's API base or auto-add the model if it isn't there yet. */
+function syncRunningModel() {
+  const port = llamaStore.runningPort;
+  const modelName = llamaStore.runningModel;
+  if (!port || !modelName) return;
 
-    llamaServerAvailable.value = available;
-    llamaServerStatus.value = status;
-
-    if (serverStatus) {
-      if (serverStatus.running) {
-        runningServerPort.value = serverStatus.port;
-        runningServerModel.value = serverStatus.model;
-
-        if (serverStatus.model) {
-          const provider = getProviderById("llama");
-          const modelFilename = getFilename(serverStatus.model);
-          const existingModel = models.value.find(m => getFilename(m.name) === modelFilename && m.provider === "llama");
-          if (existingModel) {
-            existingModel.apiBase = `http://localhost:${serverStatus.port}/v1`;
-            persistModels();
-          } else if (provider) {
-            models.value.push({
-              id: `llama-${serverStatus.model}-auto`,
-              name: serverStatus.model,
-              alias: serverStatus.model,
-              provider: "llama",
-              apiBase: `http://localhost:${serverStatus.port}/v1`,
-              apiKey: "llama",
-              protocol: provider.protocol,
-              showKey: false,
-              assignedAgents: [],
-              useProxy: {},
-            });
-            persistModels();
-          }
-        }
-      } else {
-        runningServerPort.value = 0;
-        runningServerModel.value = null;
-      }
-    } else {
-      if (status.startsWith("running")) {
-        const portStr = status.split(":")[1];
-        runningServerPort.value = parseInt(portStr) || 19090;
-        runningServerModel.value = null;
-      } else {
-        runningServerPort.value = 0;
-        runningServerModel.value = null;
-      }
-    }
-
-    if (downloadStatus.downloading) {
-      pullingModel.value = downloadStatus.downloading;
-      pullProgress.value = downloadStatus.progress;
-    }
-  } catch (err) {
-    console.error("Failed to load Llama info:", err);
+  const provider = getProviderById("llama");
+  const modelFilename = getFilename(modelName);
+  const existingModel = models.value.find(m => getFilename(m.name) === modelFilename && m.provider === "llama");
+  if (existingModel) {
+    existingModel.apiBase = `http://localhost:${port}/v1`;
+    persistModels();
+  } else if (provider) {
+    models.value.push({
+      id: `llama-${modelName}-auto`,
+      name: modelName,
+      alias: modelName,
+      provider: "llama",
+      apiBase: `http://localhost:${port}/v1`,
+      apiKey: "llama",
+      protocol: provider.protocol,
+      showKey: false,
+      assignedAgents: [],
+      useProxy: {},
+    });
+    persistModels();
   }
 }
 
-async function loadLlamaModels() {
-  try {
-    llamaModels.value = await listLlamaModels();
-  } catch {
-    llamaModels.value = [];
+/** Restore an in-flight model pull from the persisted status (e.g. when the
+ *  app was restarted mid-download). */
+function restoreDownloadStatus() {
+  if (downloadStatus.value?.downloading) {
+    pullingModel.value = downloadStatus.value.downloading;
+    pullProgress.value = downloadStatus.value.progress;
   }
 }
 
@@ -306,7 +276,7 @@ async function handleStartServer(filename: string) {
     const onServerStarted = (startedPort: number) => {
       if (startedPort > 0) {
         runningServerPort.value = startedPort;
-        loadLlamaInfo();
+        llamaStore.refresh();
 
         const provider = getProviderById("llama")!;
         const modelFilename = getFilename(filename);
@@ -374,7 +344,7 @@ async function handleStopServer() {
   try {
     await stopLlamaServer();
     runningServerPort.value = 0;
-    await loadLlamaInfo();
+    await llamaStore.refresh();
   } catch (err: any) {
     console.error("Failed to stop server:", err);
   }

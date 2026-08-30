@@ -53,11 +53,12 @@ const dirLayout = computed(() => {
  *  same number as the session view's progress ring (message chars + input
  *  draft vs the model's context_window × 4). Hidden for archived rows.
  *
- *  For sessions whose messages aren't loaded into the frontend, the total
- *  comes from the DB-persisted `context_chars` (accurate right on load). For
- *  the active session, whose messages ARE in memory, we compute live from the
- *  message store so the number tracks streaming output the DB hasn't caught
- *  up with yet, plus the live input draft. */
+ *  Whenever the session's messages are already in the frontend memory we
+ *  always compute live from the message store — regardless of whether the
+ *  row is active or not — so the number stays identical when a session is
+ *  clicked (otherwise it would flip between the DB-persisted count and the
+ *  in-memory count, which differ while streaming). Sessions whose messages
+ *  were never loaded fall back to the DB-persisted `context_chars`. */
 const contextStats = computed(() => {
   if (props.archived) return null;
   const messages = messageStore.getMessages(props.session.id);
@@ -65,16 +66,17 @@ const contextStats = computed(() => {
   // Include the live input draft (as a length-only placeholder string) so
   // the total, ratio and color match the session view exactly.
   const draft = props.active ? workspaceStore.activeDraftChars : 0;
-  if (props.active && messages.length > 0) {
-    // Active session: in-memory messages are the freshest source.
+  if (messages.length > 0) {
+    // Messages are in memory: in-memory messages are the freshest source
+    // (they track streaming output the DB hasn't caught up with yet).
     return computeContextStats(
       messages,
       " ".repeat(draft),
       model?.context_window || undefined,
     );
   }
-  // Inactive session (or messages not yet loaded): use the DB-persisted
-  // char count so the row shows the context size immediately on load.
+  // Messages not loaded into the frontend: use the DB-persisted char count
+  // so the row still shows the context size immediately on load.
   return computeContextStats(
     [],
     " ".repeat(draft),

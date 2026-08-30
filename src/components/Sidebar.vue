@@ -254,7 +254,7 @@ function openApp(app: AppItem) {
     <div class="mx-5 border-t border-gray-100" />
 
     <!-- tree -->
-    <div class="flex-1 overflow-y-auto px-2.5 py-3 space-y-4" @click="menuSessionId = null">
+    <div class="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-2.5 py-3 space-y-4" @click="menuSessionId = null">
       <!-- batch mode hint -->
       <p v-if="batchMode && selectedIds.size === 0" class="px-3 py-8 text-center text-[12px] text-gray-400">
         {{ $t("sidebar.clickToSelect") }}

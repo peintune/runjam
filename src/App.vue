@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "./stores/useAgentStore";
 import { useWorkspaceStore } from "./stores/useWorkspaceStore";
 import { useAppTabsStore } from "./stores/useAppTabsStore";
+import { useLlamaStore } from "./stores/useLlamaStore";
 import { faviconFor, type AppItem } from "./stores/useAppsStore";
 import { getAgentStatuses } from "./api/agents";
 import { getModels } from "./api/models";
@@ -24,6 +25,7 @@ import WelcomeSetup from "./components/WelcomeSetup.vue";
 const agentStore = useAgentStore();
 const workspaceStore = useWorkspaceStore();
 const appTabs = useAppTabsStore();
+const llamaStore = useLlamaStore();
 const router = useRouter();
 const { toasts, removeToast } = useToast();
 
@@ -44,6 +46,10 @@ onMounted(async () => {
   // Kick off update check + announcement fetch in the background.
   checkUpdates();
   loadAnnouncements();
+
+  // Prefetch llama.cpp info in the background so the local-models settings
+  // page renders instantly (server port probes are slow on Windows).
+  llamaStore.refresh().catch(() => {});
 
   // A website inside an app tab asked for a new window/tab (`window.open`,
   // `target=_blank`) — the Rust side forwards the URL here so we can open it
