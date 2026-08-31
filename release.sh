@@ -2,12 +2,13 @@
 #
 # release.sh — 一键发布：add → commit → push → (tag → push tags → 写入版本元数据)
 #
-# 默认: commit "fix" + patch 递增 (v1.0.23 → v1.0.24)，打 tag 并推送，
-#       触发 GitHub Actions 构建（build.yml 只在 tag v* 时构建）。
+# commit message 必填，且须为 Conventional Commits 格式：它会写入版本元数据并
+# 作为更新说明展示给用户，因此不接受 "fix" / "update" 这类空泛内容。未提供 -m
+# 时在终端交互询问；非交互（CI）环境必须显式传 -m。
 #
 # 用法:
-#   ./release.sh                # fix + v1.0.24（完整发布）
-#   ./release.sh -m "feat: xxx"  # 自定义 commit
+#   ./release.sh                # 交互输入 commit + patch 递增 (v1.0.23 → v1.0.24)
+#   ./release.sh -m "feat(update): add mirror download links"  # 指定 commit
 #   ./release.sh -M              # minor 递增 (v1.0.23 → v1.1.0)
 #   ./release.sh -j              # major 递增 (v1.0.23 → v2.0.0)
 #   ./release.sh -t v2.0.0       # 指定 tag
@@ -23,7 +24,11 @@
 set -euo pipefail
 
 # ── 默认配置 ──────────────────────────────────────
-COMMIT_MSG="fix"
+# commit message 不设默认值：它会被写入版本元数据（publish_metadata）并作为更新
+# 说明展示在用户的更新弹窗里，"fix" 这类内容对用户毫无信息量。
+COMMIT_MSG=""
+# dry-run 且未传 -m 时使用占位 message，此时跳过校验。
+MSG_PLACEHOLDER=false
 TAG_MODE="patch"      # patch | minor | major
 CUSTOM_TAG=""
 DRY_RUN=false
@@ -31,7 +36,8 @@ PUSH_ONLY=false
 CUSTOM_DOWNLOAD_URLS=""
 
 usage() {
-  sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
+  # 动态提取文件头的注释块（去掉 "# " 前缀），增删注释行无需维护行号。
+  awk 'NR>1 && /^#/ { print substr($0,3); next } NR>1 { exit }' "$0"
   exit 0
 }
 
@@ -132,6 +138,65 @@ bump_version() {
   ' "$ver"
 }
 
+# ── commit message 校验 ───────────────────────────
+# commit message 会被写入版本元数据的 notes 字段，并作为更新说明展示在用户的
+# 更新弹窗里，因此必须描述具体改动，不能是 "fix" / "update" 这类空泛内容。
+CONVENTIONAL_TYPES="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+VAGUE_SUBJECTS="fix|fixes|update|updates|updated|change|changes|changed|test|tests|wip|tmp|temp|minor|patch|stuff|things|misc|code|cleanup|a|asdf"
+
+validate_commit_msg() {
+  local msg="$1"
+  local subject="${msg%%$'\n'*}"
+  if [[ ! "$subject" =~ ^(${CONVENTIONAL_TYPES})(\([a-zA-Z0-9_./-]+\))?!?:[[:space:]].+$ ]]; then
+    echo "❌ commit message 不符合 Conventional Commits 格式：" >&2
+    echo "   <type>[(scope)][!]: <subject>" >&2
+    echo "   type 取值: ${CONVENTIONAL_TYPES//|/, }" >&2
+    echo "   示例: fix(session): discard stale retry timers after a turn finishes" >&2
+    echo "   你的输入: $subject" >&2
+    return 1
+  fi
+  local body="${subject#*: }"
+  if (( ${#body} < 8 )); then
+    echo "❌ subject 只有 ${#body} 个字符，请写清改了什么（至少 8 个字符）" >&2
+    return 1
+  fi
+  local lower
+  lower="$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')"
+  if [[ "|$VAGUE_SUBJECTS|" == *"|$lower|"* ]]; then
+    echo "❌ subject \"$body\" 过于空泛：它会作为更新说明展示给用户，请描述具体改动" >&2
+    return 1
+  fi
+  return 0
+}
+
+# 未提供 -m 时在终端询问，并列出当前改动，方便写出准确描述。
+prompt_commit_msg() {
+  echo "💬 请输入 commit message（Conventional Commits 格式）："
+  echo "   <type>[(scope)]: <subject>   例: feat(update): add mirror download links"
+  echo "   本次改动："
+  git status --porcelain | head -12 | sed 's/^/     /'
+  IFS= read -r -p "> " COMMIT_MSG
+}
+
+# 决定最终的 commit message：显式 -m > 交互输入 > 报错退出（非交互环境必填）。
+resolve_commit_msg() {
+  [[ -n "$COMMIT_MSG" ]] && return 0
+  # dry-run 不产生 commit，不打扰输入，用占位符走完流程。
+  if [[ "$DRY_RUN" == true ]]; then
+    COMMIT_MSG="<commit message required (-m)>"
+    MSG_PLACEHOLDER=true
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    prompt_commit_msg
+  fi
+  if [[ -z "$COMMIT_MSG" ]]; then
+    echo "❌ 缺少 commit message：用 -m \"feat(scope): what changed\" 指定，或在交互模式下输入。" >&2
+    echo "   （commit message 会作为更新说明展示给用户，不接受 'fix' 这类空泛内容）" >&2
+    exit 1
+  fi
+}
+
 # ── 写入版本元数据到 Supabase（经 Vercel 接口）──────
 # 简单 JSON 转义（处理 commit message 中的引号/反斜杠）
 json_escape() {
@@ -150,7 +215,8 @@ publish_metadata() {
 
   local dl notes
   dl=$(build_download_urls "$tag")
-  notes=$(json_escape "$COMMIT_MSG")
+  # 只取首行（subject）作为更新说明：多行 message 的正文不适合塞进弹窗。
+  notes=$(json_escape "${COMMIT_MSG%%$'\n'*}")
   local payload
   payload=$(printf '{"version":"%s","notes":"%s","github_url":"https://github.com/%s/releases/tag/%s","download_urls":%s}' \
     "$tag" "$notes" "$REPO_PATH" "$tag" "$dl")
@@ -186,6 +252,12 @@ run() {
 }
 
 # ── 信息确认 ──────────────────────────────────────
+resolve_commit_msg
+# dry-run 也校验显式传入的 message，方便在真正发布前就发现格式问题。
+if [[ "$MSG_PLACEHOLDER" != true ]]; then
+  validate_commit_msg "$COMMIT_MSG" || exit 1
+fi
+
 if [[ "$PUSH_ONLY" == true ]]; then
   echo "📦 模式: 只 push（不打 tag、不触发构建、不写版本库）"
 else
