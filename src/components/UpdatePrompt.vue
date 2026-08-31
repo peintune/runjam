@@ -41,7 +41,11 @@ async function onPrimaryAction() {
       await installUpdate();
       // On success the app restarts itself; nothing more to do here.
     } catch (e) {
-      error.value = String(e);
+      // Windows 上自动下载走 GitHub，国内常常失败；若已列出手动下载地址，
+      // 提示用户改用下面的源（含国内镜像）。
+      error.value = altSources.value.length > 0
+        ? `${String(e)} · ${t("update.installFailedUseManual")}`
+        : String(e);
       installing.value = false;
     }
   } else if (props.result.downloadUrl) {

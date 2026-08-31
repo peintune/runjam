@@ -299,26 +299,71 @@ pub async fn check_update_ui(
     // version is always sourced from the app's own package metadata so the
     // check never reports a stale hardcoded version.
     let _ = &current;
+    let current_version = app.package_info().version.to_string();
     if crate::updates::is_windows() {
-        let updater = app
-            .updater()
-            .map_err(|e| format!("updater init failed: {}", e))?;
-        match updater.check().await {
-            Ok(Some(update)) => Ok(crate::updates::UpdateCheckResult {
-                update_available: true,
-                action: "install".into(),
-                latest_version: Some(update.version.to_string()),
-                notes: update.body.clone(),
-                download_url: None,
-                download_urls: None,
-            }),
-            Ok(None) => Ok(crate::updates::UpdateCheckResult::none()),
-            Err(e) => Err(format!("update check failed: {}", e)),
+        // 后端元数据里带 GitHub 官方 / 国内 OSS 两个直链，Windows 同样要取：
+        // ① 走 updater 自动安装时，弹窗也要像 macOS 一样列出手动下载地址；
+        // ② 国内常常连不上 GitHub，updater 检查失败时用它兜底——否则用户
+        //    既装不上也拿不到任何可用下载地址。
+        let meta = check_for_updates(app.clone(), current_version).await.ok();
+        // 诊断：后端若没为本平台返回 url_github / url_cn，弹窗就只会有一个
+        // 手动地址（甚至没有），此时需要在更新接口里补齐对应平台的镜像直链。
+        if let Some(info) = &meta {
+            if info.update_available && info.download_urls.is_none() {
+                eprintln!(
+                    "[UPDATE] no manual download mirrors for {}-{}; backend url_github/url_cn missing for this platform",
+                    platform_name(),
+                    std::env::consts::ARCH
+                );
+            }
+        }
+
+        let updater_result = match app.updater() {
+            Ok(u) => u.check().await,
+            Err(e) => Err(e),
+        };
+
+        match updater_result {
+            Ok(Some(update)) => {
+                // 仅当后端元数据同样认为"有更新"时才带手动地址，避免版本
+                // 不一致时给出旧包的下载链接。
+                let info = meta.filter(|i| i.update_available);
+                Ok(crate::updates::UpdateCheckResult {
+                    update_available: true,
+                    action: "install".into(),
+                    latest_version: Some(update.version.to_string()),
+                    // updater 的 release notes 来自 GitHub；缺失时回退后端元数据。
+                    notes: update.body.clone().filter(|s| !s.trim().is_empty())
+                        .or_else(|| info.as_ref().and_then(|i| i.notes.clone())),
+                    download_url: info.as_ref().and_then(|i| i.download_url.clone()),
+                    download_urls: info.as_ref().and_then(|i| i.download_urls.clone()),
+                })
+            }
+            // 无更新，或 updater 检查失败（国内网络访问 GitHub 超时/失败）：
+            // 退回后端元数据，有更新就交给用户手动下载（GitHub + 国内镜像）。
+            other => {
+                if let Err(e) = &other {
+                    eprintln!("[UPDATE] windows updater check failed, falling back to metadata: {}", e);
+                }
+                match meta {
+                    Some(info) if info.update_available => {
+                        Ok(crate::updates::UpdateCheckResult {
+                            update_available: true,
+                            action: "open_download".into(),
+                            latest_version: info.latest_version,
+                            notes: info.notes,
+                            download_url: info.download_url,
+                            download_urls: info.download_urls,
+                        })
+                    }
+                    _ => Ok(crate::updates::UpdateCheckResult::none()),
+                }
+            }
         }
     } else {
         // macOS/Linux: reuse the existing metadata check, sourcing the
         // current version from the app's own package metadata.
-        let info = check_for_updates(app.clone(), app.package_info().version.to_string()).await?;
+        let info = check_for_updates(app.clone(), current_version).await?;
         Ok(crate::updates::UpdateCheckResult {
             update_available: info.update_available,
             action: "open_download".into(),

@@ -544,6 +544,7 @@ const zhCN: Record<TranslationKey, string> = {
   "update.downloadInstall": "下载并安装",
   "update.goToDownload": "前往下载",
   "update.openDownloadFailed": "无法打开下载链接",
+  "update.installFailedUseManual": "可改用下方的下载地址手动更新",
   "update.downloadSource": "下载地址",
   "update.githubDownload": "GitHub 下载",
   "update.cnDownload": "国内镜像下载",

@@ -544,6 +544,7 @@ const en = {
   "update.downloadInstall": "Download and Install",
   "update.goToDownload": "Go to Download",
   "update.openDownloadFailed": "Failed to open download link",
+  "update.installFailedUseManual": "You can use the download links below to update manually",
   "update.downloadSource": "Download sources",
   "update.githubDownload": "GitHub Download",
   "update.cnDownload": "China Mirror Download",
