@@ -28,6 +28,33 @@ export function track(eventName: string, eventProps?: Record<string, unknown>): 
   trackEvent(eventName, eventProps).catch(() => {});
 }
 
+export type ErrorLevel = "error" | "warn" | "info";
+
+export async function reportErrorEvent(
+  level: ErrorLevel,
+  category: string,
+  message: string,
+  stack?: string,
+  context?: Record<string, unknown>,
+): Promise<void> {
+  return invoke<void>("report_error", { level, category, message, stack, context });
+}
+
+/**
+ * Fire-and-forget error report. The backend sanitizes the message (home paths,
+ * API keys) and length-caps it before queueing, and respects the user's
+ * telemetry opt-out. Never throws / blocks, same contract as `track`.
+ */
+export function reportError(
+  level: ErrorLevel,
+  category: string,
+  message: string,
+  stack?: string,
+  context?: Record<string, unknown>,
+): void {
+  reportErrorEvent(level, category, message, stack, context).catch(() => {});
+}
+
 export async function getProxyConfig(): Promise<string> {
   return invoke<string>("get_proxy_config");
 }

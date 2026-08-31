@@ -58,6 +58,39 @@ pub fn track_event(
     telemetry::track(&guard, &event_name, event_props.unwrap_or_else(|| serde_json::json!({})));
 }
 
+/// Report a client-side error/warning (JS exception, session send failure,
+/// ...). Mirrors `track_event`: fire-and-forget, never fails the caller.
+///
+/// The message is sanitized (home paths, API keys) and length-capped by
+/// `telemetry::report_error` before it is queued.
+#[tauri::command]
+pub fn report_error(
+    app: tauri::AppHandle,
+    db: State<'_, Mutex<Database>>,
+    level: Option<String>,
+    category: String,
+    message: String,
+    stack: Option<String>,
+    context: Option<serde_json::Value>,
+) {
+    {
+        let guard = match db.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        telemetry::report_error(
+            &guard,
+            level.as_deref().unwrap_or("error"),
+            &category,
+            &message,
+            stack.as_deref(),
+            context.unwrap_or_else(|| serde_json::json!({})),
+        );
+    }
+    // Errors are time-sensitive — don't wait for the 10-minute worker.
+    telemetry::flush_async(&app);
+}
+
 // ── outbound proxy (used for telemetry reporting) ──────────────────────
 
 /// Current outbound proxy URL (empty string = direct connection).

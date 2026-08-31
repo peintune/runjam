@@ -413,6 +413,12 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
 
     match resp {
         Ok(response) => {
+            // ureq only returns Err for non-2xx, so reaching here means the
+            // upstream answered 2xx — but that says nothing about the body.
+            // Gateways have been seen returning 200 with an empty body or an
+            // HTML error page, which used to be handed to the agent verbatim.
+            let st = response.status();
+            rjlog!("[PROXY] Anthropic→OpenAI: upstream status {} in {:?}", st, request_start.elapsed());
             if stream {
                 let reader = response.into_reader();
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
@@ -423,7 +429,35 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                 rjlog!("[PROXY] Anthropic→OpenAI: returning streaming response");
                 ProxyResponse::Stream { reader: Box::new(converter) }
             } else {
-                let resp_body = response.into_string().unwrap_or_default();
+                let resp_body = match response.into_string() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        // Never fall back to "" — an empty body reaches the
+                        // agent as 200 OK with nothing to parse, and all it can
+                        // report is "Failed to parse JSON".
+                        rjlog!("[PROXY] Anthropic→OpenAI: upstream {} body unreadable: {}", st, e);
+                        return ProxyResponse::Sync(
+                            StatusCode(502),
+                            anthropic_error_body(
+                                "api_error",
+                                &format!("Upstream {} returned an unreadable response body: {}", st, e),
+                            ),
+                        );
+                    }
+                };
+                if resp_body.trim().is_empty() {
+                    rjlog!(
+                        "[PROXY] Anthropic→OpenAI: upstream {} returned an EMPTY body (model={})",
+                        st, real_model
+                    );
+                    return ProxyResponse::Sync(
+                        StatusCode(502),
+                        anthropic_error_body(
+                            "api_error",
+                            &format!("Upstream {} returned an empty response body (model={})", st, real_model),
+                        ),
+                    );
+                }
                 // Log upstream response model for cache debugging
                 if let Ok(resp_json) = serde_json::from_str::<Value>(&resp_body) {
                     let upstream_model = resp_json.get("model").and_then(|v| v.as_str()).unwrap_or("unknown");
@@ -432,8 +466,32 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                         rjlogd!("[CACHE DEBUG] Upstream usage: {}", serde_json::to_string(usage).unwrap_or_default());
                     }
                 }
-                let converted = convert_openai_to_anthropic(&resp_body, model_name, reasoning_disabled);
-                ProxyResponse::Sync(StatusCode(200), converted)
+                match convert_openai_to_anthropic(&resp_body, model_name, reasoning_disabled) {
+                    Ok(converted) => ProxyResponse::Sync(StatusCode(200), converted),
+                    Err(detail) => {
+                        rjlog!(
+                            "[PROXY] Anthropic→OpenAI: upstream {} returned a non-JSON body: {}",
+                            st, safe_truncate(&detail, 500)
+                        );
+                        // An HTML page means the request almost certainly never
+                        // hit the API route (SPA catch-all / captive portal /
+                        // auth redirect). Spell that out, otherwise the user is
+                        // left staring at "non-JSON response" with no idea that
+                        // the API Base is missing its version segment.
+                        let message = if looks_like_html(&resp_body) {
+                            format!(
+                                "Upstream {} returned an HTML page instead of JSON (model={}) — the request most likely never reached its API route. Check this model's API Base: it must include the version path, e.g. https://host/v1 (currently \"{}\"). Body: {}",
+                                st, real_model, base_url, safe_truncate(&detail, 200)
+                            )
+                        } else {
+                            format!(
+                                "Upstream {} returned a non-JSON response (model={}): {}",
+                                st, real_model, safe_truncate(&detail, 300)
+                            )
+                        };
+                        ProxyResponse::Sync(StatusCode(502), anthropic_error_body("api_error", &message))
+                    }
+                }
             }
         }
         Err(ureq::Error::Status(st, r)) => {
@@ -540,8 +598,45 @@ fn forward_to_anthropic(body: &str) -> (StatusCode, String) {
     }
 }
 
-fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_disabled: bool) -> String {
-    let resp: Value = match serde_json::from_str(openai_resp) { Ok(v) => v, Err(_) => return openai_resp.to_string() };
+/// Does this body look like an HTML page instead of an API response?
+///
+/// It almost always means the request never reached the upstream's API route:
+/// the classic case is an API Base configured without its version segment
+/// (`https://host` instead of `https://host/v1`), so `/chat/completions` misses
+/// the gateway's router and its SPA catch-all serves `index.html` — with a
+/// perfectly healthy `200 OK`.
+fn looks_like_html(body: &str) -> bool {
+    let t = body.trim_start().to_ascii_lowercase();
+    t.starts_with("<!doctype html") || t.starts_with("<html")
+}
+
+/// Anthropic-format error body, so the agent surfaces a real message instead
+/// of choking on whatever the upstream actually returned.
+///
+/// Anthropic clients dispatch on `error.type`, so a well-formed error body is
+/// what turns an opaque failure into something the user can act on.
+fn anthropic_error_body(err_type: &str, message: &str) -> String {
+    serde_json::json!({
+        "type": "error",
+        "error": {"type": err_type, "message": message}
+    })
+    .to_string()
+}
+
+/// Convert an OpenAI Chat Completions response body → Anthropic Messages
+/// response body.
+///
+/// Returns `Err` (carrying a truncated copy of the offending body) when the
+/// upstream did not return JSON at all — an empty body, an HTML error page
+/// from a gateway, a captcha interstitial, ... The previous behaviour passed
+/// the raw body through with `200 OK`, so the agent's `JSON.parse` blew up
+/// and all it could report was "Failed to parse JSON", hiding the upstream
+/// error completely.
+fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_disabled: bool) -> Result<String, String> {
+    let resp: Value = match serde_json::from_str(openai_resp) {
+        Ok(v) => v,
+        Err(e) => return Err(format!("{} — body: {:?}", e, safe_truncate(openai_resp, 300))),
+    };
     let choice = &resp["choices"][0];
     let reasoning_content = choice["message"].get("reasoning_content").and_then(|v| v.as_str()).unwrap_or("");
     let content = choice["message"]["content"].as_str().unwrap_or("");
@@ -578,7 +673,7 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_di
         _ => "end_turn",
     };
 
-    serde_json::json!({
+    Ok(serde_json::json!({
         "id": format!("msg_{}", chrono::Utc::now().timestamp_millis()),
         "type": "message",
         "role": "assistant",
@@ -589,7 +684,7 @@ fn convert_openai_to_anthropic(openai_resp: &str, model_name: &str, reasoning_di
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
         }
-    }).to_string()
+    }).to_string())
 }
 
 /// Returns a closure that converts OpenAI Chat Completions SSE lines
@@ -891,7 +986,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 11, "completion_tokens": 22}
         }).to_string();
-        let out = convert_openai_to_anthropic(&chat, "deepseek-v4", false);
+        let out = convert_openai_to_anthropic(&chat, "deepseek-v4", false).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["type"], "message");
         assert_eq!(v["stop_reason"], "tool_use", "tool_calls 结束必须映射为 tool_use");
@@ -908,12 +1003,33 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_openai_to_anthropic_rejects_non_json_body() {
+        // 上游网关返回 2xx 但 body 是空 / HTML 时，旧的 convert_openai_to_anthropic
+        // 会原样透传，代理再套上 200 + application/json，agent 侧 JSON.parse
+        // 只能报出无意义的 "Failed to parse JSON"，上游真正说了什么完全丢失。
+        // 现在必须返回 Err（携带 body 片段），由调用方转成 502 + 规范错误体。
+        assert!(convert_openai_to_anthropic("", "m", false).is_err(), "空 body 必须报错，不能透传");
+        let html = "<html><body>502 Bad Gateway</body></html>";
+        let err = convert_openai_to_anthropic(html, "m", false).unwrap_err();
+        assert!(err.contains("502 Bad Gateway"), "Err 必须带上原始 body 片段，实际: {}", err);
+        // SPA catch-all 兜底：<title>Sub2API</title> 这类网关首页也算 HTML
+        assert!(looks_like_html("<!DOCTYPE HTML>\n<html lang=\"zh-CN\"><title>Sub2API</title>"));
+        assert!(looks_like_html("  <html><body>x</body></html>"));
+        assert!(!looks_like_html(r#"{"choices":[]}"#), "JSON 不能误判为 HTML");
+        // 合法 JSON 不受影响
+        let chat = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]
+        }).to_string();
+        assert!(convert_openai_to_anthropic(&chat, "m", false).is_ok());
+    }
+
+    #[test]
     fn test_convert_openai_to_anthropic_plain_stop() {
         let chat = serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 1, "completion_tokens": 2}
         }).to_string();
-        let v: Value = serde_json::from_str(&convert_openai_to_anthropic(&chat, "m", false)).unwrap();
+        let v: Value = serde_json::from_str(&convert_openai_to_anthropic(&chat, "m", false).unwrap()).unwrap();
         assert_eq!(v["stop_reason"], "end_turn");
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "hi");
@@ -933,14 +1049,14 @@ mod tests {
             "usage": {"prompt_tokens": 5, "completion_tokens": 10}
         }).to_string();
         // reasoning_disabled=true：必须剥离 thinking block
-        let out = convert_openai_to_anthropic(&chat, "m", true);
+        let out = convert_openai_to_anthropic(&chat, "m", true).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         let blocks = v["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 1, "reasoning_disabled 时不能有 thinking block");
         assert_eq!(blocks[0]["type"], "text");
         assert_eq!(blocks[0]["text"], "final answer");
         // reasoning_disabled=false：正常输出 thinking block
-        let out2 = convert_openai_to_anthropic(&chat, "m", false);
+        let out2 = convert_openai_to_anthropic(&chat, "m", false).unwrap();
         let v2: Value = serde_json::from_str(&out2).unwrap();
         let blocks2 = v2["content"].as_array().unwrap();
         assert_eq!(blocks2[0]["type"], "thinking");

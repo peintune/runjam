@@ -62,10 +62,27 @@ impl SessionManager {
         let app_clone = app.clone();
         let id_clone = id.clone();
         let cli_display_name_clone = cli_display_name.to_string();
+        // Copied into the thread below (references borrowed from `cli`/`model`
+        // would not satisfy `thread::spawn`'s 'static bound).
+        let agent_type_owned = agent_type.to_string();
+        let model_owned = model.map(|s| s.to_string());
         thread::spawn(move || {
             let mut client = acp_client_arc.lock().unwrap();
             if let Err(e) = client.initialize_session(&app_clone, &id_clone) {
                 rjlog!("[ACP ERROR] Initialize session failed: {}", e);
+                crate::telemetry::report_error_from_app(
+                    &app_clone,
+                    "error",
+                    "acp_init_failed",
+                    &e,
+                    None,
+                    serde_json::json!({
+                        "session_id": &id_clone,
+                        "cli": &cli_display_name_clone,
+                        "agent_type": &agent_type_owned,
+                        "model": &model_owned,
+                    }),
+                );
                 let _ = app_clone.emit(&format!("acp:{}", id_clone), &AcpMessage::new(&id_clone, "init", "init", AcpEvent::Text {
                     content: format!("Error: {}", e),
                 }));
@@ -87,6 +104,17 @@ impl SessionManager {
         let client = clients.get(id)
             .ok_or_else(|| {
                 rjlog!("[SESSION ERROR] No client for session: {}, available: {:?}", id, clients.keys().collect::<Vec<_>>());
+                crate::telemetry::report_error_from_app(
+                    app,
+                    "error",
+                    "session_no_client",
+                    &format!("No client for session: {}", id),
+                    None,
+                    serde_json::json!({
+                        "session_id": id,
+                        "live_sessions": clients.len(),
+                    }),
+                );
                 format!("No client for session: {}", id)
             })?;
 
@@ -103,7 +131,17 @@ impl SessionManager {
                     Some(h) if !h.is_empty() => format!("Previous conversation:\n{}\n---\nNew message: {}", h.join("\n"), text),
                     _ => text.to_string(),
                 };
-                acp_client.send_prompt(&prompt)?;
+                acp_client.send_prompt(&prompt).map_err(|e| {
+                    crate::telemetry::report_error_from_app(
+                        app,
+                        "error",
+                        "session_send_prompt_failed",
+                        &e,
+                        None,
+                        serde_json::json!({ "session_id": id }),
+                    );
+                    e
+                })?;
             }
         }
 

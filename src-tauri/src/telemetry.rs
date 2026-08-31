@@ -139,6 +139,22 @@ pub fn sanitize(text: &str) -> String {
     s
 }
 
+/// Recursively sanitize every string in a JSON value. Context objects can
+/// carry raw protocol lines (paths, tokens) that would otherwise leave the
+/// machine unsanitized.
+fn sanitize_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(sanitize(s)),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(sanitize_value).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter().map(|(k, v)| (k.clone(), sanitize_value(v))).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 // ── queue ───────────────────────────────────────────────────────────────
 
 fn enqueue_forced(db: &Database, kind: &str, payload: &serde_json::Value) {
@@ -255,11 +271,38 @@ pub fn report_error(db: &Database, level: &str, category: &str, message: &str, s
             "category": category,
             "message": sanitize(message),
             "stack": stack.map(sanitize),
-            "context": context,
+            "context": sanitize_value(&context),
             "created_at": chrono::Utc::now().to_rfc3339(),
         }],
     });
     enqueue(db, "errors", &payload);
+}
+
+/// Same as `report_error`, for call sites that only hold an `AppHandle`
+/// (ACP stdout reader threads, session runner, ...).
+///
+/// Flushes immediately afterwards: an error is the one payload worth pushing
+/// out right away, since a crash may follow within milliseconds. The flush
+/// itself runs on its own thread, so this stays cheap.
+///
+/// NOT safe to call from a panic hook — use `report_panic` there, which takes
+/// the database with `try_lock`.
+pub fn report_error_from_app(
+    app: &tauri::AppHandle,
+    level: &str,
+    category: &str,
+    message: &str,
+    stack: Option<&str>,
+    context: serde_json::Value,
+) {
+    // A blocking lock on purpose: unlike `try_lock` it cannot silently drop
+    // the report when a flush happens to hold the database at that moment.
+    if let Some(db) = app.try_state::<Mutex<Database>>() {
+        if let Ok(guard) = db.lock() {
+            report_error(&guard, level, category, message, stack, context);
+        }
+    }
+    flush_async(app);
 }
 
 /// User feedback — sent even when telemetry is disabled (explicit user action).
@@ -474,12 +517,14 @@ pub fn set_app_handle(app: tauri::AppHandle) {
 
 fn report_panic(msg: &str, location: Option<&str>) {
     let Some(app) = APP_HANDLE.get() else { return };
-    let db = app.state::<Mutex<Database>>();
-    // try_lock: if the panic happened while another thread held the db lock we
-    // must not deadlock in the hook.
-    if let Ok(guard) = db.try_lock() {
-        let stack = location.map(|l| format!("at {}", l));
-        report_error(&guard, "error", "rust_panic", msg, stack.as_deref(), serde_json::json!({}));
+    let stack = location.map(|l| format!("at {}", l));
+    // Hand-rolled instead of `report_error_from_app`: try_lock, because if the
+    // panic happened while another thread held the db lock we must not
+    // deadlock inside the hook.
+    if let Some(db) = app.try_state::<Mutex<Database>>() {
+        if let Ok(guard) = db.try_lock() {
+            report_error(&guard, "error", "rust_panic", msg, stack.as_deref(), serde_json::json!({}));
+        }
     }
     flush_async(app);
 }

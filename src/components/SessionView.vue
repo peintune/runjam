@@ -18,7 +18,7 @@ import ChatMessages, { type Message } from "./ChatMessages.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MentionPicker from "./MentionPicker.vue";
 import { type FileEntry, parseFile } from "../api/fs";
-import { submitFeedback, track } from "../api/telemetry";
+import { submitFeedback, track, reportError } from "../api/telemetry";
 import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 import { useContextSize } from "../composables/useContextSize";
@@ -1194,6 +1194,7 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
       state,
       `Response exceeded the total ${SESSION_TOTAL_TIMEOUT_MS / 3_600_000}h limit`,
       true,
+      "total_timeout",
     );
     return;
   }
@@ -1208,7 +1209,7 @@ function startRetryDeadline(sessionId: string, state: SessionState) {
       console.log(`[SEND] discard stale deadline timer (${sessionId.substring(0, 8)})`);
       return;
     }
-    handleSendFailure(sessionId, state, `Timed out waiting for a response (${timeout / 1000}s without activity)`);
+    handleSendFailure(sessionId, state, `Timed out waiting for a response (${timeout / 1000}s without activity)`, false, "timeout");
   }, timeout);
 }
 
@@ -1249,12 +1250,25 @@ function isFailedTurn(state: SessionState): boolean {
 }
 
 /**
+ * Where a send failure originated. Used to tag the telemetry report — and to
+ * skip reporting `acp_error`, which the backend already reports at the point
+ * of emission (it has the raw JSON-RPC error and the agent/model context).
+ */
+type SendFailureSource = "acp_error" | "timeout" | "total_timeout" | "send_failed";
+
+/**
  * Handle a failed send attempt. Shows the failure on the chat (with a "try
  * x/3" label), then either auto-retries after a short delay or — after the
  * last attempt — leaves the final error visible. Never leaves the UI stuck on
  * a bare spinner.
  */
-function handleSendFailure(sessionId: string, state: SessionState, errMsg: string, isRealError = false) {
+function handleSendFailure(
+  sessionId: string,
+  state: SessionState,
+  errMsg: string,
+  isRealError = false,
+  source: SendFailureSource = "timeout",
+) {
   // 组件已卸载（KeepAlive 淘汰 / 离开工作区）：残留回调不得再写 store / 数据库，
   // 也不得重发消息——它已经收不到任何事件，重试只会被再次判定超时。
   if (unmounted) return;
@@ -1289,6 +1303,23 @@ function handleSendFailure(sessionId: string, state: SessionState, errMsg: strin
   // 兜底补挂的"无文本"retry（lastText=''，见 handleAcpEventInner）也没有可重发的
   // 内容，直接走最终失败路径，避免空文本被当作消息发出去。
   const canAutoRetry = !isRealError && !producedOutput && !!retry?.lastText;
+  // Telemetry: the local log file never leaves the user's machine, so the
+  // frontend-only failure modes (no-activity timeout, invoke failure) have to
+  // be reported from here. `acp_error` is skipped on purpose — the backend
+  // already reports it where the event is emitted, with the raw JSON-RPC
+  // error and agent/model context attached.
+  if (source !== "acp_error") {
+    const failSess = store.sessions.find((s) => s.id === sessionId);
+    reportError("error", "session_send_failed", errMsg, undefined, {
+      sessionId,
+      cli: failSess?.cli,
+      model: failSess?.model,
+      source,
+      attempts: retry?.attempts ?? 0,
+      willRetry: canAutoRetry,
+      producedOutput,
+    });
+  }
   if (canAutoRetry && retry && retry.attempts < RETRY_MAX) {
     const attempt = retry.attempts;
     state.messages.push({
@@ -1360,7 +1391,7 @@ function retrySend(sessionId: string, state: SessionState, retry: NonNullable<Se
   if (store.activeSessionId === sessionId) isProcessing.value = true;
   startRetryDeadline(sessionId, state);
   sendInput(sessionId, retry.lastText, undefined).catch((err: unknown) => {
-    handleSendFailure(sessionId, state, `Send failed: ${err}`);
+    handleSendFailure(sessionId, state, `Send failed: ${err}`, false, "send_failed");
   });
 }
 
@@ -1794,6 +1825,17 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       // API error surfaced as plain text before the finish event).
       const sess = store.sessions.find(s => s.id === sessionId);
       if (sess && sess.status === 'running') {
+        // The agent emitted the failure as plain text and then finished
+        // normally, so no ACP error event was ever sent — this heuristic is
+        // the only place that can report it.
+        if (isFailedTurn(state)) {
+          reportError("error", "session_turn_failed", lastAgentMsg(state.messages)?.content || "", undefined, {
+            sessionId,
+            cli: sess.cli,
+            model: sess.model,
+            stopReason: p.stop_reason,
+          });
+        }
         sess.status = isFailedTurn(state) ? 'error' : 'idle';
         sess.newlyCompleted = true;
         // 回复完成未读语义：无论用户是否正打开着该会话，完成即标记为"新完成
@@ -1815,7 +1857,7 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       // Log unconditionally (even for background sessions) so a missed error
       // shows up in devtools without requiring this session to be active.
       console.log(`[ACP ERROR EVENT] ${sessionId.substring(0, 8)}:`, p.message);
-      handleSendFailure(sessionId, state, p.message || "Unknown", true);
+      handleSendFailure(sessionId, state, p.message || "Unknown", true, "acp_error");
       break;
     }
   }

@@ -939,6 +939,21 @@ impl AcpClient {
 
         let mut process = cmd.spawn().map_err(|e| {
             rjlog!("[ACP ERROR] Failed to start ACP agent: {}", e);
+            // The agent never started, so no stdout reader exists to report
+            // anything later — this is the only chance to capture it.
+            crate::telemetry::report_error_from_app(
+                app,
+                "error",
+                "acp_spawn_failed",
+                &format!("Failed to start ACP agent ({}): {}", agent_type, e),
+                None,
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_type": agent_type,
+                    "model": model,
+                    "permission_mode": permission_mode,
+                }),
+            );
             format!("Failed to start ACP agent: {}", e)
         })?;
 
@@ -965,7 +980,7 @@ impl AcpClient {
         // (see set_permission_mode) without restarting the agent process.
         let permission_mode_shared = Arc::new(Mutex::new(permission_mode.to_string()));
         let permission_mode_clone = permission_mode_shared.clone();
-        let _agent_type_clone = agent_type.to_string();
+        let agent_type_clone = agent_type.to_string();
         let model_clone = model.map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
         
         // Track cumulative token usage to calculate deltas
@@ -994,6 +1009,10 @@ impl AcpClient {
             rjlog!("[ACP DEBUG] Started stdout reader");
             let reader = BufReader::new(stdout);
             let mut tool_times = tool_times_clone.lock().unwrap();
+            // Unknown `session/update` types are a protocol-compatibility gap,
+            // not a per-turn failure — report each distinct type once per
+            // session so a chatty agent can't flood the telemetry queue.
+            let mut reported_unknown_updates: HashSet<String> = HashSet::new();
             for line in reader.lines().flatten() {
                 rjlog!("[ACP RAW] {}", line);
                 if let Ok(val) = serde_json::from_str::<Value>(&line) {
@@ -1366,10 +1385,27 @@ impl AcpClient {
                                         ));
                                     }
                                     _ => {
+                                        let update_type = update.params.update.session_update.as_str();
                                         rjlog!("[ACP DEBUG] Unknown update type: {} — raw update JSON keys: {:?}",
-                                            update.params.update.session_update,
+                                            update_type,
                                             safe_truncate(&line, 300)
                                         );
+                                        if reported_unknown_updates.insert(update_type.to_string()) {
+                                            crate::telemetry::report_error_from_app(
+                                                &app_clone2,
+                                                "warn",
+                                                "acp_unknown_update",
+                                                &format!("Unhandled ACP session update type: {}", update_type),
+                                                None,
+                                                serde_json::json!({
+                                                    "session_id": &session_id_clone,
+                                                    "agent_type": &agent_type_clone,
+                                                    "model": &model_clone,
+                                                    "update_type": update_type,
+                                                    "raw": safe_truncate(&line, 300),
+                                                }),
+                                            );
+                                        }
                                     }
                                 }
                             } else {
@@ -1394,6 +1430,29 @@ impl AcpClient {
                                 .or_else(|| error.get("message").and_then(|m| m.as_str()))
                                 .unwrap_or("Unknown ACP error");
                             rjlog!("[ACP ERROR] Emitting error event: {}", err_msg);
+                            // Telemetry: this is the single choke point where
+                            // agent-side failures surface ("API Error: Failed
+                            // to parse JSON", 401 auth, upstream 5xx, ...).
+                            // The local log file never leaves the user's
+                            // machine, so without this we are blind to
+                            // third-party model / proxy breakage. Message and
+                            // context are sanitized before they are queued.
+                            crate::telemetry::report_error_from_app(
+                                &app_clone2,
+                                "error",
+                                "acp_error",
+                                err_msg,
+                                None,
+                                serde_json::json!({
+                                    "session_id": &session_id_clone,
+                                    "agent_type": &agent_type_clone,
+                                    "model": &model_clone,
+                                    "code": error.get("code"),
+                                    "error_kind": error.get("data").and_then(|d| d.get("errorKind")),
+                                    "request_id": val.get("id"),
+                                    "is_prompt_response": is_prompt_response,
+                                }),
+                            );
                             let event_name = format!("acp:{}", session_id_clone);
                             let _ = app_clone2.emit(&event_name, &AcpMessage::new(
                                 &session_id_clone, "0", "0",
@@ -1920,6 +1979,14 @@ impl AcpClient {
 
         let mut process = cmd.spawn().map_err(|e| {
             rjlog!("[ACP ERROR] Failed to start ACP agent: {}", e);
+            crate::telemetry::report_error_from_app(
+                app,
+                "error",
+                "acp_spawn_failed",
+                &format!("Failed to start ACP agent ({}): {}", agent_id, e),
+                None,
+                serde_json::json!({ "agent_id": agent_id, "context": "connection_test" }),
+            );
             format!("Failed to start ACP agent: {}", e)
         })?;
 
