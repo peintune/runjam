@@ -1962,6 +1962,25 @@ impl AcpClient {
             }
         }
 
+        // gemini's bundle entry has a `#!/usr/bin/env node` shebang, so the
+        // directory containing the gemini binary (which also holds the matching
+        // `node`) must be on PATH. Without this the spawn dies with
+        // "env: node: No such file or directory" (RunJam launched from Finder
+        // has a bare PATH that doesn't include the bundled Node.js bin dir).
+        // Mirrors the equivalent block in start().
+        if agent_id == "gemini" || agent_id == "gemini-cli" {
+            let gemini_dir = std::path::Path::new(&cmd_path).parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            if !gemini_dir.as_os_str().is_empty() {
+                let gemini_dir_str = gemini_dir.to_string_lossy();
+                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}{}{}", gemini_dir_str, sep, current_path));
+                rjlog!("[ACP] Test: Added {} to PATH for gemini", gemini_dir_str);
+            }
+        }
+
         if agent_id == "codex-cli" || agent_id == "codex" {
             if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
                 cmd.env("OPENAI_API_KEY", api_key);

@@ -206,6 +206,7 @@ json_escape() {
 publish_metadata() {
   local tag="$1"
   local api_url="${RELEASES_API_URL:-https://www.runjam.app/api/releases}"
+  # export RELEASES_ADMIN_TOKEN="<PASSWORD>"
   local token="${RELEASES_ADMIN_TOKEN:-}"
 
   if [[ -z "$token" ]]; then
