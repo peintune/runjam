@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -419,8 +419,6 @@ fn resolve_agent_paths(
 ) -> Result<(String, Vec<String>, String), String> {
     let node_bin = node_util::resolve_node_bin(app)
         .ok_or_else(|| "Node.js not found. Please install Node.js or rebuild the application.".to_string())?;
-    let npm_bin = node_util::resolve_npm_bin(app)
-        .ok_or_else(|| "npm not found. Please install Node.js or rebuild the application.".to_string())?;
 
     let data_dir = node_util::get_runjam_data_dir();
     let acp_dir = data_dir.join("acp");
@@ -455,8 +453,14 @@ fn resolve_agent_paths(
             let entry_point = pkg_dir.join("dist").join("index.js");
 
             if !entry_point.exists() {
+                // Only resolve npm when we actually need to install — so clean
+                // machines without a system Node.js can still use the bundled
+                // claude-agent-acp (which never touches npm).
+                let npm_runner = node_util::resolve_npm_runner(app)
+                    .ok_or_else(|| "npm not found. Please install Node.js or rebuild the application.".to_string())?;
                 rjlog!("[ACP] Installing {}...", pkg_name);
-                let output = hidden_command(&npm_bin)
+                let output = npm_runner
+                    .command()
                     .args(["install", "--no-save", pkg_name])
                     .current_dir(&install_dir)
                     .output()
@@ -499,8 +503,12 @@ fn resolve_agent_paths(
             };
 
             if !binary_path.exists() {
+                // codex-acp is never bundled, so installing it always needs npm.
+                let npm_runner = node_util::resolve_npm_runner(app)
+                    .ok_or_else(|| "npm not found. Please install Node.js or rebuild the application.".to_string())?;
                 rjlog!("[ACP] Installing {}...", pkg_name);
-                let output = hidden_command(&npm_bin)
+                let output = npm_runner
+                    .command()
                     .args(["install", "--no-save", &pkg_name])
                     .current_dir(&install_dir)
                     .output()
@@ -554,27 +562,32 @@ fn resolve_agent_paths(
                 }
             }
             if gemini_path.is_empty() {
-                // Fallback: search npm global prefix as well
-                let npm_prefix_output = hidden_command(&npm_bin)
-                    .args(["config", "get", "prefix"])
-                    .output();
-                if let Ok(out) = npm_prefix_output {
-                    let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !prefix.is_empty() {
-                        // on Unix, npm global binaries live in  '<prefix>/bin/';
-                        // on Windows, they live in '<prefix>/'.
-                        let prefix_bin = if cfg!(target_os = "windows") {
-                            std::path::PathBuf::from(&prefix)
-                        } else {
-                            std::path::PathBuf::from(&prefix).join("bin")
-                        };
-                        for name in bin_candidates.iter() {
-                            let candidate = prefix_bin.join(name);
-                            rjlog!("[ACP DEBUG] Gemini: checking npm prefix candidate: {:?}", candidate);
-                            if candidate.exists() {
-                                gemini_path = candidate.to_string_lossy().to_string();
-                                rjlog!("[ACP DEBUG] Gemini: found at npm prefix: {:?}", candidate);
-                                break;
+                // Fallback: search npm global prefix as well.
+                // This probe is optional — if npm can't be resolved (e.g. no
+                // bundled npm and no system Node.js) just skip it and continue.
+                if let Some(npm_runner) = node_util::resolve_npm_runner(app) {
+                    let npm_prefix_output = npm_runner
+                        .command()
+                        .args(["config", "get", "prefix"])
+                        .output();
+                    if let Ok(out) = npm_prefix_output {
+                        let prefix = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !prefix.is_empty() {
+                            // on Unix, npm global binaries live in  '<prefix>/bin/';
+                            // on Windows, they live in '<prefix>/'.
+                            let prefix_bin = if cfg!(target_os = "windows") {
+                                std::path::PathBuf::from(&prefix)
+                            } else {
+                                std::path::PathBuf::from(&prefix).join("bin")
+                            };
+                            for name in bin_candidates.iter() {
+                                let candidate = prefix_bin.join(name);
+                                rjlog!("[ACP DEBUG] Gemini: checking npm prefix candidate: {:?}", candidate);
+                                if candidate.exists() {
+                                    gemini_path = candidate.to_string_lossy().to_string();
+                                    rjlog!("[ACP DEBUG] Gemini: found at npm prefix: {:?}", candidate);
+                                    break;
+                                }
                             }
                         }
                     }

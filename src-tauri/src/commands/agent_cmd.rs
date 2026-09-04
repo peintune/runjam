@@ -2,6 +2,7 @@ use crate::agent::detector;
 use crate::acp_client::AcpClient;
 use crate::db::connection::Database;
 use crate::models::agent::Agent;
+use crate::node_util;
 use crate::state::{AgentState, AppState};
 use crate::util::hidden_command;
 use serde::Serialize;
@@ -246,17 +247,10 @@ pub fn open_nodejs_download() -> Result<(), String> {
 /// Install an agent CLI.
 #[tauri::command]
 pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, Mutex<Database>>) -> Result<Agent, String> {
-    let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
     let path_sep = if cfg!(target_os = "windows") { ";" } else { ":" };
 
     let mut node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
-    let mut npm_bin = if node_bin_dir.is_empty() {
-        npm_name.to_string()
-    } else if cfg!(target_os = "windows") {
-        format!("{}\\{}", node_bin_dir, npm_name)
-    } else {
-        format!("{}/{}", node_bin_dir, npm_name)
-    };
+    let mut npm_runner = npm_runner_for_bin_dir(&node_bin_dir);
     let mut path_env = if node_bin_dir.is_empty() {
         crate::agent::detector::get_enhanced_path()
     } else {
@@ -275,13 +269,7 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
             eprintln!("[AGENT INSTALL] node.exe missing at {} — cleaning up and re-downloading", node_bin_dir);
             let _ = std::fs::remove_dir_all(&node_bin_dir);
             node_bin_dir = ensure_nodejs(&app, &agent_id).await?;
-            npm_bin = if node_bin_dir.is_empty() {
-                npm_name.to_string()
-            } else if cfg!(target_os = "windows") {
-                format!("{}\\{}", node_bin_dir, npm_name)
-            } else {
-                format!("{}/{}", node_bin_dir, npm_name)
-            };
+            npm_runner = npm_runner_for_bin_dir(&node_bin_dir);
             path_env = if node_bin_dir.is_empty() {
                 crate::agent::detector::get_enhanced_path()
             } else {
@@ -302,7 +290,7 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
     let event_name = format!("agent-install:{}", agent_id);
     let _ = app.emit(
         &event_name,
-        serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_bin, install_cmd.join(" ")) }),
+        serde_json::json!({ "status": "installing", "message": format!("Running: {} {}", npm_runner.display(), install_cmd.join(" ")) }),
     );
 
     // Retry up to 3 times on EBUSY/file-lock errors (common on Windows
@@ -310,7 +298,8 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
     let mut output = None;
     let mut last_err = String::new();
     for attempt in 1..=3 {
-        match hidden_command(&npm_bin)
+        match npm_runner
+            .command()
             .args(&install_cmd)
             .env("PATH", &path_env)
             .output()
@@ -489,28 +478,40 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         })
 }
 
-/// Given an agent binary's full install path, resolve the npm binary from the
+/// Build an npm runner for the Node.js bin directory returned by
+/// [`ensure_nodejs`]. An empty dir means no usable bundled/data-dir Node.js
+/// was found, so fall back to whatever `npm` resolves on the system PATH.
+fn npm_runner_for_bin_dir(bin_dir: &str) -> node_util::NpmRunner {
+    if bin_dir.is_empty() {
+        let name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+        return node_util::NpmRunner::Direct(std::path::PathBuf::from(name));
+    }
+    let dir = std::path::Path::new(bin_dir);
+    node_util::npm_runner_at_bin_dir(dir).unwrap_or_else(|| {
+        let name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+        node_util::NpmRunner::Direct(dir.join(name))
+    })
+}
+
+/// Given an agent binary's full install path, resolve an npm runner from the
 /// same bin directory so we use the correct package manager for uninstall.
-fn resolve_npm_from_install_path(install_path: &str) -> Option<(String, String)> {
+fn resolve_npm_from_install_path(install_path: &str) -> Option<(node_util::NpmRunner, String)> {
     let bin_dir = std::path::Path::new(install_path).parent()?;
 
-    let npm_name = if cfg!(target_os = "windows") {
-        "npm.cmd"
-    } else {
-        "npm"
-    };
-    let npm_path = bin_dir.join(npm_name);
+    // Prefer `<node> <npm-cli.js>` from this Node.js installation (works even
+    // if the bundler flattened bin/npm); fall back to a direct npm entry.
+    let runner = node_util::npm_runner_at_bin_dir(bin_dir).or_else(|| {
+        let name = if cfg!(target_os = "windows") { "npm.cmd" } else { "npm" };
+        let p = bin_dir.join(name);
+        p.exists().then(|| node_util::NpmRunner::Direct(p))
+    })?;
 
-    if npm_path.exists() {
-        let path_env = format!(
-            "{}:{}",
-            bin_dir.to_string_lossy().to_string(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        Some((npm_path.to_string_lossy().to_string(), path_env))
-    } else {
-        None
-    }
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.to_string_lossy().to_string(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    Some((runner, path_env))
 }
 
 /// Find all paths where a binary exists in a given PATH (like `which -a`).
@@ -549,7 +550,7 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
     // --- Try npm uninstall using the npm from the detected binary's directory ---
     let mut npm_uninstall_attempted = false;
     if let Some(ref install_path) = detected_path {
-        if let Some((npm_bin, path_env)) = resolve_npm_from_install_path(install_path) {
+        if let Some((npm_runner, path_env)) = resolve_npm_from_install_path(install_path) {
             let uninstall_cmd = match agent_id.as_str() {
                 "claude-code" => vec!["uninstall", "-g", "@anthropic-ai/claude-code"],
                 "codex-cli" => vec!["uninstall", "-g", "@openai/codex"],
@@ -559,10 +560,11 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
 
             let _ = app.emit(
                 &event_name,
-                serde_json::json!({ "status": "uninstalling", "message": format!("Running: {} {}", npm_bin, uninstall_cmd.join(" ")) }),
+                serde_json::json!({ "status": "uninstalling", "message": format!("Running: {} {}", npm_runner.display(), uninstall_cmd.join(" ")) }),
             );
 
-            let _ = hidden_command(&npm_bin)
+            let _ = npm_runner
+                .command()
                 .args(&uninstall_cmd)
                 .env("PATH", &path_env)
                 .output();
@@ -1012,55 +1014,42 @@ pub async fn test_agent(app: tauri::AppHandle, agent_id: String, db: State<'_, M
     Ok(TestResult { success: status == "available", message })
 }
 
+/// True when `bin_dir` directly contains a `node`/`node.exe` executable.
+fn node_exists_in_bin_dir(bin_dir: &std::path::Path) -> bool {
+    let name = if cfg!(target_os = "windows") { "node.exe" } else { "node" };
+    bin_dir.join(name).is_file()
+}
+
 /// Ensure Node.js is available. Prefers bundled Node.js from Tauri resources,
-/// falls back to previously-downloaded Node.js in RunJam data dir, then system node.
+/// falls back to previously-downloaded Node.js in RunJam data dir, then system
+/// node, and finally downloads a fresh copy.
+///
+/// Returns the "bin directory" that contains `node`/`node.exe` (used both for
+/// `npm install -g` and to prepend to PATH). npm is always driven as
+/// `<node> <npm-cli.js>`, so we only require `node` + `npm-cli.js` to exist —
+/// the `bin/npm` symlink being flattened by the resource bundler is irrelevant.
+/// An empty string means no usable Node.js bin dir was found, and callers
+/// should fall back to the system `npm` on PATH.
 async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String, String> {
     // 1. Check bundled Node.js (preferred — comes with the app)
-    if let Some(bin_dir) = crate::node_util::get_bundled_node_bin_dir(app) {
-        let bin_str = bin_dir.to_string_lossy().to_string();
-        let npm_path = if cfg!(target_os = "windows") {
-            format!("{}\\npm.cmd", bin_str)
-        } else {
-            format!("{}/npm", bin_str)
-        };
-        let npm_exists = std::path::Path::new(&npm_path).exists();
-        // On macOS/Linux, verify npm symlink wasn't resolved by the bundler
-        let npm_intact = if cfg!(not(target_os = "windows")) && npm_exists {
-            std::fs::symlink_metadata(&npm_path)
-                .map(|m| m.is_symlink())
-                .unwrap_or(false)
-        } else {
-            npm_exists
-        };
-        if npm_intact {
-            return Ok(bin_str);
+    if let Some(bin_dir) = node_util::get_bundled_node_bin_dir(app) {
+        let usable = node_exists_in_bin_dir(&bin_dir)
+            && node_util::npm_runner_at_bin_dir(&bin_dir).is_some();
+        if usable {
+            return Ok(bin_dir.to_string_lossy().to_string());
         }
     }
 
     // 2. Check previously-downloaded Node.js in RunJam data dir
-    let data_dir = dirs_data_dir();
-    let node_dir = data_dir.join("nodejs").join("node-v22.12.0");
-    let bin_dir = if cfg!(target_os = "windows") {
-        node_dir.to_string_lossy().to_string()
-    } else {
-        node_dir.join("bin").to_string_lossy().to_string()
-    };
-    let npm_path = if cfg!(target_os = "windows") {
-        format!("{}\\npm.cmd", bin_dir)
-    } else {
-        format!("{}/npm", bin_dir)
-    };
-    let node_exe = if cfg!(target_os = "windows") {
-        format!("{}\\node.exe", bin_dir)
-    } else {
-        format!("{}/node", bin_dir)
-    };
-    if std::path::Path::new(&npm_path).exists() && std::path::Path::new(&node_exe).exists() {
-        return Ok(bin_dir);
+    let bin_dir = node_util::get_data_dir_node_bin_dir();
+    let usable = node_exists_in_bin_dir(&bin_dir)
+        && node_util::npm_runner_at_bin_dir(&bin_dir).is_some();
+    if usable {
+        return Ok(bin_dir.to_string_lossy().to_string());
     }
 
     // 3. Check system node using enhanced PATH (includes Homebrew, nvm, etc.)
-    let enhanced_path = crate::agent::detector::get_enhanced_path();
+    let enhanced_path = detector::get_enhanced_path();
     if hidden_command("npm")
         .arg("--version")
         .env("PATH", &enhanced_path)
@@ -1072,17 +1061,17 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
     }
 
     // 4. Download Node.js as last resort
+    let data_dir = node_util::get_runjam_data_dir();
+    let node_dir = data_dir.join("nodejs").join("node-v22.12.0");
+    let bin_dir = node_util::get_data_dir_node_bin_dir();
     let _ = app.emit(&format!("agent-install:{}", agent_id), serde_json::json!({
         "status": "installing", "message": "Downloading Node.js v22.12.0..."
     }));
 
     // Clean up any broken partial installation from a previous failed attempt
-    // (e.g. npm.cmd exists but node.exe is missing)
-    if std::path::Path::new(&npm_path).exists() && !std::path::Path::new(&node_exe).exists() {
+    // (e.g. files exist but node.exe is missing)
+    if node_dir.exists() && !node_exists_in_bin_dir(&bin_dir) {
         let _ = std::fs::remove_dir_all(data_dir.join("nodejs"));
-    }
-    if std::path::Path::new(&bin_dir).exists() && !std::path::Path::new(&node_exe).exists() {
-        let _ = std::fs::remove_dir_all(&std::path::Path::new(&bin_dir));
     }
 
     let url = if cfg!(target_os = "macos") {
@@ -1147,24 +1136,22 @@ async fn ensure_nodejs(app: &tauri::AppHandle, agent_id: &str) -> Result<String,
         .ok_or("Extracted directory not found".to_string())?;
 
     // Create parent for node_dir
-    if let Some(parent) = std::path::Path::new(&bin_dir).parent() {
-        std::fs::create_dir_all(parent).ok();
+    if let Some(parent) = node_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create dir: {}", e))?;
     }
     // Move to canonical name (remove old dir first if it exists)
     if extracted_dir != node_dir {
         if node_dir.exists() {
             let _ = std::fs::remove_dir_all(&node_dir);
         }
-        std::fs::rename(&extracted_dir, &node_dir).ok();
+        std::fs::rename(&extracted_dir, &node_dir)
+            .map_err(|e| format!("Failed to move Node.js into place: {}", e))?;
     }
     let _ = std::fs::remove_file(&tmp);
-    Ok(bin_dir)
-}
 
-fn dirs_data_dir() -> std::path::PathBuf {
-    if let Some(dir) = directories::ProjectDirs::from("com", "runjam", "RunJam") {
-        dir.data_local_dir().to_path_buf()
-    } else {
-        std::path::PathBuf::from(".")
+    if !node_exists_in_bin_dir(&bin_dir) {
+        return Err("Node.js setup incomplete — node binary not found after extraction.".to_string());
     }
+    Ok(bin_dir.to_string_lossy().to_string())
 }
