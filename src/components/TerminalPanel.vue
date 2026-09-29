@@ -52,7 +52,12 @@ const tabsScrollEl = ref<HTMLElement | null>(null);
 // 主路径：完整 xterm 实例的 LRU 缓存。切换目录/隐藏面板时整组 detach 入
 // 缓存（不 dispose、不 unlisten），后端进程与 listener 保活，xterm buffer
 // 持续累积；切回时 reattach DOM + fit，零重建、零历史写回。
-const LRU_MAX = 4;
+//
+// 容量必须大于用户"来回切换的几个会话"数：缓存满会淘汰最久未用的目录，
+// 把完整实例降级成纯文本（丢掉 top/htop 这类全屏 TUI 的画面与光标状态）。
+// 之前是 4，切 5 个会话就开始丢。提到 12 后常见切换不再触发淘汰——代价是
+// 隐藏目录的 xterm 实例常驻内存（每个约 1-2MB），对桌面端可接受。
+const LRU_MAX = 12;
 interface CachedDirectory {
   tabs: TabState[];
   activeIndex: number;
@@ -138,13 +143,19 @@ function captureBufferText(term: Terminal): string {
 /** 切走当前目录：不做 captureBufferText、不 dispose、不 unlisten；把每个
  *  xterm 的 term.element 从 v-for 容器 detach 出来（否则随容器被 Vue 一起
  *  移除），整组实例移入 LRU 缓存。后端进程与 listener 保活，xterm buffer
- *  持续累积——切回时零重建、零历史写回。 */
-function cacheActiveDirectory(cwd: string) {
-  if (!cwd || tabs.value.length === 0) return;
+ *  持续累积——切回时零重建、零历史写回。
+ *
+ *  Key 取自 tabs 自身的 cwd，而不是 props.cwd：切换会话时 watch(cwd) 与
+ *  watch(active) 会在同一个 flush 里先后触发，等到这里 props.cwd 可能已经
+ *  指向**新**目录了，用它会把这批还活着的终端错误地记到新目录名下。 */
+function cacheActiveDirectory(fallbackCwd?: string) {
+  if (tabs.value.length === 0) return;
+  const key = tabs.value[0]?.cwd || fallbackCwd || "";
+  if (!key) return;
   for (const t of tabs.value) {
     t.term?.element?.remove();
   }
-  directoryCache.set(cwd, {
+  directoryCache.set(key, {
     tabs: tabs.value,
     activeIndex: activeTabIndex.value,
     counter: tabCounter,
@@ -344,15 +355,20 @@ async function killAll() {
     invoke("kill_terminal", { terminalId: tab.id }).catch(() => {});
     disposeTabFull(tab);
   }
+  // 用户显式关闭整个终端：真 kill 后端进程 + 从两类缓存中删除这些目录，
+  // 下次打开重新 spawn 全新 shell（与 LRU 淘汰的"仅 dispose DOM"严格区分）。
+  // 按 tab 自身的 cwd 删除，而不是 props.cwd——切换会话的瞬间两者可能已经
+  // 不一致，用 props.cwd 会删错条目、留下幽灵缓存。
+  const cwds = new Set<string>();
+  for (const tab of tabs.value) if (tab.cwd) cwds.add(tab.cwd);
+  if (props.cwd) cwds.add(props.cwd);
+  for (const c of cwds) {
+    directoryCache.delete(c);
+    directoryStates.delete(c);
+    spawnedCwds.delete(c);
+  }
   tabs.value = [];
   activeTabIndex.value = -1;
-  if (props.cwd) {
-    // 用户显式关闭整个终端：真 kill 后端进程 + 从两类缓存中删除该目录，
-    // 下次打开重新 spawn 全新 shell（与 LRU 淘汰的"仅 dispose DOM"严格区分）。
-    directoryCache.delete(props.cwd);
-    directoryStates.delete(props.cwd);
-    spawnedCwds.delete(props.cwd);
-  }
 }
 
 function closeTab(index: number) {
@@ -378,6 +394,18 @@ function closeTab(index: number) {
   if (cachedDir) {
     cachedDir.tabs = cachedDir.tabs.filter((t) => t.id !== tab.id);
     if (cachedDir.tabs.length === 0) directoryCache.delete(tab.cwd);
+  }
+
+  // 该目录的最后一个 tab 被关掉（且没有缓存实例/历史），就清掉 spawnedCwds
+  // 标记——否则下次打开会以为"已经 spawn 过"而什么都不做，留下永远空白的
+  // 终端面板，必须重启应用才能恢复。
+  if (
+    tab.cwd &&
+    !directoryCache.has(tab.cwd) &&
+    !directoryStates.has(tab.cwd) &&
+    !tabs.value.some((t) => t.cwd === tab.cwd)
+  ) {
+    spawnedCwds.delete(tab.cwd);
   }
 
   if (tabs.value.length === 0) {
@@ -677,12 +705,19 @@ async function initForCwd(cwd: string) {
   // 零历史写回（buffer/listener 一直保活）。缓存未命中才走冷路径。
   const cached = directoryCache.get(cwd);
   if (cached) {
-    directoryCache.delete(cwd);
+    // Do NOT remove the entry yet. A session switch that also toggles the panel
+    // fires watch(cwd) AND watch(active), so initForCwd can run twice for the
+    // same cwd in one flush. Deleting here made the second call miss the cache
+    // and spawn a brand-new shell — the live terminal (and any `top` screen) was
+    // orphaned and the tab id changed. Keeping the entry until we are confirmed
+    // current means a racing call still hits it; the one that wins the
+    // generation race does the single delete + reattach.
     tabs.value = cached.tabs;
     activeTabIndex.value = cached.activeIndex;
     tabCounter = cached.counter;
     await nextTick();
-    if (myGen !== initGeneration) return; // superseded by a newer switch
+    if (myGen !== initGeneration) return; // superseded — leave the entry intact
+    directoryCache.delete(cwd);
     reattachAllTabs(cached.tabs);
     return;
   }

@@ -110,6 +110,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
    *  代理设置，放 store 里跨组件实例共享与后端语义一致。 */
   const noThinking = ref(false);
 
+  /** 新建会话页面（尚未创建会话时）用户选择的项目目录。同样提升到全局：
+   *  WorkspaceLayout 需要在「新建会话」状态下就知道文件树/终端的根目录，
+   *  才能让右上角那对按钮在新建会话页也可用。未选时为 null，由读取方回退
+   *  到 home 目录。 */
+  const newSessionDirPath = ref<string | null>(null);
+
   const activeSession = computed(() =>
     sessions.value.find((s) => s.id === activeSessionId.value) ?? null,
   );
@@ -370,6 +376,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     activeSession,
     activeDraftChars,
     noThinking,
+    newSessionDirPath,
     loadSessions,
     createSession,
     selectSession,

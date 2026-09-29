@@ -368,6 +368,7 @@ async function persistModels() {
       support_tools: true,
       tags: [],
       use_proxy: true,
+      force_reasoning_none: false,
     };
   });
   try { await saveModels(list); } catch (err) { console.error("saveModels failed:", err); }

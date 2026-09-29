@@ -1,26 +1,18 @@
 <script setup lang="ts">
-import { computed, watch, ref } from "vue";
+import { computed, watch } from "vue";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout } from "../composables/useSessionLayout";
 import FileTree from "./FileTree.vue";
 import FileEditor from "./FileEditor.vue";
 import FilePreview from "./FilePreview.vue";
-import TerminalPanel from "./TerminalPanel.vue";
 import { FileText, X } from "lucide-vue-next";
 import { openInFinder } from "../api/app";
 
 const props = defineProps<{
-  showTerminal: boolean;
-  /** Whether the whole workspace panel is actually visible (not v-show hidden).
-   *  The terminal only spawns/restores shells when it can be seen — spawning
-   *  for a hidden panel started a zsh for every visited session even though the
-   *  user never saw it, leaking shells and spiking CPU. */
-  visible: boolean;
+  /** 文件树是否展开。为 false 时整块文件树（含其 resize 手柄）不渲染，
+   *  中间只剩下编辑器/预览区。 */
+  showFileTree: boolean;
   rootPath: string;
-}>();
-
-const emit = defineEmits<{
-  (e: "update:showTerminal", value: boolean): void;
 }>();
 
 const { layout, saveLayout } = useSessionLayout();
@@ -30,16 +22,6 @@ const { layout, saveLayout } = useSessionLayout();
 // → default ~/.runjam/session/{id}). This ensures the file tree and terminal
 // work for regular sessions too, not just project-bound ones.
 const activeDirectory = computed(() => props.rootPath);
-
-// Ref to the terminal panel so the parent can ask it to terminate every
-// backend process when the user confirms closing the terminal.
-const terminalPanelRef = ref<InstanceType<typeof TerminalPanel> | null>(null);
-
-defineExpose({
-  async killAllTerminals() {
-    await terminalPanelRef.value?.killAll();
-  },
-});
 
 // ---- Multi-file tabs ----
 const openFiles = computed({
@@ -122,40 +104,33 @@ const fileTreeResize = useDragResize({
   onDragEnd: (size) => { layout.fileTreeWidth = size; },
 });
 
-const terminalResize = useDragResize({
-  direction: "vertical",
-  minSize: 80,
-  defaultSize: 260,
-  initialSize: layout.terminalHeight,
-  onDragEnd: (size) => { layout.terminalHeight = size; },
-});
-
 // Sync resize sizes when layout changes (session switch)
 watch(() => layout.fileTreeWidth, (w) => { fileTreeResize.size.value = w; });
-watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
 </script>
 
 <template>
   <div class="flex-1 flex min-h-0 min-w-0 gap-[3px]">
-    <!-- File Tree panel -->
-    <div
-      class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
-      :style="{ width: fileTreeResize.size.value + 'px' }"
-    >
-      <FileTree
-        :root-path="activeDirectory"
-        @select-file="handleSelectFile"
+    <!-- File Tree panel（仅当用户打开文件树时渲染） -->
+    <template v-if="showFileTree">
+      <div
+        class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
+        :style="{ width: fileTreeResize.size.value + 'px' }"
+      >
+        <FileTree
+          :root-path="activeDirectory"
+          @select-file="handleSelectFile"
+        />
+      </div>
+
+      <!-- File tree resize handle -->
+      <div
+        class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
+        :class="fileTreeResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
+        @mousedown="fileTreeResize.startDrag"
       />
-    </div>
+    </template>
 
-    <!-- File tree resize handle -->
-    <div
-      class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
-      :class="fileTreeResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
-      @mousedown="fileTreeResize.startDrag"
-    />
-
-    <!-- Center: Tab bar + Editor + Terminal -->
+    <!-- Center: Tab bar + Editor（终端已移至 WorkspaceLayout 底部横跨全宽） -->
     <div class="flex-1 flex flex-col min-w-0 gap-[3px]">
       <!-- Tab bar -->
       <div
@@ -208,28 +183,6 @@ watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
             <p class="text-[12px] text-gray-400">{{ $t("workspace.selectFileHint") }}</p>
           </div>
         </div>
-      </div>
-
-      <!-- Terminal resize handle -->
-      <div
-        v-show="showTerminal"
-        class="h-px flex-shrink-0 cursor-row-resize transition-colors rounded-full hover:bg-blue-400/40"
-        :class="terminalResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
-        @mousedown="terminalResize.startDrag"
-      />
-
-      <!-- Terminal panel (v-show keeps terminal processes alive when hidden) -->
-      <div
-        v-show="showTerminal"
-        class="flex-shrink-0 rounded-lg overflow-hidden shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
-        :style="{ height: terminalResize.size.value + 'px' }"
-      >
-        <TerminalPanel
-          ref="terminalPanelRef"
-          :cwd="activeDirectory"
-          :active="showTerminal && visible"
-          @close="emit('update:showTerminal', false)"
-        />
       </div>
     </div>
   </div>

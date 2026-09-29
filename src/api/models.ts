@@ -114,6 +114,7 @@ export interface ModelEntry {
   support_tools: boolean;
   tags: string[];
   use_proxy: boolean;
+  force_reasoning_none: boolean;
 }
 
 export async function getModels(): Promise<ModelEntry[]> {
@@ -165,6 +166,42 @@ export async function removeModelFromAgent(agentId: string, modelId: string): Pr
 
 export async function readAgentConfigModels(agentId: string): Promise<ModelEntry[]> {
   return invoke<ModelEntry[]>("read_agent_config_models", { agentId });
+}
+
+/** 从 CLI 原生配置解析出的模型（只读展示用）。 */
+export interface NativeModel {
+  agent_id: string;
+  agent_label: string;
+  name: string;
+  alias: string;
+  api_base: string;
+  protocol: ProtocolType;
+  /** 是否为该 CLI 当前选用的模型 */
+  is_current: boolean;
+  /** runjam 是否已覆写过该 CLI 的配置文件 */
+  is_overridden: boolean;
+  /** 是否存在 runjam 保存的原生快照 */
+  has_snapshot: boolean;
+  /** 值实际来自哪个文件（快照 / 日期备份 / 当前配置） */
+  source_path: string;
+}
+
+export async function getNativeModels(agentId: string): Promise<NativeModel[]> {
+  return invoke<NativeModel[]>("get_native_models", { agentId });
+}
+
+export async function getAllNativeModels(): Promise<NativeModel[]> {
+  return invoke<NativeModel[]>("get_all_native_models");
+}
+
+/** 手动留存当前配置为原生快照（幂等，不覆盖已有快照）。 */
+export async function snapshotAgentConfig(agentId: string): Promise<void> {
+  return invoke("snapshot_agent_config", { agentId });
+}
+
+/** 切回原生配置：整文件还原并解除 runjam 对该 agent 的模型接管。 */
+export async function restoreNativeConfig(agentId: string): Promise<void> {
+  return invoke("restore_native_config", { agentId });
 }
 
 export interface ModelAlias {

@@ -222,6 +222,108 @@ pub(crate) fn limit_tools_for_llama(tools: &[Value], max: usize) -> Vec<Value> {
     kept
 }
 
+/// 上游 400 错误体是否在抱怨 reasoning_effort。
+///
+/// 企业内部网关（如 llm-api.patsnap.info）在 `/v1/chat/completions` 上有一套
+/// 非标准行为：**只要请求带 function tools，就必须显式传
+/// `reasoning_effort: "none"`**，不传即 400：
+///   "Function tools with reasoning_effort are not supported for <model>
+///    in /v1/chat/completions. To use function tools, use /v1/responses or
+///    set reasoning_effort to 'none'."
+/// 报文里 `"param":"reasoning_effort"` 容易误读成"代理发错了字段"，实际是
+/// 网关自报缺少该字段。此处仅做**字符串嗅探**，命中即触发一次降级重试。
+pub(crate) fn upstream_rejects_missing_reasoning_effort(err_body: &str) -> bool {
+    err_body.to_lowercase().contains("reasoning_effort")
+}
+
+/// 给 OpenAI Chat 请求体注入 `reasoning_effort: "none"`。
+///
+/// 仅在请求**确实带 tools**且顶层尚未设置 reasoning_effort 时注入：
+/// - 该网关的 400 只在带 tools 时出现，无 tools 时上游并不校验，凭空多送一个
+///   非标准字段反而可能被其他严格端点（火山引擎 ark、DeepSeek）拒绝；
+/// - 顶层已有 reasoning_effort（透传的客户端意图）时尊重原值。
+/// 返回 None 表示无需/无法注入，调用方应沿用原 body。
+pub(crate) fn apply_reasoning_none(body: &str) -> Option<String> {
+    let mut v: Value = serde_json::from_str(body).ok()?;
+    let obj = v.as_object_mut()?;
+    let has_tools = obj
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !has_tools || obj.contains_key("reasoning_effort") {
+        return None;
+    }
+    obj.insert("reasoning_effort".into(), serde_json::json!("none"));
+    Some(v.to_string())
+}
+
+/// 发往 OpenAI Chat Completions 上游的结果：与 `ureq::Error` 区分开，因为
+/// 自动重试需要在读掉错误体后仍能把状态码/错误体交回调用方。
+pub(crate) enum ChatUpstream {
+    Ok(ureq::Response),
+    /// 上游返回非 2xx（body 已读出）
+    Http { status: u16, body: String },
+    /// 连接/传输层错误
+    Transport(ureq::Error),
+}
+
+/// 发送 OpenAI Chat Completions 请求，内置企业网关的 reasoning_effort 兜底。
+///
+/// 企业内网 LLM 接口常看不出是什么协议，也不遵循 OpenAI 标准：网关可能强制
+/// 要求带 tools 时显式 `reasoning_effort: "none"`，但错误信息里只会说
+/// "reasoning_effort ... not supported"，看起来像是**我方多发了**该字段。
+/// 这里做两件事：
+/// 1. `inject_reasoning_none=true`（模型配置开关或用户关闭推理）时，发送前
+///    就给带 tools 的请求补上 `reasoning_effort: "none"`；
+/// 2. 上游仍以 400 拒绝且错误体提及 reasoning_effort 时，注入该字段**重试一次**
+///    （只重试一次，第二次失败照常返回错误，无死循环风险）。
+pub(crate) fn send_chat_completions(
+    url: &str,
+    api_key: &str,
+    body: &str,
+    inject_reasoning_none: bool,
+) -> ChatUpstream {
+    let agent = build_agent();
+    let send = |b: &str| {
+        agent
+            .post(url)
+            .set("Authorization", &format!("Bearer {}", api_key))
+            .set("Content-Type", "application/json")
+            .send_string(b)
+    };
+
+    let mut out_body = body.to_string();
+    if inject_reasoning_none {
+        if let Some(b) = apply_reasoning_none(body) {
+            rjlog!("[PROXY] injecting reasoning_effort=\"none\" (tools present; upstream requires explicit disable)");
+            out_body = b;
+        }
+    }
+
+    match send(&out_body) {
+        Ok(r) => ChatUpstream::Ok(r),
+        Err(ureq::Error::Status(status, r)) => {
+            let err_body = r.into_string().unwrap_or_default();
+            if status == 400 && upstream_rejects_missing_reasoning_effort(&err_body) {
+                if let Some(retry_body) = apply_reasoning_none(&out_body) {
+                    rjlog!("[PROXY] upstream HTTP 400 mentions reasoning_effort — retrying once with reasoning_effort=\"none\"");
+                    return match send(&retry_body) {
+                        Ok(r) => ChatUpstream::Ok(r),
+                        Err(ureq::Error::Status(st, r)) => ChatUpstream::Http {
+                            status: st,
+                            body: r.into_string().unwrap_or_default(),
+                        },
+                        Err(e) => ChatUpstream::Transport(e),
+                    };
+                }
+            }
+            ChatUpstream::Http { status, body: err_body }
+        }
+        Err(e) => ChatUpstream::Transport(e),
+    }
+}
+
 /// 安全截断字符串到 max_bytes 字节以内，确保不会切在多字节 UTF-8 字符中间。
 pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -589,7 +691,7 @@ mod tests {
             support_reasoning: false,
             support_tools: true,
             tags: vec![],
-            use_proxy: true,
+            use_proxy: true, force_reasoning_none: false,
         }
     }
 
@@ -905,5 +1007,203 @@ mod tests {
         ];
         let out = normalize_message_sequence(msgs);
         assert_eq!(out.len(), 2, "tool 消息不合并");
+    }
+
+    // ── reasoning_effort 企业网关兜底（llm-api.patsnap.info 等） ──
+
+    #[test]
+    fn test_rejects_missing_reasoning_effort_sniffs_error_body() {
+        // 网关真实报文：错误里提到 reasoning_effort（即使我方并未发送该字段）
+        let body = r#"{"error":{"http_code":400,"code":0,"message":"Function tools with reasoning_effort are not supported for gpt-6-luna in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.","param":"reasoning_effort","type":"invalid_request_error"}}"#;
+        assert!(upstream_rejects_missing_reasoning_effort(body));
+        // 大小写不敏感
+        assert!(upstream_rejects_missing_reasoning_effort("REASONING_EFFORT not allowed"));
+        // 无关错误不误判
+        assert!(!upstream_rejects_missing_reasoning_effort(r#"{"error":{"message":"invalid api key"}}"#));
+    }
+
+    #[test]
+    fn test_apply_reasoning_none_injects_when_tools_present() {
+        let body = r#"{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"x"}}]}"#;
+        let out = apply_reasoning_none(body).expect("带 tools 应注入");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn test_apply_reasoning_none_skips_without_tools() {
+        // 无 tools 时上游不校验：凭空多送非标准字段可能被其他严格端点拒绝
+        let body = r#"{"model":"m","messages":[]}"#;
+        assert!(apply_reasoning_none(body).is_none());
+        // 空 tools 数组同样跳过
+        let body2 = r#"{"model":"m","messages":[],"tools":[]}"#;
+        assert!(apply_reasoning_none(body2).is_none());
+    }
+
+    #[test]
+    fn test_apply_reasoning_none_respects_existing_value() {
+        // 客户端/透传已显式设置 reasoning_effort 时不得覆盖（如 "low"）
+        let body = r#"{"model":"m","tools":[{"type":"function","function":{"name":"x"}}],"reasoning_effort":"low"}"#;
+        assert!(apply_reasoning_none(body).is_none());
+    }
+
+    #[test]
+    fn test_apply_reasoning_none_invalid_json() {
+        assert!(apply_reasoning_none("not json").is_none());
+    }
+
+    // ── send_chat_completions：真实 HTTP 层（含 400 自动重试） ──
+
+    /// 带超时地取出 stub 上游收到的下一个请求体。用超时而不用 `recv()`：
+    /// 入口若因参数不合法提前返回（根本没发出请求），无超时的 recv 会永久
+    /// 阻塞并让整个 test binary 挂住（表现为 cargo test 永不结束）。
+    fn recv_body(rx: &std::sync::mpsc::Receiver<String>) -> String {
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("5 秒内应收到上游请求（入口可能提前返回而未发出请求）")
+    }
+
+    /// 断言短期内没有额外请求到达（比 try_recv 更可靠：留出传输延迟余量）。
+    fn assert_no_more_requests(rx: &std::sync::mpsc::Receiver<String>) {
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(),
+            "不应发生额外请求"
+        );
+    }
+
+    /// 极简一次性 HTTP 服务器：首个请求按 `first_status` 返回 `first_body`，
+    /// 之后一律返回 200 `{"ok":true}`；把收到的 body 通过 channel 传出。
+    fn spawn_stub_upstream(
+        first_status: u16,
+        first_body: &'static str,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for (i, stream) in listener.incoming().enumerate() {
+                let Ok(mut s) = stream else { break };
+                let mut reader = BufReader::new(s.try_clone().unwrap());
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 { break; }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    if line == "\r\n" { break; }
+                }
+                let mut buf = vec![0u8; len];
+                if len > 0 { std::io::Read::read_exact(&mut reader, &mut buf).unwrap(); }
+                let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+
+                let (status, body) = if i == 0 {
+                    (first_status, first_body.to_string())
+                } else {
+                    (200, r#"{"ok":true}"#.to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    status, body.len(), body
+                );
+                let _ = s.write_all(resp.as_bytes());
+                let _ = s.flush();
+            }
+        });
+        (format!("http://{}/v1/chat/completions", addr), rx)
+    }
+
+    #[test]
+    fn test_send_chat_completions_retries_once_on_reasoning_effort_400() {
+        // 网关典型行为：第一次因缺 reasoning_effort 报 400，显式传 "none" 后成功。
+        // 这里 stub 无条件按序号应答，正是要验证客户端确实重试了、且重试体带上了字段。
+        let err = r#"{"error":{"message":"Function tools with reasoning_effort are not supported for gpt-6-luna ... set reasoning_effort to 'none'.","param":"reasoning_effort"}}"#;
+        let (url, rx) = spawn_stub_upstream(400, err);
+        let body = r#"{"model":"gpt-6-luna","messages":[],"tools":[{"type":"function","function":{"name":"x"}}]}"#;
+
+        let out = send_chat_completions(&url, "sk-test", body, false);
+        assert!(matches!(out, ChatUpstream::Ok(_)), "重试后应成功");
+
+        let first = recv_body(&rx);
+        assert!(!first.contains("reasoning_effort"), "首次请求原样透传（不带注入开关）");
+        let second = recv_body(&rx);
+        let v: Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(v["reasoning_effort"], "none", "重试请求应注入 reasoning_effort=none");
+    }
+
+    #[test]
+    fn test_send_chat_completions_no_retry_for_unrelated_400() {
+        // 400 与 reasoning_effort 无关（如 key 无效）→ 不重试，原样返回错误体
+        let err = r#"{"error":{"message":"invalid api key"}}"#;
+        let (url, rx) = spawn_stub_upstream(400, err);
+        let body = r#"{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"x"}}]}"#;
+
+        let out = send_chat_completions(&url, "sk-test", body, false);
+        match out {
+            ChatUpstream::Http { status, body } => {
+                assert_eq!(status, 400);
+                assert!(body.contains("invalid api key"));
+            }
+            _ => panic!("应为 Http(400)"),
+        }
+        let _ = recv_body(&rx);
+        assert_no_more_requests(&rx);
+    }
+
+    // ── 请求体形态：企业网关兜底在各入口装配出的最终 body ──
+    //
+    // 说明：这里刻意不经过真实 HTTP（不启 stub 上游）。原因有二：
+    // 1) `proxy_openai_direct` 内部用 `ModelConfig::load()` 读取磁盘配置，而非
+    //    调用方传入的 models 切片（既有设计），直接调用会绕过本测试构造的模型；
+    // 2) 真实 HTTP stub 在这些测试里引入的端口/线程/超时复杂度，远大于它所能
+    //    验证的额外信息——真正的 HTTP 重试链路已由上面的
+    //    `test_send_chat_completions_retries_once_on_reasoning_effort_400` 覆盖。
+    // 因此此处固定住「最终 body 里 reasoning_effort 的有无」这一契约。
+
+    /// 带 tools 的 OpenAI Chat body：任何入口在强制/关闭推理时都必须注入 none。
+    fn chat_body_with_tools() -> String {
+        serde_json::json!({
+            "model": "stub-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather"}}]
+        }).to_string()
+    }
+
+    #[test]
+    fn test_apply_reasoning_none_contract_for_all_entry_shapes() {
+        // 四类入口最终都会汇成 OpenAI Chat body，注入规则只有一条：
+        // 带 tools 且未显式设置 reasoning_effort 时补 "none"。
+        assert_eq!(
+            serde_json::from_str::<Value>(&apply_reasoning_none(&chat_body_with_tools()).unwrap()).unwrap()["reasoning_effort"],
+            "none"
+        );
+        // 无 tools 的各种形态：绝不注入
+        for body in [
+            r#"{"model":"m","messages":[]}"#,
+            r#"{"model":"m","messages":[],"tools":[]}"#,
+            r#"{"model":"m","messages":[],"tools":null}"#,
+        ] {
+            assert!(apply_reasoning_none(body).is_none(), "无 tools 不应注入: {}", body);
+        }
+    }
+
+    #[test]
+    fn test_reasoning_effort_absent_in_body_without_tools_is_untouched() {
+        // 无 tools 时上游不校验；凭空注入非标准字段反而会被严格端点拒绝，
+        // 因此契约是「无 tools → 最终 body 不含 reasoning_effort」。
+        let body = r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
+        assert!(apply_reasoning_none(body).is_none());
+    }
+
+    #[test]
+    fn test_upstream_rejects_missing_reasoning_effort_only_matches_400_bodies() {
+        // 触发重试的判定必须足够窄：只有"提到 reasoning_effort"才重试，
+        // 否则任何 400 都会被重试一次（放大上游压力、掩盖真实错误）。
+        assert!(upstream_rejects_missing_reasoning_effort(
+            r#"{"error":{"message":"... reasoning_effort ... set reasoning_effort to 'none'."}}"#
+        ));
+        assert!(!upstream_rejects_missing_reasoning_effort(r#"{"error":{"message":"InvalidParameter: temperature"}}"#));
+        assert!(!upstream_rejects_missing_reasoning_effort(""));
     }
 }

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, FolderOpen, ChevronDown, X, RefreshCw } from "lucide-vue-next";
+import { Plus, ZapOff, Trash2, Eye, EyeOff, HelpCircle, Users, Download, Check, ExternalLink, Play, Square, FolderOpen, ChevronDown, X, RefreshCw, Archive, RotateCcw, Loader2 } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir, getDownloadStatus, recommendedLocalModels, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress } from "../../api/models";
+import { getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey, getAgentModelMap, assignModelToAgent, removeModelFromAgent, checkLlamaServerAvailable, getLlamaServerStatus, listLlamaModels, downloadLlamaModel, startLlamaServer, stopLlamaServer, openLlamaModelsDir, getDownloadStatus, recommendedLocalModels, getAllNativeModels, restoreNativeConfig, type AgentModelInfo, type ProtocolType, type LlamaModel, type LlamaPullProgress, type NativeModel } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
@@ -25,6 +25,7 @@ interface UIModel {
   showKey: boolean;
   assignedAgents: string[];
   useProxy: Record<string, boolean>;
+  forceReasoningNone: boolean;
 }
 
 const agentStore = useAgentStore();
@@ -104,10 +105,12 @@ async function refreshModels() {
       showKey: false,
       assignedAgents: [],
       useProxy: {},
+      forceReasoningNone: !!m.force_reasoning_none,
     }));
     await Promise.all([
       loadAgentModelMap(),
       loadLlamaInfo(),
+      loadNativeModels(),
     ]);
   } catch {} finally {
     refreshing.value = false;
@@ -131,8 +134,9 @@ onMounted(() => {
       showKey: false,
       assignedAgents: [],
       useProxy: {},
+      forceReasoningNone: !!m.force_reasoning_none,
     }));
-    Promise.all([loadAgentModelMap(), loadLlamaInfo()]);
+    Promise.all([loadAgentModelMap(), loadLlamaInfo(), loadNativeModels()]);
   } else {
     refreshModels();
   }
@@ -251,6 +255,7 @@ async function loadLlamaInfo() {
               showKey: false,
               assignedAgents: [],
               useProxy: {},
+              forceReasoningNone: false,
             });
             persistModels();
           }
@@ -328,6 +333,7 @@ async function onModelDownloaded(filename: string) {
     showKey: false,
     assignedAgents: [],
     useProxy: {},
+    forceReasoningNone: false,
   });
   await persistModels();
 }
@@ -357,6 +363,7 @@ async function handleAddLocalModel() {
     showKey: false,
     assignedAgents: [],
     useProxy: {},
+    forceReasoningNone: false,
   });
   await persistModels();
   
@@ -401,6 +408,7 @@ async function handleStartServer(filename: string) {
             showKey: false,
             assignedAgents: [],
             useProxy: {},
+            forceReasoningNone: false,
           });
           console.log("[DEBUG] models after add:", models.value.filter(m => m.provider === "llama").map(m => m.name));
           persistModels();
@@ -503,6 +511,7 @@ async function persistModels() {
       support_tools: true,
       tags: [],
       use_proxy: true,
+      force_reasoning_none: m.forceReasoningNone,
     };
   });
   try { await saveModels(list); } catch (err) { console.error("saveModels failed:", err); }
@@ -551,6 +560,7 @@ async function addModel() {
     showKey: false,
     assignedAgents: [],
     useProxy: {},
+    forceReasoningNone: false,
   });
   await persistModels();
   showAdd.value = false;
@@ -580,6 +590,11 @@ function cancelDelete() {
 
 function toggleShowKey(model: UIModel) {
   model.showKey = !model.showKey;
+}
+
+function toggleForceReasoningNone(model: UIModel) {
+  model.forceReasoningNone = !model.forceReasoningNone;
+  persistModels();
 }
 
 async function toggleAgentAssignment(modelId: string, agentId: string) {
@@ -640,6 +655,38 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
 }
 
 const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
+
+// ── 原生配置（只读，来自 ~/.claude / ~/.codex / ~/.gemini） ──
+const nativeModels = ref<NativeModel[]>([]);
+const nativeRestoring = ref<Record<string, boolean>>({});
+const nativeMsg = ref<Record<string, string>>({});
+
+async function loadNativeModels() {
+  try { nativeModels.value = await getAllNativeModels(); } catch { nativeModels.value = []; }
+}
+
+async function restoreNative(agentId: string) {
+  nativeRestoring.value[agentId] = true;
+  nativeMsg.value[agentId] = "";
+  try {
+    await restoreNativeConfig(agentId);
+    nativeMsg.value[agentId] = t("models.nativeRestored");
+    await loadNativeModels();
+  } catch (e) {
+    nativeMsg.value[agentId] = `${t("models.nativeRestoreFailed")}: ${e}`;
+  }
+  nativeRestoring.value[agentId] = false;
+}
+
+/** 按 agent 归组，便于按 CLI 展示切回按钮 */
+const nativeGroups = computed(() => {
+  const byAgent: Record<string, { label: string; models: NativeModel[] }> = {};
+  for (const m of nativeModels.value) {
+    if (!byAgent[m.agent_id]) byAgent[m.agent_id] = { label: m.agent_label || m.agent_id, models: [] };
+    byAgent[m.agent_id].models.push(m);
+  }
+  return Object.entries(byAgent).map(([id, v]) => ({ id, ...v }));
+});
 const recommendedModelFilenames = ['ornith-1.0-9b-Q4_K_M.gguf', 'Qwen3-14B.Q4_K_M.gguf', 'qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf', 'Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf'];
 const userAddedModels = computed(() => {
   const result = models.value.filter(m => m.provider === "llama" && !recommendedModelFilenames.includes(m.name));
@@ -912,10 +959,77 @@ const userAddedModels = computed(() => {
               {{ $t("models.agentsCount", { count: model.assignedAgents.length }) }}
               <ChevronDown :size="12" />
             </button>
+            <button
+              @click="toggleForceReasoningNone(model)"
+              class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0"
+              :class="[model.forceReasoningNone
+                ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                : 'bg-gray-100 text-gray-400 hover:bg-gray-200']"
+              :title="$t('models.forceReasoningNoneHint')">
+              <ZapOff :size="14" />
+            </button>
             <button @click="removeModel(model.id)"
               class="p-2 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 active:scale-[0.98] transition-all duration-150 flex-shrink-0 cursor-pointer">
               <Trash2 :size="15" />
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== 原生配置（只读） ========== -->
+    <div v-if="nativeGroups.length > 0" class="border-t border-gray-200 my-8"></div>
+    <div v-if="nativeGroups.length > 0" class="space-y-4">
+      <div class="flex items-center gap-2 flex-wrap">
+        <Archive :size="15" class="text-amber-500" />
+        <span class="text-[15px] font-semibold text-gray-900">{{ $t("models.nativeSection") }}</span>
+        <span class="text-[12px] text-gray-400">({{ nativeModels.length }})</span>
+      </div>
+      <p class="text-[12px] text-gray-400 -mt-2">{{ $t("models.nativeHint") }}</p>
+
+      <div v-for="g in nativeGroups" :key="g.id" class="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-2.5 bg-amber-50 border-b border-amber-100">
+          <div class="flex items-center gap-2">
+            <span class="text-[12px] font-semibold text-amber-800">{{ g.label }}</span>
+            <span class="text-[11px] px-1.5 py-0.5 rounded bg-white/70 text-amber-700 border border-amber-200">{{ $t("models.nativeBadge") }}</span>
+            <!-- 已被改写且没有快照：切回时只能靠日期备份/就地清除，提示用户 -->
+            <span
+              v-if="g.models.some(m => m.is_overridden) && !g.models.some(m => m.has_snapshot)"
+              class="text-[10px] text-amber-700 flex-shrink-0 cursor-help"
+              :title="$t('models.nativeNoSnapshotWarn')"
+            >⚠ {{ $t('models.nativeSnapshot') }}</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <span v-if="nativeMsg[g.id]" class="text-[11px] text-amber-700 truncate max-w-[240px]">{{ nativeMsg[g.id] }}</span>
+            <button
+              @click="restoreNative(g.id)"
+              :disabled="nativeRestoring[g.id]"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-semibold bg-amber-500 text-white hover:bg-amber-600 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 cursor-pointer shadow-sm"
+              :title="$t('models.nativeRestoreHint')"
+            >
+              <Loader2 v-if="nativeRestoring[g.id]" :size="12" class="animate-spin" />
+              <RotateCcw v-else :size="12" />
+              {{ nativeRestoring[g.id] ? $t("models.nativeRestoring") : $t("models.nativeRestore") }}
+            </button>
+          </div>
+        </div>
+        <div class="divide-y divide-gray-50">
+          <div v-for="nm in g.models" :key="`${nm.name}-${nm.protocol}`" class="flex items-center justify-between px-5 py-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden bg-gray-50 border border-gray-200 flex-shrink-0">
+                <img :src="getProviderLogo(getProviderByName(nm.name)?.id || 'custom')" :alt="nm.name" class="w-4 h-4 object-contain" />
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="text-[13px] font-medium text-gray-900 truncate">{{ nm.alias || nm.name }}</span>
+                  <span v-if="nm.is_current" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">{{ $t("models.nativeCurrent") }}</span>
+                  <span v-if="nm.is_overridden" class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200">{{ $t("models.nativeOverridden") }}</span>
+                </div>
+                <p class="text-[11px] text-gray-400 truncate">
+                  {{ nm.name }}<span v-if="nm.api_base" class="font-mono"> · {{ nm.api_base }}</span>
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>

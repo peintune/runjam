@@ -7,7 +7,7 @@ use crate::rjlogd;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{build_agent, clamp_max_tokens, ensure_tool_calls_paired, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, safe_truncate, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{build_agent, clamp_max_tokens, ensure_tool_calls_paired, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, safe_truncate, send_chat_completions, tool_call_args_str_tracked, ChatUpstream, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
 
@@ -147,8 +147,8 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
         }
     }
 
-    let (api_key, base_url, real_model, support_tools, provider) = if let Some(m) = target {
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone())
+    let (api_key, base_url, real_model, support_tools, provider, force_reasoning_none) = if let Some(m) = target {
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.provider.clone(), m.force_reasoning_none)
     } else {
         // No match — try to forward as-is to Anthropic
         let (s, b) = forward_to_anthropic(body);
@@ -390,9 +390,14 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
     }
 
     if reasoning_disabled {
-        // 只发送 OpenAI 标准参数。thinking/reasoning_effort/enable_thinking 是
-        // Anthropic/DeepSeek 扩展，OpenAI 兼容端点（如火山引擎）会报 400。
+        // 只发送「明确关闭推理」的标准信号：OpenAI 标准的 reasoning_effort="none"
+        // （而非过去只改 temperature —— 企业网关常要求带 tools 时必须显式关闭）。
+        // 旧的 thinking/reasoning/enable_thinking 等 Anthropic/DeepSeek 扩展字段
+        // 一律不发送（火山引擎等 OpenAI 兼容端点会报 400）。
         openai_body["temperature"] = serde_json::json!(0.6);
+        if openai_body.get("tools").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false) {
+            openai_body["reasoning_effort"] = serde_json::json!("none");
+        }
     }
 
     // Forward to OpenAI-compatible endpoint
@@ -403,16 +408,12 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
         url, real_model, stream, openai_messages.len(), max_tokens, request_body_str.len());
     rjlogd!("[PROXY] Request body preview: {}...", body_preview);
 
-    let agent = build_agent();
     let request_start = std::time::Instant::now();
-    let resp = agent.post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_string(&request_body_str);
+    let resp = send_chat_completions(&url, &api_key, &request_body_str, force_reasoning_none || reasoning_disabled);
     rjlog!("[PROXY] Request completed in {:?}", request_start.elapsed());
 
     match resp {
-        Ok(response) => {
+        ChatUpstream::Ok(response) => {
             // ureq only returns Err for non-2xx, so reaching here means the
             // upstream answered 2xx — but that says nothing about the body.
             // Gateways have been seen returning 200 with an empty body or an
@@ -494,8 +495,7 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
                 }
             }
         }
-        Err(ureq::Error::Status(st, r)) => {
-            let body = r.into_string().unwrap_or_default();
+        ChatUpstream::Http { status: st, body } => {
             rjlog!("[PROXY] Anthropic→OpenAI: upstream HTTP {}: {}", st, safe_truncate(&body, 500));
             // Pass 4xx through so the agent fails fast instead of running
             // its own retry loop on a permanent error (bad model name → endless
@@ -521,7 +521,7 @@ pub(crate) fn proxy_anthropic_to_openai(body: &str, models: &[ModelEntry], prefe
             rjlog!("[PROXY] Anthropic→OpenAI: returning HTTP {} (type={}) to agent", resp_status.0, err_type);
             ProxyResponse::Sync(resp_status, err_body.to_string())
         }
-        Err(e) => {
+        ChatUpstream::Transport(e) => {
             rjlog!("[PROXY] Anthropic→OpenAI: connection error: {:?}", e);
             let error_msg = if real_model.contains("llama-") || real_model.ends_with(".gguf") {
                 "Llama.cpp server is not running. Please start the server in the Models settings page first.".to_string()

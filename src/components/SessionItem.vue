@@ -7,7 +7,7 @@ import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
 import { MoreHorizontal, Pin, Pencil, Trash2, Archive, RotateCcw, Terminal, FileText } from "lucide-vue-next";
 import AgentIcon from "./AgentIcon.vue";
-import { useSessionLayout } from "../composables/useSessionLayout";
+import { useSessionLayout, layoutKeyFor } from "../composables/useSessionLayout";
 import { computeContextStats } from "../composables/useContextSize";
 
 const props = defineProps<{
@@ -43,10 +43,14 @@ const workspaceStore = useWorkspaceStore();
 const messageStore = useMessageStore();
 const agentStore = useAgentStore();
 
-/** Directory-level layout info for this session's bound directory */
+/** Layout info for this session's bucket. Keyed the same way WorkspaceLayout
+ *  keys the live state: by working-directory path when there is one, else by
+ *  session id — project-less sessions no longer share one bucket. */
 const dirLayout = computed(() => {
-  if (!props.session.directoryId || props.archived) return null;
-  return peekLayout(props.session.directoryId);
+  if (props.archived) return null;
+  const key = layoutKeyFor(props.session.directory, props.session.id);
+  if (!key) return null;
+  return peekLayout(key);
 });
 
 /** Context-size stats for every visible session, so the sidebar shows the

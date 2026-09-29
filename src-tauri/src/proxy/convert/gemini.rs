@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::sync::{Mutex, OnceLock};
 
-use crate::proxy::common::{build_agent, clamp_max_tokens, extract_model_from_path, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{build_agent, clamp_max_tokens, extract_model_from_path, find_model, harden_bash_tool, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, send_chat_completions, tool_call_args_str_tracked, ChatUpstream, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
 
@@ -85,9 +85,9 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
         max_output_tokens
     };
 
-    let (api_key, base_url, real_model, support_tools) = if let Some(m) = target {
+    let (api_key, base_url, real_model, support_tools, force_reasoning_none) = if let Some(m) = target {
         rjlog!("[PROXY] Gemini→OpenAI: model '{}' resolved id={} provider={} base_url={} max_output_tokens={}", m.name, m.id, m.provider, m.api_base, max_output_tokens);
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools)
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.force_reasoning_none)
     } else {
         let (s, b) = forward_to_gemini(body, path);
         return ProxyResponse::Sync(s, b);
@@ -242,9 +242,13 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
     }
 
     if reasoning_disabled {
-        // 只发送 OpenAI 标准参数。thinking/reasoning_effort/enable_thinking 是
-        // Anthropic/DeepSeek 扩展，OpenAI 兼容端点（如火山引擎）会报 400。
+        // 只发送「明确关闭推理」的标准信号：OpenAI 标准的 reasoning_effort="none"
+        // （而非仅改 temperature）。旧的 thinking/reasoning/enable_thinking 扩展
+        // 字段不发送（火山引擎等 OpenAI 兼容端点会报 400）。
         openai_body["temperature"] = serde_json::json!(0.6);
+        if openai_body.get("tools").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false) {
+            openai_body["reasoning_effort"] = serde_json::json!("none");
+        }
     }
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
@@ -271,14 +275,10 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
         rjlog!("[PROXY] Gemini→OpenAI: msg[{}] role={} content={} tool_calls={}", i, role, content_desc, has_tc);
     }
     rjlog!("[PROXY] Gemini→OpenAI: body_len={}", body_str.len());
-    let resp = build_agent()
-        .post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_string(&openai_body.to_string());
+    let resp = send_chat_completions(&url, &api_key, &body_str, force_reasoning_none || reasoning_disabled);
 
     match resp {
-        Ok(response) => {
+        ChatUpstream::Ok(response) => {
             if stream {
                 let reader = response.into_reader();
                 let buf_reader = BufReader::new(Box::new(reader) as Box<dyn Read + Send>);
@@ -294,27 +294,26 @@ pub(crate) fn proxy_gemini_to_openai(body: &str, models: &[ModelEntry], path: &s
                 ProxyResponse::Sync(StatusCode(200), converted)
             }
         }
-        Err(e) => {
+        ChatUpstream::Http { status: code, body } => {
             // Surface the upstream's actual response body — a bare "status code
             // 400" says nothing about WHICH field the API rejected.
-            let (detail, upstream_code) = match e {
-                ureq::Error::Status(code, resp) => {
-                    let body = resp.into_string().unwrap_or_default();
-                    rjlog!("[PROXY] Gemini upstream returned {}: {}", code, body.chars().take(500).collect::<String>());
-                    (format!("status code {}: {}", code, body.chars().take(300).collect::<String>()), Some(code))
-                }
-                other => (other.to_string(), None),
-            };
+            rjlog!("[PROXY] Gemini upstream returned {}: {}", code, body.chars().take(500).collect::<String>());
+            let detail = format!("status code {}: {}", code, body.chars().take(300).collect::<String>());
             // Pass 4xx status through so the agent fails fast instead of
             // retrying a permanent error (bad model name → endless 404s).
-            let status = match upstream_code {
-                Some(code) if (400..500).contains(&code) => StatusCode(code),
-                _ => StatusCode(502),
-            };
+            let status = if (400..500).contains(&code) { StatusCode(code) } else { StatusCode(502) };
             let err_body = serde_json::json!({
                 "error": {"code": status.0, "message": format!("Proxy error: {}", detail)}
             });
             ProxyResponse::Sync(status, err_body.to_string())
+        }
+        ChatUpstream::Transport(e) => {
+            let detail = e.to_string();
+            rjlog!("[PROXY] Gemini transport error: {}", detail);
+            let err_body = serde_json::json!({
+                "error": {"code": 502, "message": format!("Proxy error: {}", detail)}
+            });
+            ProxyResponse::Sync(StatusCode(502), err_body.to_string())
         }
     }
 }

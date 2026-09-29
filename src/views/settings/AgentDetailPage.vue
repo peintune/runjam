@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowLeft, Download, Trash2, ExternalLink, Terminal,
   Loader2, ToggleLeft, ToggleRight, Save,
-  Database, Plus, CheckCircle2, XCircle, AlertCircle,
+  Database, Plus, CheckCircle2, XCircle, AlertCircle, RotateCcw, Archive,
 } from "lucide-vue-next";
 import AgentIcon from "../../components/AgentIcon.vue";
 import { useAgentStore } from "../../stores/useAgentStore";
@@ -15,7 +15,7 @@ import {
   testAgent,
   type AgentInfo, type AgentStatus,
 } from "../../api/agents";
-import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, readAgentConfigModels, getProviderById, getProviderByName } from "../../api/models";
+import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, getNativeModels, restoreNativeConfig, snapshotAgentConfig, getProviderById, getProviderByName, type NativeModel } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { t } from "../../i18n";
 
@@ -42,7 +42,9 @@ const configSaveMsg = ref<Record<string, string>>({});
 
 const allModels = ref<any[]>([]);
 const agentModels = ref<Record<string, any[]>>({});
-const agentConfigModels = ref<Record<string, any[]>>({});
+const nativeModels = ref<Record<string, NativeModel[]>>({});
+const nativeRestoring = ref<Record<string, boolean>>({});
+const nativeMsg = ref<Record<string, string>>({});
 const addingModel = ref<Record<string, boolean>>({});
 const selectedModelId = ref<Record<string, string>>({});
 
@@ -134,19 +136,50 @@ async function loadAgent() {
     if (agent.value) {
       await loadConfig(agent.value.id);
       await loadAgentModels(agent.value.id);
-      await loadAgentConfigModels(agent.value.id);
+      await loadNativeModels(agent.value.id);
     }
   } catch (e) {
     console.error("loadAgent error", e);
   }
 }
 
-async function loadAgentConfigModels(agentIdStr: string) {
+async function loadNativeModels(agentIdStr: string) {
   try {
-    const configModels = await readAgentConfigModels(agentIdStr);
-    agentConfigModels.value[agentIdStr] = configModels;
+    nativeModels.value[agentIdStr] = await getNativeModels(agentIdStr);
   } catch (e) {
-    agentConfigModels.value[agentIdStr] = [];
+    nativeModels.value[agentIdStr] = [];
+  }
+}
+
+async function restoreToNative(agentIdStr: string) {
+  nativeRestoring.value[agentIdStr] = true;
+  nativeMsg.value[agentIdStr] = "";
+  try {
+    await restoreNativeConfig(agentIdStr);
+    nativeMsg.value[agentIdStr] = t("models.nativeRestored");
+    // 还原后该 agent 不再被 runjam 接管，重新加载三方状态
+    await Promise.all([loadAgentModels(agentIdStr), loadNativeModels(agentIdStr), loadConfig(agentIdStr)]);
+  } catch (e) {
+    nativeMsg.value[agentIdStr] = `${t("models.nativeRestoreFailed")}: ${e}`;
+  }
+  nativeRestoring.value[agentIdStr] = false;
+}
+
+async function saveNativeSnapshot(agentIdStr: string) {
+  try {
+    await snapshotAgentConfig(agentIdStr);
+    nativeMsg.value[agentIdStr] = t("models.nativeSnapshotted");
+    await loadNativeModels(agentIdStr);
+  } catch (e) {
+    // 后端用固定标识表达拒绝原因，这里映射成可读文案
+    const reason = String(e);
+    if (reason.includes("snapshot_exists")) {
+      nativeMsg.value[agentIdStr] = t("models.nativeSnapshotExists");
+    } else if (reason.includes("config_already_overridden")) {
+      nativeMsg.value[agentIdStr] = t("models.nativeSnapshotRefused");
+    } else {
+      nativeMsg.value[agentIdStr] = `${t("models.nativeRestoreFailed")}: ${e}`;
+    }
   }
 }
 
@@ -171,7 +204,7 @@ async function addModelToAgent(agentIdStr: string, modelId: string) {
   try {
     await assignModelToAgent(agentIdStr, modelId, true);
     await loadAgentModels(agentIdStr);
-    await loadAgentConfigModels(agentIdStr);
+    await loadNativeModels(agentIdStr);
     await loadConfig(agentIdStr);
     selectedModelId.value[agentIdStr] = '';
   } catch {}
@@ -182,7 +215,7 @@ async function removeModelFromAgentUI(agentIdStr: string, modelId: string) {
   try {
     await removeModelFromAgent(agentIdStr, modelId);
     await loadAgentModels(agentIdStr);
-    await loadAgentConfigModels(agentIdStr);
+    await loadNativeModels(agentIdStr);
     await loadConfig(agentIdStr);
   } catch {}
 }
@@ -477,7 +510,98 @@ async function saveConfig(id: string) {
         </div>
       </div>
 
-      <!-- ========== OPERATION LOG ========== -->
+      <!-- ========== NATIVE CONFIG (read-only) ========== -->
+      <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+        <div class="px-5 py-4 border-b border-gray-100">
+          <div class="flex items-center gap-2.5">
+            <div class="w-7 h-7 rounded-lg bg-amber-50 flex items-center justify-center">
+              <Archive :size="14" class="text-amber-500" />
+            </div>
+            <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("models.nativeSection") }}</h3>
+            <span
+              v-if="(nativeModels[agent.id] || []).some(m => m.is_overridden)"
+              class="text-[11px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200"
+            >{{ $t("models.nativeOverridden") }}</span>
+          </div>
+          <p class="text-[12px] text-gray-400 mt-1.5">{{ $t("models.nativeHint") }}</p>
+        </div>
+
+        <div class="p-5">
+          <!-- 未发现原生配置 -->
+          <div v-if="(nativeModels[agent.id] || []).length === 0" class="text-[13px] text-gray-400">
+            {{ $t("models.nativeNone") }}
+            <p class="text-[12px] text-gray-300 mt-1">{{ $t("models.nativeNoneHint") }}</p>
+          </div>
+
+          <!-- 只读列表 -->
+          <div v-else class="space-y-2">
+            <div
+              v-for="nm in nativeModels[agent.id]"
+              :key="`${nm.agent_id}-${nm.name}-${nm.protocol}`"
+              class="flex items-center justify-between bg-gray-50 rounded-xl border border-gray-100 px-4 py-3"
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden bg-white border border-gray-200 shadow-sm flex-shrink-0">
+                  <img
+                    :src="getProviderLogo(getProviderByName(nm.name)?.id || 'custom')"
+                    :alt="nm.name"
+                    class="w-5 h-5 object-contain"
+                  />
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[14px] font-medium text-gray-900 truncate">{{ nm.alias || nm.name }}</span>
+                    <span class="text-[11px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 flex-shrink-0">{{ $t("models.nativeBadge") }}</span>
+                    <span v-if="nm.is_current" class="text-[11px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 flex-shrink-0">{{ $t("models.nativeCurrent") }}</span>
+                  </div>
+                  <p class="text-[12px] text-gray-400 truncate">
+                    {{ nm.name }}
+                    <span v-if="nm.api_base" class="font-mono"> · {{ nm.api_base }}</span>
+                  </p>
+                  <p class="text-[11px] text-gray-300 truncate" :title="nm.source_path">
+                    {{ $t("models.nativeSourceFrom") }}: <span class="font-mono">{{ nm.source_path }}</span>
+                  </p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 flex-shrink-0">
+                <span
+                  v-if="nm.is_overridden"
+                  class="text-[11px] px-2 py-0.5 rounded-md bg-gray-100 text-gray-500 border border-gray-200 hidden sm:inline"
+                >{{ $t("models.nativeOverridden") }}</span>
+              </div>
+            </div>
+
+            <!-- 操作 -->
+            <p
+              v-if="(nativeModels[agent.id] || []).some(m => m.is_overridden) && !(nativeModels[agent.id] || []).some(m => m.has_snapshot)"
+              class="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+            >{{ $t("models.nativeNoSnapshotWarn") }}</p>
+            <div class="flex items-center gap-3 pt-1">
+              <span v-if="nativeMsg[agent.id]" class="text-[12px] text-gray-500 flex-1 truncate">{{ nativeMsg[agent.id] }}</span>
+              <div class="flex items-center gap-2 ml-auto">
+                <button
+                  @click="saveNativeSnapshot(agent.id)"
+                  class="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 active:scale-[0.98] transition-all duration-150 cursor-pointer"
+                  :title="$t('models.nativeSnapshotHint')"
+                >
+                  <Archive :size="13" />
+                  {{ $t("models.nativeSnapshot") }}
+                </button>
+                <button
+                  @click="restoreToNative(agent.id)"
+                  :disabled="nativeRestoring[agent.id]"
+                  class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold bg-amber-500 text-white hover:bg-amber-600 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 cursor-pointer shadow-sm"
+                  :title="$t('models.nativeRestoreHint')"
+                >
+                  <Loader2 v-if="nativeRestoring[agent.id]" :size="13" class="animate-spin" />
+                  <RotateCcw v-else :size="13" />
+                  {{ nativeRestoring[agent.id] ? $t("models.nativeRestoring") : $t("models.nativeRestore") }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
       <div v-if="installLogs[agent.id]?.length" class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
         <div class="px-5 py-3 border-b border-gray-100">
           <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("agent.operationLog") }}</h3>

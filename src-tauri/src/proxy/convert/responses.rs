@@ -8,7 +8,7 @@ use crate::rjlogd;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{apply_bash_tool_hardening, build_agent, clamp_max_tokens, ensure_tool_calls_paired, find_model, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, normalize_message_sequence, safe_truncate, tool_call_args_str, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{apply_bash_tool_hardening, clamp_max_tokens, ensure_tool_calls_paired, find_model, inject_bash_guidance, is_claude_only_tool, limit_tools_for_llama, normalize_message_sequence, safe_truncate, send_chat_completions, tool_call_args_str, tool_call_args_str_tracked, ChatUpstream, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use crate::proxy::usage::store_usage_for_latest;
 use tiny_http::StatusCode;
 
@@ -160,12 +160,12 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
 
     // Find matching model in config
     let target = find_model(models, model_name, preferred_ids);
-    let (api_key, base_url, real_model, support_tools, context_window) = if let Some(m) = target {
+    let (api_key, base_url, real_model, support_tools, context_window, force_reasoning_none) = if let Some(m) = target {
         let masked_key = if m.api_key.len() > 8 {
             format!("{}...{}", &m.api_key[..4], &m.api_key[m.api_key.len()-4..])
         } else { m.api_key.clone() };
         rjlog!("[PROXY] Responses→Chat: Found model '{}' api_key={} base_url={}", m.name, masked_key, m.api_base);
-        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.context_window)
+        (m.api_key.clone(), m.api_base.clone(), m.name.clone(), m.support_tools, m.context_window, m.force_reasoning_none)
     } else {
         rjlog!("[PROXY] Responses→Chat: Model '{}' NOT FOUND in {} models. Available: {:?}",
             model_name, models.len(),
@@ -252,9 +252,13 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
     }
 
     if reasoning_disabled {
-        // 只发送 OpenAI 标准参数（thinking/reasoning_effort/enable_thinking
-        // 非标准，OpenAI 兼容端点如火山引擎会报 400）
+        // 只发送「明确关闭推理」的标准信号：OpenAI 标准的 reasoning_effort="none"
+        // （而非仅改 temperature）。thinking/reasoning/enable_thinking 等
+        // Provider 扩展字段非标准，不发送（火山引擎等 OpenAI 兼容端点会报 400）。
         chat_body["temperature"] = serde_json::json!(0.6);
+        if chat_body.get("tools").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false) {
+            chat_body["reasoning_effort"] = serde_json::json!("none");
+        }
     }
 
     // 最终消息序列规范化：合并相邻 system/assistant（在 ensure_tool_calls_paired
@@ -276,14 +280,10 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
     rjlog!("[PROXY] Responses→Chat: body ({} chars) — model:{} messages:{} roles:[{}]",
         request_body.len(), real_model, role_seq.len(), role_seq.join(","));
 
-    let agent = build_agent();
-    let resp = agent.post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_string(&request_body);
+    let resp = send_chat_completions(&url, &api_key, &request_body, force_reasoning_none || reasoning_disabled);
 
     match resp {
-        Ok(r) => {
+        ChatUpstream::Ok(r) => {
             let status = r.status();
             rjlog!("[PROXY] Upstream response status: {} (stream={})", status, stream);
             if stream {
@@ -310,8 +310,7 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
                 }
             }
         }
-        Err(ureq::Error::Status(status, r)) => {
-            let body = r.into_string().unwrap_or_default();
+        ChatUpstream::Http { status, body } => {
             rjlog!("[PROXY] Upstream HTTP {}: {}", status, safe_truncate(&body, 1000));
             if status == 400 {
                 // 400 参数错误时 dump 请求体的消息骨架（每条 role / content 形态
@@ -356,7 +355,7 @@ pub(crate) fn proxy_responses_to_openai(body: &str, models: &[ModelEntry], prefe
             rjlog!("[PROXY] Responses: returning HTTP {} (type={}) to agent", resp_status.0, err_type);
             ProxyResponse::Sync(resp_status, format!(r#"{{"error":{{"message":"Upstream {}: {}","type":"{}"}}}}"#, status, safe_truncate(&body, 300), err_type))
         }
-        Err(e) => {
+        ChatUpstream::Transport(e) => {
             rjlog!("[PROXY] Connection error: {:?}", e);
             ProxyResponse::Sync(StatusCode(502), format!(r#"{{"error":"Proxy error: {}"}}"#, e))
         }

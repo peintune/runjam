@@ -66,7 +66,7 @@ impl ProxyState {
 /// Fixed port for the local proxy. A fixed port means agent configs only need
 /// to be written once (when the proxy is enabled for that agent) and stay
 /// valid across app restarts — no per-restart rewriting required.
-const PROXY_PORT: u16 = 59268;
+pub(crate) const PROXY_PORT: u16 = 59268;
 
 /// Start the proxy server on the fixed port.
 /// Returns the port number.

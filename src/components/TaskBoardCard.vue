@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { Pin, Archive, Trash2, RotateCcw, Folder, FileText, Terminal, MessageSquare } from "lucide-vue-next";
 import { t } from "../i18n";
 import type { Session } from "../stores/useWorkspaceStore";
-import { useSessionLayout } from "../composables/useSessionLayout";
+import { useSessionLayout, layoutKeyFor } from "../composables/useSessionLayout";
 import { computeContextStats } from "../composables/useContextSize";
 import { useAgentStore } from "../stores/useAgentStore";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
@@ -27,12 +27,13 @@ const { peekLayout } = useSessionLayout();
 const agentStore = useAgentStore();
 const store = useWorkspaceStore();
 
-/** Directory-level layout info (file tree / terminal usage) for this session's
- *  bound directory. Comes from the localStorage layout snapshot (dir-level,
- *  best-effort) — the same source the sidebar rows use. */
+/** Layout info (file tree / terminal usage) for this session's bucket. Same key
+ *  WorkspaceLayout uses: working-directory path, else session id. */
 const dirLayout = computed(() => {
-  if (!props.session.directoryId || props.session.archived) return null;
-  return peekLayout(props.session.directoryId);
+  if (props.session.archived) return null;
+  const key = layoutKeyFor(props.session.directory, props.session.id);
+  if (!key) return null;
+  return peekLayout(key);
 });
 
 const model = computed(() => agentStore.models.find(m => m.id === props.session.model));

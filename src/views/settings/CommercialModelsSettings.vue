@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useRoute } from "vue-router";
-import { Plus, Trash2, Eye, EyeOff, HelpCircle, Users, Check, ChevronDown, X, RefreshCw } from "lucide-vue-next";
+import { Plus, ZapOff, Trash2, Eye, EyeOff, HelpCircle, Users, Check, ChevronDown, X, RefreshCw } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   getModels, saveModels, providers, getProviderById, getProviderByName, maskApiKey,
@@ -28,6 +28,7 @@ interface UIModel {
   showKey: boolean;
   assignedAgents: string[];
   useProxy: Record<string, boolean>;
+  forceReasoningNone: boolean;
 }
 
 const models = ref<UIModel[]>([]);
@@ -68,6 +69,7 @@ async function refreshModels() {
       showKey: false,
       assignedAgents: [],
       useProxy: {},
+      forceReasoningNone: !!m.force_reasoning_none,
     }));
     await Promise.all([loadAgentModelMap()]);
   } catch {} finally {
@@ -160,6 +162,7 @@ async function addModel() {
     showKey: false,
     assignedAgents: [],
     useProxy: {},
+    forceReasoningNone: false,
   });
 
   await persistModels();
@@ -184,6 +187,7 @@ async function persistModels() {
       support_tools: true,
       tags: [],
       use_proxy: true,
+      force_reasoning_none: m.forceReasoningNone,
     };
   });
   try { await saveModels(list); } catch (err) { console.error("saveModels failed:", err); }
@@ -210,6 +214,11 @@ function cancelDelete() {
 
 function toggleShowKey(model: UIModel) {
   model.showKey = !model.showKey;
+}
+
+function toggleForceReasoningNone(model: UIModel) {
+  model.forceReasoningNone = !model.forceReasoningNone;
+  persistModels();
 }
 
 async function toggleAgentAssignment(modelId: string, agentId: string) {
@@ -325,6 +334,15 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
               <Users :size="12" />
               {{ $t("models.agentsCount", { count: model.assignedAgents.length }) }}
               <ChevronDown :size="12" />
+            </button>
+            <button
+              @click="toggleForceReasoningNone(model)"
+              class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0"
+              :class="[model.forceReasoningNone
+                ? 'bg-amber-100 text-amber-700 hover:bg-amber-200'
+                : 'bg-gray-100 text-gray-400 hover:bg-gray-200']"
+              :title="$t('models.forceReasoningNoneHint')">
+              <ZapOff :size="14" />
             </button>
             <button @click="removeModel(model.id)"
               class="p-2 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 active:scale-[0.98] transition-all duration-150 flex-shrink-0 cursor-pointer">

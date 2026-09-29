@@ -6,6 +6,7 @@ defineOptions({ name: "WorkspaceLayout" });
 import Sidebar from "./Sidebar.vue";
 import SessionView from "./SessionView.vue";
 import WorkspacePanel from "./WorkspacePanel.vue";
+import TerminalPanel from "./TerminalPanel.vue";
 import TaskBoardView from "../views/TaskBoardView.vue";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import SearchButton from "./SearchButton.vue";
@@ -14,7 +15,7 @@ import AppTabsBar from "./AppTabsBar.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
 import { useDragResize } from "../composables/useDragResize";
-import { useSessionLayout } from "../composables/useSessionLayout";
+import { useSessionLayout, layoutKeyFor } from "../composables/useSessionLayout";
 import { homeDir } from "@tauri-apps/api/path";
 import {
   PanelLeftOpen, PanelLeftClose,
@@ -22,9 +23,44 @@ import {
 } from "lucide-vue-next";
 
 // ── State ────────────────────────────────────────
+// 用户是否主动展开过左侧导航，持久化到 localStorage。只用于回答一个问题：
+// 打开文件树/终端时该不该自动收起导航。
+//   - true : 用户主动展开过 → 不再自动收起（尊重用户的选择）
+//   - 其他 : 从未表态/主动收起 → 打开面板时自动收起
+// 注意这里**不**决定启动时的展开状态：启动始终默认展开（保持既有行为），
+// 避免持久化的偏好让重启后的界面与用户预期不符。
+const SIDEBAR_PIN_KEY = "runjam-sidebar-pinned";
+
+function loadSidebarUserPinned(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_PIN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+const sidebarUserPinned = ref(loadSidebarUserPinned());
 const sidebarPinned = ref(true);
 const sidebarHover = ref(false);
 const isWorkspaceMode = ref(false);
+
+/** 用户手动展开/收起导航：若这次是主动展开，记住该表态（持久化）。 */
+function setSidebarPinned(v: boolean) {
+  sidebarPinned.value = v;
+  if (v) {
+    sidebarUserPinned.value = true;
+    try {
+      localStorage.setItem(SIDEBAR_PIN_KEY, "true");
+    } catch {}
+  }
+}
+
+/** 打开文件树/终端时收起导航。用户主动展开过导航，就不再强行把它合上。 */
+function collapseSidebarForPanel() {
+  if (!sidebarUserPinned.value) {
+    sidebarPinned.value = false;
+  }
+}
 
 const store = useWorkspaceStore();
 const route = useRoute();
@@ -45,19 +81,35 @@ const cachedHomeDir = ref("");
 const isMac =
   typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent);
 
-/** Get directoryId from current active session */
-function currentDirectoryId(): string | null {
+/** Layout bucket key for the active session.
+ *
+ *  Keyed by the session's working-directory PATH (`session.directory`), not by
+ *  the store's `directoryId` — that id is regenerated on every launch, so
+ *  keying by it lost the layout (and the sidebar badges) across restarts.
+ *
+ *  Sessions bound to a project folder share that folder's bucket (directory-level
+ *  memory, as before). Default-directory sessions get ~/.runjam/session/{id},
+ *  already unique per session; legacy rows with an empty directory fall back to
+ *  a per-session bucket. Previously the latter all shared a single bucket, so a
+ *  terminal opened in one such session showed up in every other one.
+ *
+ *  `null` means "no active session" (new-session page) → the default bucket. */
+function currentLayoutKey(): string | null {
   const session = store.activeSession;
-  if (!session?.directoryId) return null;
-  return session.directoryId;
+  return layoutKeyFor(session?.directory, session?.id);
 }
 
-// Terminal visibility comes from persisted layout
+// Terminal / file-tree visibility come from persisted layout
 const showTerminal = ref(false);
+const showFileTree = ref(false);
 
 const activeDirectory = computed(() => {
   const session = store.activeSession;
-  if (!session) return "";
+  // 新建会话页面（尚未创建会话）：用新会话页选中的项目目录；未选时回退到
+  // home 目录，保证右上角那对按钮在新建会话页也能点开。
+  if (!session) {
+    return store.newSessionDirPath || cachedHomeDir.value || "";
+  }
   // 1. Bound project directory (user-selected folder)
   if (session.directoryId) {
     const dir = store.directories.find((d) => d.id === session.directoryId);
@@ -74,43 +126,74 @@ const activeDirectory = computed(() => {
   return "";
 });
 
-// Enable workspace mode only when there's a bound directory
-const canEnableWorkspace = computed(() => !!activeDirectory.value);
+// 文件树与终端各自独立可见。两者任一个打开都需要进入工作区模式（腾出右侧
+// 空间），但打开终端**不会**顺带打开文件树。
+const anyPanelOpen = computed(() => showFileTree.value || showTerminal.value);
 
-function toggleWorkspace() {
-  if (!canEnableWorkspace.value) return;
-  isWorkspaceMode.value = !isWorkspaceMode.value;
-  if (isWorkspaceMode.value) {
-    sidebarPinned.value = false;
+/** 左侧工作区面板（文件树 + 编辑器）是否占用空间。终端已挪到内容区底部横跨
+ *  整宽，所以只开终端时这里为 false —— 对话区独占上层宽度，否则会留一块
+ *  空白的编辑器区域。 */
+const showWorkspaceArea = computed(() =>
+  !isBoard.value && isWorkspaceMode.value && !!activeDirectory.value &&
+  (showFileTree.value || layout.openFiles.length > 0)
+);
+
+/** 文件树按钮：切换文件树；若因此开启第一个面板，则进入工作区模式。 */
+function toggleFileTree() {
+  showFileTree.value = !showFileTree.value;
+  layout.showFileTree = showFileTree.value;
+  if (showFileTree.value) {
+    isWorkspaceMode.value = true;
+    collapseSidebarForPanel();
+  } else if (!anyPanelOpen.value) {
+    isWorkspaceMode.value = false;
   }
+  saveLayout();
 }
 
+/** 顶栏终端按钮：只显示/隐藏底部面板，**不**终止后端 shell 进程。
+ *  TerminalPanel 在 active=false 时把整组 xterm 实例 detach 进 LRU 缓存
+ *  （后端进程与 listener 保活），再次打开即原样接回——这正是「隐藏但继续
+ *  运行」。真正终止进程走面板自身的 X 按钮（见 closeTerminalAndKill）。 */
 function toggleTerminal() {
-  if (!isWorkspaceMode.value) {
-    isWorkspaceMode.value = true;
-    sidebarPinned.value = false;
-  }
+  showTerminal.value = !showTerminal.value;
+  layout.showTerminal = showTerminal.value;
   if (showTerminal.value) {
-    // Closing an open terminal actually terminates the processes — confirm first.
-    showTerminalCloseConfirm.value = true;
-  } else {
-    showTerminal.value = true;
-    layout.showTerminal = true;
-    saveLayout();
+    // 打开终端：进入工作区模式，但保持文件树原状 —— 用户只点终端就只开终端。
+    isWorkspaceMode.value = true;
+    collapseSidebarForPanel();
+  } else if (!anyPanelOpen.value) {
+    // 隐藏终端且文件树也没开：退出工作区模式还原对话区宽度（进程仍在跑）。
+    isWorkspaceMode.value = false;
   }
+  saveLayout();
 }
 
 // ── Terminal close confirmation ────────────────────
-// Closing the terminal (via the top-right toggle or the panel's X button)
-// really kills the backend shell processes, so we ask for confirmation first.
+// 只有面板自身的 X 按钮会真正 kill 后端 shell 进程（顶栏按钮仅隐藏），
+// 所以这里先确认。顶栏 toggleTerminal 不经过这条路径。
 const showTerminalCloseConfirm = ref(false);
-const workspacePanelRef = ref<InstanceType<typeof WorkspacePanel> | null>(null);
+const terminalPanelRef = ref<InstanceType<typeof TerminalPanel> | null>(null);
+
+// 终端高度可拖拽（位于内容区底部，横跨全宽）
+const terminalResize = useDragResize({
+  direction: "vertical",
+  minSize: 80,
+  defaultSize: 130,
+  initialSize: layout.terminalHeight,
+  onDragEnd: (size) => { layout.terminalHeight = size; },
+});
+watch(() => layout.terminalHeight, (h) => { terminalResize.size.value = h; });
 
 async function confirmCloseTerminal() {
   showTerminalCloseConfirm.value = false;
-  await workspacePanelRef.value?.killAllTerminals();
+  await terminalPanelRef.value?.killAll();
   showTerminal.value = false;
   layout.showTerminal = false;
+  // 文件树也没开的话，退出工作区模式还原对话区宽度
+  if (!anyPanelOpen.value) {
+    isWorkspaceMode.value = false;
+  }
   saveLayout();
 }
 
@@ -118,24 +201,38 @@ function cancelCloseTerminal() {
   showTerminalCloseConfirm.value = false;
 }
 
-/** Shared handler for both the panel X button and programmatic show/hide. */
-function handleShowTerminalUpdate(val: boolean) {
-  if (val === false && showTerminal.value) {
-    // Closing — confirm before actually terminating the processes.
+/** 面板 X 按钮：真正关闭终端（终止进程），先弹确认。 */
+function closeTerminalAndKill() {
+  if (showTerminal.value) {
     showTerminalCloseConfirm.value = true;
-  } else {
-    showTerminal.value = val;
-    layout.showTerminal = val;
-    saveLayout();
   }
 }
 
 // ---- Session persistence (keyed by directoryId) ----
-watch(() => store.activeSessionId, (newId) => {
-  const dirId = currentDirectoryId();
-  switchDirectory(dirId);
+watch(() => store.activeSessionId, (newId, oldId) => {
+  const key = currentLayoutKey();
+  const panelsWereOpen = showFileTree.value || showTerminal.value;
+  switchDirectory(key);
   if (newId) {
-    showTerminal.value = layout.showTerminal;
+    if (oldId === null && panelsWereOpen) {
+      // 从新建会话页创建出会话：延续用户在新会话页打开的面板，而不是被目标
+      // 目录历史布局复位（否则刚点开的终端会静默消失）。
+      layout.showFileTree = showFileTree.value;
+      layout.showTerminal = showTerminal.value;
+      saveLayout();
+    } else {
+      showTerminal.value = layout.showTerminal;
+      showFileTree.value = layout.showFileTree;
+    }
+    // 面板可见性由 layout 决定，工作区模式必须跟着走，否则状态与显示不一致：
+    // showTerminal 已为 true 却隐藏着面板，再点终端按钮会误弹关闭确认框。
+    isWorkspaceMode.value = showFileTree.value || showTerminal.value;
+  } else {
+    // 回到新建会话页：不复用上一个会话的面板状态，给用户一个干净的新建页
+    // （否则会直接弹出上个会话的文件树/终端，且 cwd 落到 home）。
+    showFileTree.value = false;
+    showTerminal.value = false;
+    isWorkspaceMode.value = false;
   }
 });
 
@@ -143,9 +240,11 @@ onMounted(async () => {
   homeDir().then(h => { cachedHomeDir.value = h; }).catch(() => {});
   await store.loadSessions();
   if (store.activeSessionId) {
-    const dirId = currentDirectoryId();
-    switchDirectory(dirId);
+    const key = currentLayoutKey();
+    switchDirectory(key);
     showTerminal.value = layout.showTerminal;
+    showFileTree.value = layout.showFileTree;
+    isWorkspaceMode.value = showFileTree.value || showTerminal.value;
   }
   // App tabs: re-align child webviews on window resize and restore the
   // previously active tab when returning to the workspace.
@@ -200,7 +299,7 @@ onBeforeUnmount(() => {
       <!-- Sidebar toggle: hide when pinned, show when hidden -->
       <button
         v-if="sidebarPinned && !appTabs.activeTabId"
-        @click="sidebarPinned = !sidebarPinned"
+        @click="setSidebarPinned(false)"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
         style="-webkit-app-region: no-drag"
         :title="$t('workspace.hideSidebar')"
@@ -209,7 +308,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         v-if="!sidebarPinned && !appTabs.activeTabId"
-        @click="sidebarPinned = true"
+        @click="setSidebarPinned(true)"
         @mouseenter="sidebarHover = true"
         class="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors duration-150"
         style="-webkit-app-region: no-drag"
@@ -223,19 +322,19 @@ onBeforeUnmount(() => {
 
       <!-- File explorer toggle -->
       <button
-        v-if="canEnableWorkspace && !appTabs.activeTabId"
-        @click="toggleWorkspace"
+        v-if="!isBoard && !appTabs.activeTabId && !!activeDirectory"
+        @click="toggleFileTree"
         class="p-1.5 rounded-lg transition-colors duration-150 ml-1"
-        :class="isWorkspaceMode ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
+        :class="showFileTree ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
         style="-webkit-app-region: no-drag"
-        :title="isWorkspaceMode ? $t('workspace.closeExplorer') : $t('workspace.openExplorer')"
+        :title="showFileTree ? $t('workspace.closeExplorer') : $t('workspace.openExplorer')"
       >
         <FolderTree :size="18" />
       </button>
 
       <!-- Terminal toggle -->
       <button
-        v-if="canEnableWorkspace && !appTabs.activeTabId"
+        v-if="!isBoard && !appTabs.activeTabId && !!activeDirectory"
         @click="toggleTerminal"
         class="p-1.5 rounded-lg transition-colors duration-150 ml-0.5"
         :class="showTerminal ? 'text-gray-700 bg-gray-200 hover:bg-gray-300' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'"
@@ -290,48 +389,71 @@ onBeforeUnmount(() => {
         @mousedown="sidebarResize.startDrag"
       />
 
-      <!-- Main content area -->
-      <div class="flex-1 flex min-w-0 gap-[3px]">
-        <!-- Workspace Panel -->
-        <!-- v-show (not v-if): mounting/unmounting the whole workspace on every
-             explorer toggle is what made opening/closing it freeze for seconds —
-             it re-spawned the terminal shell, re-imported Monaco, and re-scanned
-             the file tree each time. Keeping it mounted means those expensive
-             resources persist across toggles. -->
-        <WorkspacePanel
-          ref="workspacePanelRef"
-          v-show="!isBoard && isWorkspaceMode && activeDirectory"
-          :show-terminal="showTerminal"
-          :visible="isWorkspaceMode && !!activeDirectory"
-          :root-path="activeDirectory"
-          @update:show-terminal="handleShowTerminalUpdate"
+      <!-- Main content area：纵向分为上下两层。上层是「左侧工作区 + 右侧对话」，
+           下层是横跨整个内容区宽度的终端（文件树、编辑器、对话都在它上方）。 -->
+      <div class="flex-1 flex flex-col min-w-0 min-h-0 gap-[3px]">
+        <!-- Upper row: workspace + chat -->
+        <div class="flex-1 flex min-w-0 min-h-0 gap-[3px]">
+          <!-- Workspace Panel -->
+          <!-- v-show (not v-if): mounting/unmounting the whole workspace on every
+               explorer toggle is what made opening/closing it freeze for seconds —
+               it re-imported Monaco and re-scanned the file tree each time.
+               Keeping it mounted means those expensive resources persist. -->
+          <WorkspacePanel
+            ref="workspacePanelRef"
+            v-show="showWorkspaceArea"
+            :show-file-tree="showFileTree"
+            :root-path="activeDirectory"
+          />
+
+          <!-- Resize handle between workspace and chat -->
+          <div
+            v-if="showWorkspaceArea"
+            class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
+            :class="chatResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
+            @mousedown="chatResize.startDrag"
+          />
+
+          <!-- Chat / Session View -->
+          <div
+            class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] flex flex-col min-h-0"
+            :style="showWorkspaceArea
+              ? { width: chatResize.size.value + 'px' }
+              : {}"
+            :class="showWorkspaceArea ? '' : 'flex-1'"
+          >
+            <KeepAlive :max="20">
+              <SessionView
+                v-if="!isBoard"
+                :key="store.activeSessionId || '__new__'"
+                :session-id="store.activeSessionId || ''"
+                :compact="showWorkspaceArea"
+              />
+              <TaskBoardView v-else />
+            </KeepAlive>
+          </div>
+        </div>
+
+        <!-- Terminal resize handle（横跨全宽，拖拽调整终端高度） -->
+        <div
+          v-show="!isBoard && showTerminal"
+          class="h-px flex-shrink-0 cursor-row-resize transition-colors rounded-full hover:bg-blue-400/40"
+          :class="terminalResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
+          @mousedown="terminalResize.startDrag"
         />
 
-        <!-- Resize handle between workspace and chat -->
+        <!-- Terminal：内容区底部横跨全宽（v-show 保持后端 shell 存活） -->
         <div
-          v-if="!isBoard && isWorkspaceMode && activeDirectory"
-          class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
-          :class="chatResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
-          @mousedown="chatResize.startDrag"
-        />
-
-        <!-- Chat / Session View -->
-        <div
-          class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] flex flex-col min-h-0"
-          :style="isWorkspaceMode && activeDirectory && !isBoard
-            ? { width: chatResize.size.value + 'px' }
-            : {}"
-          :class="(!isWorkspaceMode || !activeDirectory || isBoard) ? 'flex-1' : ''"
+          v-show="!isBoard && showTerminal"
+          class="flex-shrink-0 rounded-lg overflow-hidden shadow-[0_0_0_1px_rgba(0,0,0,0.04)]"
+          :style="{ height: terminalResize.size.value + 'px' }"
         >
-          <KeepAlive :max="20">
-            <SessionView
-              v-if="!isBoard"
-              :key="store.activeSessionId || '__new__'"
-              :session-id="store.activeSessionId || ''"
-              :compact="isWorkspaceMode && !!activeDirectory"
-            />
-            <TaskBoardView v-else />
-          </KeepAlive>
+          <TerminalPanel
+            ref="terminalPanelRef"
+            :cwd="activeDirectory"
+            :active="!isBoard && showTerminal && !!activeDirectory"
+            @close="closeTerminalAndKill"
+          />
         </div>
       </div>
     </div>

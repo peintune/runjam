@@ -1,4 +1,5 @@
-use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, restore_agent_config, set_agent_model, detect_model_protocol};
+use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, NativeModel, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, restore_agent_config, set_agent_model, detect_model_protocol, read_native_models, read_all_native_models, native_config_path, native_snapshot_path, try_native_snapshot};
+use crate::rjlog;
 use crate::db::connection::Database;
 use crate::proxy::ProxyState;
 use tauri::State;
@@ -9,7 +10,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     
-    let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags FROM models ORDER BY created_at").unwrap();
+    let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, force_reasoning_none FROM models ORDER BY created_at").unwrap();
     let models_iter = stmt.query_map([], |row| {
         let tags_str: String = row.get(11)?;
         let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
@@ -27,7 +28,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
             support_reasoning: row.get(10)?,
             support_tools: true,
             tags,
-            use_proxy: false,
+            use_proxy: false, force_reasoning_none: row.get::<_, i32>(12).map(|v| v != 0).unwrap_or(false),
         })
     }).unwrap();
     
@@ -56,11 +57,11 @@ pub fn save_models(models: Vec<ModelEntry>, db: State<'_, Mutex<Database>>) -> R
         let tags_json = serde_json::to_string(&model.tags).unwrap_or_default();
         let protocol = detect_model_protocol(&model.name, Some(&model.api_base)).as_str().to_string();
         conn.execute(
-            "INSERT INTO models (id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)",
+            "INSERT INTO models (id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, force_reasoning_none, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, CURRENT_TIMESTAMP)",
             rusqlite::params![
                 &model.id, &model.name, &model.alias, &model.provider, &model.provider_name,
                 &model.provider_icon, &model.api_base, &model.api_key, &protocol,
-                model.context_window as i64, model.support_reasoning as i64, &tags_json,
+                model.context_window as i64, model.support_reasoning as i64, &tags_json, model.force_reasoning_none as i64,
             ],
         ).map_err(|e| format!("Failed to insert model {}: {}", model.name, e))?;
     }
@@ -114,7 +115,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
     let conn = db_guard.conn.lock().unwrap();
     
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags, am.use_proxy
+        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags, am.use_proxy, m.force_reasoning_none
          FROM models m 
          JOIN agent_models am ON m.id = am.model_id 
          WHERE am.agent_id = ? 
@@ -130,6 +131,7 @@ pub fn get_agent_models(agent_id: String, db: State<'_, Mutex<Database>>) -> Vec
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
             use_proxy: row.get::<_, i32>(12)? != 0,
+            force_reasoning_none: row.get::<_, i32>(13).map(|v| v != 0).unwrap_or(false),
         })
     }).unwrap();
     
@@ -260,7 +262,7 @@ pub fn remove_model_from_agent(agent_id: String, model_id: String, db: State<'_,
 
 fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags FROM models ORDER BY created_at"
+        "SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, force_reasoning_none FROM models ORDER BY created_at"
     ).unwrap();
     let models_iter = stmt.query_map([], |row| {
         let tags_str: String = row.get(11)?;
@@ -270,7 +272,7 @@ fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
-            use_proxy: false,
+            use_proxy: false, force_reasoning_none: row.get::<_, i32>(12).map(|v| v != 0).unwrap_or(false),
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -278,7 +280,7 @@ fn get_all_models_from_db(conn: &rusqlite::Connection) -> Vec<ModelEntry> {
 
 fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec<ModelEntry> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags 
+        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags, m.force_reasoning_none 
          FROM models m JOIN agent_models am ON m.id = am.model_id 
          WHERE am.agent_id = ? ORDER BY am.is_default DESC, am.created_at ASC"
     ).unwrap();
@@ -290,7 +292,7 @@ fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
-            use_proxy: false,
+            use_proxy: false, force_reasoning_none: row.get::<_, i32>(12).map(|v| v != 0).unwrap_or(false),
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -299,7 +301,7 @@ fn get_agent_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec
 /// Get only the default model for sync — this is what gets written to the agent config.
 fn get_default_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> Vec<ModelEntry> {
     let mut stmt = conn.prepare(
-        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags 
+        "SELECT m.id, m.name, m.alias, m.provider, m.provider_name, m.provider_icon, m.api_base, m.api_key, m.protocol, m.context_window, m.support_reasoning, m.tags, m.force_reasoning_none 
          FROM models m JOIN agent_models am ON m.id = am.model_id 
          WHERE am.agent_id = ? AND am.is_default = 1
          ORDER BY am.created_at ASC LIMIT 1"
@@ -312,7 +314,7 @@ fn get_default_models_for_sync(conn: &rusqlite::Connection, agent_id: &str) -> V
             provider: row.get(3)?, provider_name: row.get(4)?, provider_icon: row.get(5)?,
             api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
             context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
-            use_proxy: false,
+            use_proxy: false, force_reasoning_none: row.get::<_, i32>(12).map(|v| v != 0).unwrap_or(false),
         })
     }).unwrap();
     models_iter.filter_map(|m| m.ok()).collect()
@@ -401,6 +403,59 @@ pub fn read_agent_config_models(agent_id: String) -> Vec<ModelEntry> {
     read_models_from_agent_config(&agent_id)
 }
 
+/// 读取某个 CLI 的原生模型（只读展示用：值取自原生快照，快照不存在时取当前文件）。
+#[tauri::command]
+pub fn get_native_models(agent_id: String) -> Vec<NativeModel> {
+    read_native_models(&agent_id)
+}
+
+/// 汇总三个 CLI 的原生模型。
+#[tauri::command]
+pub fn get_all_native_models() -> Vec<NativeModel> {
+    read_all_native_models()
+}
+
+/// 保存当前配置文件为「原生快照」（幂等，不覆盖已有快照）。
+/// 供用户手动留存一份可信的原生状态。
+#[tauri::command]
+pub fn snapshot_agent_config(agent_id: String) -> Result<(), String> {
+    try_native_snapshot(&agent_id)
+}
+
+/// 切回原生配置：整体还原该 CLI 的配置文件（优先原生快照，其次日期备份，
+/// 最后就地清除 runjam 字段），并解除 runjam 对该 agent 的模型接管 ——
+/// 否则下一次任何模型操作都会把它重新覆写回 runjam 管理的模型。
+///
+/// 还原后该 CLI 的 `model` 就是原生模型，重启即按原生配置运行。
+#[tauri::command]
+pub fn restore_native_config(
+    agent_id: String,
+    db: State<'_, Mutex<Database>>,
+    proxy_state: State<'_, Arc<Mutex<ProxyState>>>,
+) -> Result<(), String> {
+    // 1) 还原配置文件
+    restore_agent_config(&agent_id)?;
+
+    // 2) 解除模型接管：清空该 agent 的模型绑定，避免 runjam 再次覆写
+    {
+        let db_guard = db.lock().map_err(|e| format!("DB lock error: {}", e))?;
+        let conn = db_guard.conn.lock().map_err(|e| format!("DB conn error: {}", e))?;
+        conn.execute("DELETE FROM agent_models WHERE agent_id = ?1", [&agent_id])
+            .map_err(|e| format!("Failed to release agent models: {}", e))?;
+        let all_models = get_all_models_from_db(&conn);
+        ModelConfig { models: all_models }.save();
+    }
+
+    // 3) 同步内存中的代理状态，避免残留映射让流量继续走 runjam 代理
+    {
+        let mut ps = proxy_state.lock().unwrap();
+        ps.agent_models.remove(&agent_id);
+        ps.models = ModelConfig::load().models;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_model_aliases(db: State<'_, Mutex<Database>>) -> Vec<ModelAlias> {
     let db_guard = db.lock().unwrap();
@@ -439,7 +494,7 @@ pub fn get_model_by_alias(alias: String, db: State<'_, Mutex<Database>>) -> Opti
     );
     match result {
         Ok((model_id,)) => {
-            let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags FROM models WHERE id = ?").unwrap();
+            let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, force_reasoning_none FROM models WHERE id = ?").unwrap();
             let mut models_iter = stmt.query_map([&model_id], |row| {
                 let tags_str: String = row.get(11)?;
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
@@ -449,6 +504,7 @@ pub fn get_model_by_alias(alias: String, db: State<'_, Mutex<Database>>) -> Opti
                     api_base: row.get(6)?, api_key: row.get(7)?, protocol: row.get(8)?,
                     context_window: row.get(9)?, support_reasoning: row.get(10)?, support_tools: true, tags,
                     use_proxy: false,
+                    force_reasoning_none: row.get::<_, i32>(12).map(|v| v != 0).unwrap_or(false),
                 })
             }).unwrap();
             models_iter.next().and_then(|m| m.ok())

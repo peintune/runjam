@@ -45,6 +45,7 @@ pub fn run_migrations(conn: &Connection) {
             api_base        TEXT NOT NULL,
             api_key         TEXT NOT NULL,
             protocol        TEXT NOT NULL DEFAULT 'openai',
+            force_reasoning_none INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -94,6 +95,13 @@ pub fn run_migrations(conn: &Connection) {
 
     conn.execute(
         "ALTER TABLE models ADD COLUMN support_reasoning INTEGER NOT NULL DEFAULT 0",
+        [],
+    ).ok();
+
+    // 企业网关兼容开关：带 tools 时强制 reasoning_effort="none"
+    // （见 commands/models_cmd.rs 与 proxy/common.rs send_chat_completions）
+    conn.execute(
+        "ALTER TABLE models ADD COLUMN force_reasoning_none INTEGER NOT NULL DEFAULT 0",
         [],
     ).ok();
 

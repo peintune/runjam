@@ -276,7 +276,17 @@ const mentionCwd = computed(() => {
 });
 
 const inputText = ref("");
-const dirPath = ref("");
+// 新建会话页选中的项目目录。新建会话页（无 activeSession）读写全局 store：
+// ① WorkspaceLayout 需要据此在新会话页为文件树/终端定位根目录（否则那对按钮
+//    在新会话页点不开）；② KeepAlive 会让本组件实例跨目录复用，局部 ref 无法
+// 跨实例保留。有会话时恒为空，与改造前一致 —— 否则残留值会串进老会话的 @
+// 引用 cwd/目录选择器。
+const dirPath = computed({
+  get: () => (store.activeSession ? "" : store.newSessionDirPath ?? ""),
+  set: (v: string) => {
+    if (!store.activeSession) store.newSessionDirPath = v || null;
+  },
+});
 const showDirMenu = ref(false);
 const showMoreAgents = ref(false);
 
@@ -748,6 +758,7 @@ async function checkServerRunning() {
           support_tools: true,
           tags: [],
           use_proxy: false,
+          force_reasoning_none: false,
         });
       }
     }

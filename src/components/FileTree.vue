@@ -500,7 +500,7 @@ watch(() => props.rootPath, (newPath, oldPath) => {
           v-model="searchQuery"
           @input="doSearch"
           :placeholder="$t('fs.searchFiles')"
-          class="w-full pl-8 pr-7 py-1.5 text-[12px] bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-blue-300 focus:bg-white transition-colors placeholder-gray-400"
+          class="w-full pl-8 pr-7 py-1.5 text-[12px] text-gray-700 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-blue-300 focus:bg-white transition-colors placeholder-gray-400"
         />
         <button
           v-if="searchQuery"

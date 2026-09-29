@@ -6,7 +6,7 @@ use crate::rjlog;
 use serde_json::Value;
 use std::io::{BufReader, Read, Write};
 
-use crate::proxy::common::{apply_bash_tool_hardening, build_agent, clamp_max_tokens, find_model, inject_bash_guidance, limit_tools_for_llama, safe_truncate, tool_call_args_str_tracked, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
+use crate::proxy::common::{apply_bash_tool_hardening, clamp_max_tokens, find_model, inject_bash_guidance, limit_tools_for_llama, safe_truncate, send_chat_completions, tool_call_args_str_tracked, ChatUpstream, LLAMA_MAX_TOOLS, ProxyResponse, SseStreamConverter};
 use super::anthropic::make_anthropic_sse_converter;
 use tiny_http::StatusCode;
 
@@ -66,23 +66,23 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
         }
         
         if reasoning_disabled {
-            // 只发送 OpenAI 标准参数（thinking/reasoning_effort/enable_thinking
-            // 非标准，OpenAI 兼容端点如火山引擎会报 400）
+            // 只发送「明确关闭推理」的标准信号：OpenAI 标准的 reasoning_effort="none"
+            // （而非仅改 temperature）。thinking/reasoning/enable_thinking 等
+            // Provider 扩展字段非标准，不发送（火山引擎等 OpenAI 兼容端点会报 400）。
             req_body["temperature"] = serde_json::json!(0.6);
+            if req_body.get("tools").and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false) {
+                req_body["reasoning_effort"] = serde_json::json!("none");
+            }
             rjlog!("[PROXY] reasoning_disabled=true, modified body: temperature=0.6");
         }
         let modified_body = req_body.to_string();
         rjlog!("[PROXY] OpenAI direct: POST {} (model={}, stream={}, body_len={})", url, model_name, stream, modified_body.len());
         
         let request_start = std::time::Instant::now();
-        let resp = build_agent()
-            .post(&url)
-            .set("Authorization", &format!("Bearer {}", m.api_key))
-            .set("Content-Type", "application/json")
-            .send_string(&modified_body);
+        let resp = send_chat_completions(&url, &m.api_key, &modified_body, m.force_reasoning_none || reasoning_disabled);
         rjlog!("[PROXY] ureq request completed in {:?}", request_start.elapsed());
         match resp {
-            Ok(r) => {
+            ChatUpstream::Ok(r) => {
                 if stream {
                     let reader = r.into_reader();
                     rjlog!("[PROXY] got reader in {:?}", request_start.elapsed());
@@ -103,8 +103,7 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
                     ProxyResponse::Sync(StatusCode(200), r.into_string().unwrap_or_default())
                 }
             }
-            Err(ureq::Error::Status(st, r)) => {
-                let body = r.into_string().unwrap_or_default();
+            ChatUpstream::Http { status: st, body } => {
                 rjlog!("[PROXY] OpenAI direct: upstream HTTP {}: {}", st, safe_truncate(&body, 500));
                 // Pass 4xx through so the agent fails fast instead of retrying
                 // a permanent error (bad model name → endless 404s).
@@ -127,7 +126,7 @@ pub(crate) fn proxy_openai_direct(body: &str, _models: &[ModelEntry], preferred_
                 rjlog!("[PROXY] OpenAI direct: returning HTTP {} (type={}) to agent", resp_status.0, err_type);
                 ProxyResponse::Sync(resp_status, err_body.to_string())
             }
-            Err(e) => ProxyResponse::Sync(StatusCode(502), format!("Proxy error: {}", e)),
+            ChatUpstream::Transport(e) => ProxyResponse::Sync(StatusCode(502), format!("Proxy error: {}", e)),
         }
     } else {
         ProxyResponse::Sync(StatusCode(404), format!("Model {} not configured", model_name))
