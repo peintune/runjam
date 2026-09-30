@@ -41,6 +41,23 @@ export const useThemeStore = defineStore("theme", () => {
     clearMarkdownCaches();
   });
 
+  /**
+   * Follow theme changes made in ANOTHER window of the app.
+   *
+   * The pet windows are separate webviews: they read localStorage on boot, but
+   * a theme switch in the main window afterwards would otherwise leave them
+   * stale. The `storage` event fires exactly for same-origin *other* windows,
+   * so listening is safe — it never echoes our own writes.
+   */
+  if (typeof window !== "undefined") {
+    window.addEventListener("storage", (e) => {
+      if (e.key !== STORAGE_KEY) return;
+      if (e.newValue !== "dark" && e.newValue !== "light") return;
+      if (e.newValue === theme.value) return;
+      theme.value = e.newValue;
+    });
+  }
+
   function setTheme(mode: ThemeMode) {
     theme.value = mode;
   }

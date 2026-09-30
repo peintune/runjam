@@ -3316,6 +3316,8 @@ dependencies = [
  "chrono",
  "directories",
  "keyring",
+ "objc2",
+ "objc2-app-kit",
  "pdf-extract",
  "portable-pty",
  "quick-xml 0.36.2",

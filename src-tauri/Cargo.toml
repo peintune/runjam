@@ -1,6 +1,6 @@
 [package]
 name = "runjam"
-version = "1.0.91"
+version = "1.0.92"
 description = "RunJam — A unified desktop manager for AI coding agents"
 authors = ["RunJam Contributors"]
 edition = "2021"
@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = ["unstable", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
@@ -40,4 +40,16 @@ calamine = "0.25"
 pdf-extract = "0.7"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+
+# macOS-only: the pet windows must float above OTHER applications' native
+# full-screen spaces. Tauri/tao only ever sets `CanJoinAllSpaces`
+# (`visible_on_all_workspaces`) and a floating window level
+# (`always_on_top`), which is not enough — see `commands/pet_cmd.rs`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSWindow",
+    "NSApplication",
+] }
 

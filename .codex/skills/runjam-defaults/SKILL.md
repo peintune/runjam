@@ -1,6 +1,6 @@
 ---
 name: runjam-defaults
-description: Default constraints for every RunJam session. Defines output path conventions, dependency checking rules, fallback strategies, and file management discipline. This skill is auto-injected into every session — do not remove. Current session working directory: /Users/guizhan/work/code/runjam
+description: Default constraints for every RunJam session. Defines output path conventions, dependency checking rules, fallback strategies, and file management discipline. This skill is auto-injected into every session — do not remove. Current session working directory: /Users/hekun/work/code/runjam
 ---
 
 # RunJam Default Constraints
@@ -22,7 +22,7 @@ Treat every rule below as a **HARD RULE** — violating any one means the task i
 
 ### This session's working directory (absolute path)
 
-**`/Users/guizhan/work/code/runjam`**
+**`/Users/hekun/work/code/runjam`**
 
 The Agent process was started with this directory as its cwd. Every relative path below resolves relative to it. **If `pwd` disagrees with the absolute path above, trust the absolute path above and `cd` to it first** — it is the authoritative session root for this session.
 

@@ -32,6 +32,23 @@ function detectInitialLocale(): Locale {
  *  tracks the dependency, so switching language re-renders automatically. */
 const state = reactive<{ locale: Locale }>({ locale: detectInitialLocale() });
 
+/**
+ * Follow language changes made in ANOTHER window of the app.
+ *
+ * The pet windows are separate webviews under the same origin: they detect the
+ * locale on boot, but a language switch in the main window would otherwise
+ * leave them showing the old one. `storage` only fires for other windows, so
+ * this never reacts to our own `setLocale`.
+ */
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORAGE_KEY) return;
+    if (e.newValue !== "en-US" && e.newValue !== "zh-CN") return;
+    if (e.newValue === state.locale) return;
+    state.locale = e.newValue;
+  });
+}
+
 /** Translate a key. Params interpolate `{name}` placeholders. */
 export function t(key: TranslationKey, params?: Record<string, string | number>): string {
   // Touch `state.locale` so callers that run inside Vue render effects

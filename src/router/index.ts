@@ -53,6 +53,11 @@ const router = createRouter({
           component: () => import("../views/settings/GeneralSettings.vue"),
         },
         {
+          path: "pet",
+          name: "settings-pet",
+          component: () => import("../views/settings/PetSettings.vue"),
+        },
+        {
           path: "costs",
           name: "settings-costs",
           component: () => import("../views/settings/CostsSettings.vue"),
@@ -95,6 +100,7 @@ const PAGE_VIEW_IDS: Record<string, string> = {
   "settings-models": "settings-models",
   "settings-models-commercial": "settings-models-commercial",
   "settings-general": "settings-general",
+  "settings-pet": "settings-pet",
   "settings-costs": "settings-costs",
   "settings-skills": "settings-skills",
   "settings-about": "settings-about",

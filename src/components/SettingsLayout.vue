@@ -14,6 +14,7 @@ const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] =
   { path: "/settings/agents", labelKey: "settings.agents", icon: Bot },
   { path: "/settings/costs", labelKey: "settings.costs", icon: BarChart3 },
   { path: "/settings/skills", labelKey: "settings.skills", icon: Sparkles },
+  { path: "/settings/pet", labelKey: "settings.pet.menu", icon: Sparkles },
   { path: "/settings/general", labelKey: "settings.general", icon: Settings },
   { path: "/settings/about", labelKey: "settings.about", icon: Info },
 ];

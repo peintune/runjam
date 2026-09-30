@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { listen } from "@tauri-apps/api/event";
 import { useAgentStore } from "./stores/useAgentStore";
@@ -16,6 +16,7 @@ import {
 } from "./api/telemetry";
 import type { Announcement, UpdateCheckResult } from "./api/telemetry";
 import { useToast } from "./composables/useToast";
+import { usePreventSleep } from "./composables/usePreventSleep";
 import Toast from "./components/Toast.vue";
 import UpdatePrompt from "./components/UpdatePrompt.vue";
 import AnnouncementBanner from "./components/AnnouncementBanner.vue";
@@ -31,6 +32,12 @@ const { toasts, removeToast } = useToast();
 
 // First-launch setup (theme + language).
 const showSetup = ref(false);
+
+// Keep the machine awake while an agent is running (opt-in via Settings). The
+// main window owns this because it stays alive for the whole app session, so the
+// assertion is not dropped just because the user closed the pet popup.
+const stopPreventSleep = usePreventSleep(workspaceStore.sessions);
+onBeforeUnmount(stopPreventSleep);
 
 
 onMounted(async () => {

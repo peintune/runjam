@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 defineOptions({ name: "WorkspaceLayout" });
 import Sidebar from "./Sidebar.vue";
@@ -16,7 +16,9 @@ import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
 import { useDragResize } from "../composables/useDragResize";
 import { useSessionLayout, layoutKeyFor } from "../composables/useSessionLayout";
+import { PET_SESSION_CHANGED_EVENT, PET_OPEN_IN_MAIN_EVENT } from "../composables/usePetChat";
 import { homeDir } from "@tauri-apps/api/path";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   PanelLeftOpen, PanelLeftClose,
   FolderTree, Terminal,
@@ -64,6 +66,7 @@ function collapseSidebarForPanel() {
 
 const store = useWorkspaceStore();
 const route = useRoute();
+const router = useRouter();
 const { layout, switchDirectory, saveLayout } = useSessionLayout();
 const appTabs = useAppTabsStore();
 
@@ -175,6 +178,11 @@ function toggleTerminal() {
 const showTerminalCloseConfirm = ref(false);
 const terminalPanelRef = ref<InstanceType<typeof TerminalPanel> | null>(null);
 
+// 桌面宠物会话变化（在宠物窗口创建/更新）时用于刷新侧边栏列表的监听句柄。
+let petSessionUnlisten: UnlistenFn | null = null;
+// 宠物窗口请求「在主窗口打开」当前会话时的监听句柄。
+let petOpenUnlisten: UnlistenFn | null = null;
+
 // 终端高度可拖拽（位于内容区底部，横跨全宽）
 const terminalResize = useDragResize({
   direction: "vertical",
@@ -250,6 +258,31 @@ onMounted(async () => {
   // previously active tab when returning to the workspace.
   appTabs.init();
   appTabs.restore();
+
+  // Desktop pet: the pet chat window owns its own session but persists it, so
+  // when it creates or touches a conversation the sidebar here must refresh to
+  // show it. The event is broadcast from the pet window (see usePetChat).
+  listen(PET_SESSION_CHANGED_EVENT, () => {
+    store.loadSessions().catch(() => {});
+  })
+    .then((un) => { petSessionUnlisten = un; })
+    .catch(() => {});
+
+  // Desktop pet: "open in main window" from the popup. Bring the session it was
+  // talking in into this window's view (leaving the task board if needed), so
+  // the user lands on the full transcript instead of the minimal popup.
+  listen<{ id: string | null }>(PET_OPEN_IN_MAIN_EVENT, (e) => {
+    const id = e.payload?.id;
+    if (!id) return;
+    store.loadSessions()
+      .then(() => {
+        store.selectSession(id);
+        if (route.path !== "/") router.push("/");
+      })
+      .catch(() => {});
+  })
+    .then((un) => { petOpenUnlisten = un; })
+    .catch(() => {});
 });
 
 // ---- Resizable sidebar ----
@@ -281,6 +314,14 @@ watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
 // un-closed webviews when this layout is torn down.
 onBeforeUnmount(() => {
   appTabs.dispose();
+  if (petSessionUnlisten) {
+    try { petSessionUnlisten(); } catch {}
+    petSessionUnlisten = null;
+  }
+  if (petOpenUnlisten) {
+    try { petOpenUnlisten(); } catch {}
+    petOpenUnlisten = null;
+  }
 });
 </script>
 

@@ -238,6 +238,28 @@ export async function getDefaultModel(agentId: string): Promise<string> {
   return invoke<string>("get_default_model", { agentId });
 }
 
+/** The model stored as an agent's default in the DB (session_model), used to
+ *  seed a new session's model selection. */
+export async function getSessionModel(agentId: string): Promise<string> {
+  return invoke<string>("get_session_model", { agentId });
+}
+
+/** The agent's stored permission mode (agent_permission_<id> in app_settings).
+ *  Returns "" when the agent has never been configured. */
+export async function getAgentPermissionMode(agentId: string): Promise<string> {
+  return invoke<string>("get_agent_permission_mode", { agentId });
+}
+
+/** Persist an agent's default permission mode (shared with the main window). */
+export async function setAgentPermissionMode(agentId: string, mode: string): Promise<void> {
+  return invoke("set_agent_permission_mode", { agentId, mode });
+}
+
+/** Persist the model a new session of this agent should default to. */
+export async function setSessionModel(agentId: string, modelId: string): Promise<void> {
+  return invoke("set_session_model", { agentId, modelId });
+}
+
 export interface ProviderConfig {
   id: string;
   name: string;

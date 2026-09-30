@@ -220,6 +220,15 @@ pub fn run() {
             commands::term_cmd::take_terminal_pending,
             commands::term_cmd::get_terminal_shell_mode,
             commands::term_cmd::get_terminal_cwd,
+            commands::pet_cmd::open_pet_chat,
+            commands::pet_cmd::toggle_pet_chat,
+            commands::pet_cmd::close_pet_chat,
+            commands::pet_cmd::focus_main_window,
+            commands::pet_cmd::set_pet_enabled,
+            commands::pet_cmd::pet_enabled,
+            commands::pet_cmd::start_pet_drag,
+            commands::power_cmd::set_prevent_sleep,
+            commands::power_cmd::prevent_sleep_active,
             commands::telemetry_cmd::get_telemetry_status,
             commands::telemetry_cmd::set_telemetry_enabled,
             commands::telemetry_cmd::track_event,
@@ -235,12 +244,19 @@ pub fn run() {
             commands::telemetry_cmd::mark_announcement_read,
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let _ = commands::llama_cmd::stop_llama_server();
-                // Terminate terminal shells — otherwise they leak as orphaned
-                // processes after the app exits (each idle interactive shell
-                // can keep polling prompt state and burning CPU).
-                commands::term_cmd::kill_all_terminals(window.app_handle());
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Only the MAIN window owns these app-wide resources. Pet windows
+                // (pet-icon / pet-chat) close independently.
+                if window.label() != "main" {
+                    return;
+                }
+                // The close button HIDES the main window instead of quitting:
+                // agent sessions keep running in the background (the pet icon
+                // stays available to reopen the UI), so a long task survives
+                // closing the window. Quitting for real is the app menu's
+                // Quit / Cmd+Q, handled in the run-event callback below.
+                api.prevent_close();
+                let _ = window.hide();
             }
         })
         .setup(|app| {
@@ -292,8 +308,48 @@ pub fn run() {
                     let _ = window.set_decorations(false);
                 }
             }
+            // Desktop pet: float the launcher icon in the bottom-right corner.
+            // The preference is stored in AppState (default: enabled) so the
+            // user can turn the pet off from Settings.
+            {
+                let state = app.state::<Mutex<AppState>>();
+                let enabled = state.lock().unwrap().pet_enabled;
+                if enabled {
+                    if let Err(e) = commands::pet_cmd::ensure_pet_icon(app.handle()) {
+                        eprintln!("[pet] {e}");
+                    }
+                }
+            }
+
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Real shutdown (Cmd+Q, the app menu's Quit, or a programmatic
+            // `exit`) still needs the app-wide cleanup that used to live in the
+            // window-close handler: stop the local llama server and reap the
+            // terminal shells, which would otherwise leak as orphaned processes
+            // (each idle interactive shell keeps polling prompt state).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let _ = commands::llama_cmd::stop_llama_server();
+                commands::term_cmd::kill_all_terminals(app);
+                // Release any sleep assertion the pet may still be holding.
+                commands::power_cmd::release_sleep_assertion();
+            }
+
+            // macOS: clicking the Dock icon while the main window is hidden (the
+            // close button only hides it) must bring the window back — otherwise
+            // there would be no way to reach the UI again.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(main) = app.get_webview_window("main") {
+                    if main.is_minimized().unwrap_or(false) {
+                        let _ = main.unminimize();
+                    }
+                    let _ = main.show();
+                    let _ = main.set_focus();
+                }
+            }
+        });
 }

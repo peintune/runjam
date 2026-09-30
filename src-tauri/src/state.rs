@@ -13,9 +13,26 @@ impl Default for AgentState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_pet_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
     pub agents: HashMap<String, AgentState>,
+    /// Whether the desktop pet icon floats on screen. Defaults to true for new
+    /// users and for state files written before the pet existed.
+    #[serde(default = "default_pet_enabled")]
+    pub pet_enabled: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            agents: HashMap::new(),
+            pet_enabled: true,
+        }
+    }
 }
 
 impl AppState {

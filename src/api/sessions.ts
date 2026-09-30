@@ -94,6 +94,10 @@ export async function sendInput(id: string, text: string, history?: string[]): P
   return invoke("send_input", { id, text, history: history ?? null });
 }
 
+export async function setSessionPermissionMode(id: string, mode: string): Promise<void> {
+  return invoke("set_session_permission_mode", { id, mode });
+}
+
 export async function respondInteraction(id: string, response: string): Promise<void> {
   return invoke("respond_interaction", { id, response });
 }
