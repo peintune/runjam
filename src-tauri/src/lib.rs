@@ -338,6 +338,25 @@ pub fn run() {
                 commands::power_cmd::release_sleep_assertion();
             }
 
+            // The pet windows are created in `setup()`, which runs BEFORE the event
+            // loop starts. Such a window has not been assigned a Space yet, and
+            // tao defers its `orderFront` to `applicationDidFinishLaunching` — so
+            // the window ends up on screen carrying the collection behaviour it
+            // had BEFORE `setup` finished. `reassert_pet_elevation` fixes that by
+            // re-applying the behaviour and re-ordering the window (see
+            // `elevate_over_fullscreen`), which makes AppKit recompute its Space.
+            //
+            // Re-asserted here (loop is running) and once more shortly after, as a
+            // safety net for the first turn where Spaces are actually assigned.
+            if let tauri::RunEvent::Ready = event {
+                commands::pet_cmd::reassert_pet_elevation(app);
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    commands::pet_cmd::reassert_pet_elevation(&handle);
+                });
+            }
+
             // macOS: clicking the Dock icon while the main window is hidden (the
             // close button only hides it) must bring the window back — otherwise
             // there would be no way to reach the UI again.

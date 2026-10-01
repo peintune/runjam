@@ -11,28 +11,33 @@
  * lifting (session lifecycle, streaming, config persistence) lives in
  * `usePetChat`.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed, nextTick, onBeforeUnmount, onMounted, ref, watch,
+} from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
-  Send, Plus, X, Loader2, Sparkles, ChevronDown, Wand2, Brain,
-  Folder, FolderOpen, ShieldCheck, Check, Maximize2,
+  Send, Plus, X, Loader2, Sparkles, ChevronDown, Wand2,
+  Folder, FolderOpen, ShieldCheck, Check, Maximize2, Paperclip, Brain, Square,
 } from "lucide-vue-next";
 import AgentIcon from "../AgentIcon.vue";
+import ChatMessages from "../ChatMessages.vue";
 import { usePetChat } from "../../composables/usePetChat";
+import { formatFileSize } from "../../composables/useAttachments";
 import { t, type TranslationKey } from "../../i18n";
 
 const {
   messages,
   input,
-  sending,
+  busy,
   starting,
   agentName,
   modelName,
   canSend,
   send,
+  stop,
   newConversation,
   openInMainWindow,
   ensureSession,
@@ -50,19 +55,39 @@ const {
   toggleReasoning,
   setDirectory,
   refreshRecentDirs,
+  isUnavailableLocalModel,
+  refreshLocalServer,
+  openLocalModelsSettings,
+  // Attachments.
+  attachedFiles,
+  attachFiles,
+  removeAttachedFile,
 } = usePetChat();
 
-const scrollEl = ref<HTMLDivElement | null>(null);
+const chatEl = ref<HTMLDivElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+const attachListOpen = ref(false);
 let unlistenOpened: UnlistenFn | null = null;
 
-function scrollToBottom() {
+/**
+ * Keep the newest message in view, but only when the user is already at the
+ * bottom — otherwise their scroll position would be yanked away mid-read.
+ */
+function scrollToBottom(force = false) {
   nextTick(() => {
-    if (scrollEl.value) scrollEl.value.scrollTop = scrollEl.value.scrollHeight;
+    const el = chatEl.value;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (force || nearBottom) el.scrollTop = el.scrollHeight;
   });
 }
 
-watch(messages, scrollToBottom, { deep: true });
+/** ChatMessages reports height changes (typewriter ticks, growing content). */
+function onContentUpdated() {
+  scrollToBottom();
+}
+
+watch(messages, () => scrollToBottom(), { deep: true });
 
 async function close() {
   await invoke("close_pet_chat").catch(() => {});
@@ -72,9 +97,9 @@ async function close() {
  * Hand the conversation over to the main window: it focuses, switches to this
  * session, and this popup hides itself.
  *
- * The popup only renders plain text, so the full session view (tool calls,
- * thinking, permission prompts) is where a user needs to go for anything more
- * than a quick answer.
+ * The popup now renders the same transcript as the main window, but the main
+ * window is where the wider layout, file tree and terminal live — so this is the
+ * "continue with more room" affordance.
  */
 async function openInMain() {
   await openInMainWindow();
@@ -98,7 +123,12 @@ function onKeydown(e: KeyboardEvent) {
 async function doSend() {
   if (!canSend.value) return;
   await send();
-  scrollToBottom();
+  scrollToBottom(true);
+}
+
+/** Halt the running answer (the send button becomes Stop while busy). */
+async function doStop() {
+  await stop();
 }
 
 function onEsc(e: KeyboardEvent) {
@@ -120,10 +150,12 @@ function onEsc(e: KeyboardEvent) {
 
 /** Which dropdown is open (only one at a time). */
 const openMenu = ref<"" | "model" | "dir" | "perm" | "skills">("");
-/** Anchor rect of the chip that opened the menu, in viewport coordinates.
- *  The menus are teleported to <body> and positioned `fixed`, so they escape
- *  the toolbar's clipping/scroll context entirely. */
-const menuAnchor = ref<{ left: number; top: number; width: number } | null>(null);
+/** Anchor of the chip that opened the menu, in viewport coordinates. The menus
+ *  are teleported to <body> and positioned `fixed`, so they escape the composer's
+ *  clipping/scroll context entirely. `openUp` records which side had room. */
+const menuAnchor = ref<
+  { left: number; openUp: boolean; offset: number; width: number; maxHeight: number } | null
+>(null);
 
 /** Width of each menu panel (must match the classes below). */
 const MENU_WIDTH: Record<"model" | "dir" | "perm" | "skills", number> = {
@@ -131,6 +163,14 @@ const MENU_WIDTH: Record<"model" | "dir" | "perm" | "skills", number> = {
   dir: 256,
   perm: 288,
   skills: 320,
+};
+
+/** Height budget per menu, used to decide where it fits and to cap it. */
+const MENU_HEIGHT: Record<"model" | "dir" | "perm" | "skills", number> = {
+  model: 220,
+  dir: 240,
+  perm: 260,
+  skills: 240,
 };
 
 function toggleMenu(name: "model" | "dir" | "perm" | "skills", e?: MouseEvent) {
@@ -141,11 +181,29 @@ function toggleMenu(name: "model" | "dir" | "perm" | "skills", e?: MouseEvent) {
   const el = (e?.currentTarget ?? null) as HTMLElement | null;
   if (el) {
     const r = el.getBoundingClientRect();
-    // Keep the panel inside the window: shift it left when it would overflow
-    // the right edge (the chips sit near the right side of a narrow popup).
     const width = MENU_WIDTH[name];
+    // Keep the panel inside the window horizontally: shift it left when it would
+    // overflow the right edge (the chips sit near the right side of a narrow
+    // popup).
     const left = Math.max(4, Math.min(r.left, window.innerWidth - width - 4));
-    menuAnchor.value = { left, top: r.bottom + 4, width };
+
+    // Open toward whichever side has room. These controls sit at the bottom of
+    // the popup, so downward would normally be clipped by the window — but the
+    // popup is resizable (down to 320px tall), so "always up" can also overflow
+    // when it is short. Pick the larger side and cap the height to it; the panel
+    // scrolls internally.
+    const GAP = 4;
+    const spaceAbove = r.top - GAP - 4;
+    const spaceBelow = window.innerHeight - r.bottom - GAP - 4;
+    const openUp = spaceAbove >= spaceBelow;
+    const avail = Math.max(80, openUp ? spaceAbove : spaceBelow);
+    menuAnchor.value = {
+      left,
+      openUp,
+      offset: openUp ? window.innerHeight - r.top + GAP : r.bottom + GAP,
+      width,
+      maxHeight: Math.min(MENU_HEIGHT[name], avail),
+    };
   }
   openMenu.value = name;
 }
@@ -154,8 +212,41 @@ function toggleMenu(name: "model" | "dir" | "perm" | "skills", e?: MouseEvent) {
 const menuStyle = computed(() => {
   const a = menuAnchor.value;
   if (!a) return {};
-  return { left: `${a.left}px`, top: `${a.top}px`, width: `${a.width}px` };
+  return {
+    left: `${a.left}px`,
+    ...(a.openUp ? { bottom: `${a.offset}px` } : { top: `${a.offset}px` }),
+    width: `${a.width}px`,
+    maxHeight: `${a.maxHeight}px`,
+  };
 });
+
+/** Toggle the staged-attachments list, anchoring it like the option menus (it is
+ *  teleported to <body> for the same reason: the action row clips overflow). */
+function toggleAttachList(e?: MouseEvent) {
+  if (attachListOpen.value) {
+    attachListOpen.value = false;
+    return;
+  }
+  const el = (e?.currentTarget ?? null) as HTMLElement | null;
+  if (el) {
+    const r = el.getBoundingClientRect();
+    const width = 280;
+    const GAP = 4;
+    const left = Math.max(4, Math.min(r.left, window.innerWidth - width - 4));
+    const spaceAbove = r.top - GAP - 4;
+    const spaceBelow = window.innerHeight - r.bottom - GAP - 4;
+    const openUp = spaceAbove >= spaceBelow;
+    const avail = Math.max(80, openUp ? spaceAbove : spaceBelow);
+    menuAnchor.value = {
+      left,
+      openUp,
+      offset: openUp ? window.innerHeight - r.top + GAP : r.bottom + GAP,
+      width,
+      maxHeight: Math.min(240, avail),
+    };
+  }
+  attachListOpen.value = true;
+}
 
 function onDocClick(e: MouseEvent) {
   const el = e.target as HTMLElement | null;
@@ -202,13 +293,12 @@ const agentLabel = computed(
     "",
 );
 
-const modelLabel = computed(
-  () =>
-    availableModels.value.find((m) => m.id === config.value.modelId)?.name ||
-    modelName.value ||
-    config.value.modelId ||
-    "",
-);
+const modelLabel = computed(() => {
+  const m = availableModels.value.find((x) => x.id === config.value.modelId);
+  // Prefer the alias: a local model's `name` is a full file path, far too wide
+  // for the 460px popup chip.
+  return m?.alias || m?.name || modelName.value || config.value.modelId || "";
+});
 
 const permissionLabel = computed(
   () => permissionOptions.value.find((o) => o.id === config.value.permissionMode)?.label ||
@@ -233,7 +323,27 @@ async function pickAgent(id: string) {
 
 async function pickModel(id: string) {
   openMenu.value = "";
+  const model = availableModels.value.find((m) => m.id === id);
+  // A local model whose server is not running cannot be used from the popup —
+  // starting the server lives in Settings. Send the user there instead of
+  // silently arming a model that would fail on send.
+  if (model && isUnavailableLocalModel(model)) {
+    await openLocalModelsSettings();
+    return;
+  }
   await applyConfig({ modelId: id });
+}
+
+/** Open the model menu, refreshing the local-server state in the background.
+ *
+ * The refresh probes HTTP ports (up to ~2s when nothing is listening), so
+ * awaiting it would make the chip feel dead for seconds. Open the menu FIRST so
+ * the click is instant, then let the refreshed availability settle into place —
+ * the menu is reactive, so the greyed-out state updates when the probe returns.
+ */
+function openModelMenu(e?: MouseEvent) {
+  toggleMenu("model", e);
+  void refreshLocalServer();
 }
 
 async function pickPermission(id: string) {
@@ -279,11 +389,13 @@ async function startDrag(e: MouseEvent) {
   }
 }
 
-// Compact toolbar control: one line tall, icon + truncated value.
+// Compact toolbar control: one line tall, icon + truncated value. Shrinkable
+// (`min-w-0` + no fixed width) so several of them fit on the popup's narrow
+// action row.
 const CHIP =
-  "inline-flex items-center gap-1 px-1.5 h-6 rounded-md text-[10px] leading-none " +
+  "inline-flex items-center gap-1 px-1.5 h-6 rounded-md text-[10px] leading-none min-w-0 " +
   "text-gray-600 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-[#26262f] " +
-  "transition-colors cursor-pointer flex-shrink-0 max-w-[132px]";
+  "transition-colors cursor-pointer";
 
 /** Teleported to <body> and positioned `fixed`, so a dropdown is never clipped
  *  by the toolbar. Position comes from `menuStyle`. */
@@ -346,6 +458,22 @@ onBeforeUnmount(() => {
       <div class="min-w-0 flex-1 text-[12px] font-medium truncate">
         {{ agentLabel || t("pet.title") }}
       </div>
+      <!-- Agent: icon pills, one per installed agent -->
+      <div class="flex items-center gap-0.5 flex-shrink-0" :title="t('pet.agent')">
+        <button
+          v-for="a in availableAgents"
+          :key="a.id"
+          class="inline-flex items-center justify-center w-6 h-6 rounded-md transition-all cursor-pointer"
+          :class="a.id === config.agentId
+            ? 'bg-indigo-50 dark:bg-[#26262f] ring-1 ring-indigo-300 dark:ring-indigo-500/50'
+            : 'opacity-50 hover:opacity-100 hover:bg-gray-100 dark:hover:bg-[#26262f]'"
+          :title="a.display_name"
+          @click="pickAgent(a.id)"
+        >
+          <AgentIcon :agent-id="a.id" :size="14" />
+        </button>
+      </div>
+
       <!-- Hand the conversation over to the main window, where the full
            transcript (tool calls, thinking, permission prompts) is visible. -->
       <button
@@ -374,196 +502,10 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- Settings toolbar: always visible, one line, any change restarts nothing
-         unless the session went stale.
-         `flex-nowrap` keeps it on a single row (with `flex-wrap` the chips
-         spilled onto a second row on a narrow popup, pushing the transcript
-         down). It is deliberately NOT `overflow-x-auto`: a scroll container
-         would clip the dropdown panels. Those are teleported to <body> instead,
-         so they escape this box entirely. -->
-    <div
-      class="flex flex-nowrap items-center gap-1 px-2.5 py-1.5 border-b border-gray-100 dark:border-[#26262f] flex-shrink-0"
-    >
-      <!-- Agent: icon pills, one per installed agent -->
-      <div class="flex items-center gap-0.5 flex-shrink-0" :title="t('pet.agent')">
-        <button
-          v-for="a in availableAgents"
-          :key="a.id"
-          class="inline-flex items-center justify-center w-6 h-6 rounded-md transition-all cursor-pointer"
-          :class="a.id === config.agentId
-            ? 'bg-indigo-50 dark:bg-[#26262f] ring-1 ring-indigo-300 dark:ring-indigo-500/50'
-            : 'opacity-50 hover:opacity-100 hover:bg-gray-100 dark:hover:bg-[#26262f]'"
-          :title="a.display_name"
-          @click="pickAgent(a.id)"
-        >
-          <AgentIcon :agent-id="a.id" :size="14" />
-        </button>
-      </div>
-
-      <!-- Model -->
-      <div class="relative" data-pet-popover>
-        <button :class="CHIP" :title="modelLabel || t('pet.model')" @click="toggleMenu('model', $event)">
-          <span class="truncate">{{ modelLabel || t("pet.model") }}</span>
-          <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
-        </button>
-        <Teleport to="body">
-          <div v-if="openMenu === 'model'" :class="MENU" :style="menuStyle" class="max-h-[220px]">
-          <button
-            v-for="m in availableModels"
-            :key="m.id"
-            class="w-full flex items-center gap-1.5 px-2 py-1.5 text-left hover:bg-gray-50
-                   dark:hover:bg-[#26262f] transition-colors"
-            @click="pickModel(m.id)"
-          >
-            <Check
-              :size="11"
-              class="flex-shrink-0"
-              :class="m.id === config.modelId ? 'text-indigo-500' : 'opacity-0'"
-            />
-            <span class="min-w-0 flex-1">
-              <span class="block text-[11px] truncate">{{ m.name }}</span>
-              <span class="block text-[9px] text-gray-500 truncate">{{ m.provider_name }}</span>
-            </span>
-          </button>
-          <div v-if="availableModels.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
-            {{ t("pet.model") }} —
-          </div>
-          </div>
-        </Teleport>
-      </div>
-
-      <!-- Project folder -->
-      <div class="relative" data-pet-popover>
-        <button :class="CHIP" :title="config.directory || t('pet.noProject')" @click="openDirMenu($event)">
-          <Folder :size="11" class="flex-shrink-0 opacity-70" />
-          <span class="truncate">{{ dirLabel || t("pet.noProject") }}</span>
-          <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
-        </button>
-        <Teleport to="body">
-          <div v-if="openMenu === 'dir'" :class="MENU" :style="menuStyle" class="max-h-[240px]">
-          <button
-            class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
-                   dark:hover:bg-[#26262f] transition-colors"
-            @click="pickDir('')"
-          >
-            <Check :size="11" class="flex-shrink-0" :class="!config.directory ? 'text-indigo-500' : 'opacity-0'" />
-            <span class="text-[11px] text-gray-500">{{ t("pet.noProject") }}</span>
-          </button>
-          <div v-if="recentDirs.length > 0" class="px-2 pt-1.5 pb-0.5 text-[9px] uppercase tracking-wide text-gray-500">
-            {{ t("pet.recentProjects") }}
-          </div>
-          <button
-            v-for="d in recentDirs"
-            :key="d"
-            class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
-                   dark:hover:bg-[#26262f] transition-colors"
-            :title="d"
-            @click="pickDir(d)"
-          >
-            <Check :size="11" class="flex-shrink-0" :class="d === config.directory ? 'text-indigo-500' : 'opacity-0'" />
-            <span class="text-[11px] truncate">{{ d.replace(/\/+$/, "").split("/").pop() || d }}</span>
-          </button>
-          <div class="my-1 border-t border-gray-100 dark:border-[#26262f]" />
-          <button
-            class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
-                   dark:hover:bg-[#26262f] transition-colors"
-            @click="browseDir"
-          >
-            <FolderOpen :size="11" class="flex-shrink-0 text-gray-500" />
-            <span class="text-[11px] text-gray-600 dark:text-gray-500">{{ t("pet.openFolder") }}</span>
-          </button>
-          </div>
-        </Teleport>
-      </div>
-
-      <!-- Permission mode -->
-      <div class="relative" data-pet-popover>
-        <button :class="CHIP" :title="t('pet.permission')" @click="toggleMenu('perm', $event)">
-          <ShieldCheck :size="11" class="flex-shrink-0 opacity-70" />
-          <span class="truncate">{{ permissionLabel || t("pet.permission") }}</span>
-          <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
-        </button>
-        <Teleport to="body">
-          <div v-if="openMenu === 'perm'" :class="MENU" :style="menuStyle" class="max-h-[260px]">
-          <button
-            v-for="o in permissionOptions"
-            :key="o.id"
-            class="w-full flex items-start gap-2 px-2 py-1.5 text-left hover:bg-gray-50
-                   dark:hover:bg-[#26262f] transition-colors"
-            @click="pickPermission(o.id)"
-          >
-            <Check
-              :size="11"
-              class="flex-shrink-0 mt-px"
-              :class="o.id === config.permissionMode ? 'text-indigo-500' : 'opacity-0'"
-            />
-            <span class="min-w-0 flex-1">
-              <span class="block text-[11px]">{{ o.label }}</span>
-              <span class="block text-[9px] text-gray-500 leading-snug">{{ o.description }}</span>
-            </span>
-          </button>
-          <!-- The popup has no permission dialog, so a mode that asks for
-               approval can only be answered by auto-denying. Say so up front. -->
-          <div
-            v-if="config.permissionMode === 'ask_approval'"
-            class="mx-2 mt-1 mb-0.5 px-2 py-1.5 rounded-md bg-amber-50 dark:bg-amber-500/10
-                   text-[9px] leading-snug text-amber-600 dark:text-amber-400"
-          >
-            {{ t("pet.deniedNote") }}
-          </div>
-          </div>
-        </Teleport>
-      </div>
-
-      <!-- Skills -->
-      <div class="relative" data-pet-popover>
-        <button :class="CHIP" :title="t('pet.skills')" @click="toggleMenu('skills', $event)">
-          <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
-          <span class="truncate">
-            {{ t("pet.skills") }}<template v-if="config.skills.length"> · {{ config.skills.length }}</template>
-          </span>
-          <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
-        </button>
-        <Teleport to="body">
-          <div v-if="openMenu === 'skills'" :class="MENU" :style="menuStyle" class="max-h-[240px]">
-          <div class="p-1.5 grid grid-cols-2 gap-1">
-            <button
-              v-for="s in availableSkills"
-              :key="s.name"
-              class="px-2 py-1.5 rounded-md border text-left transition-all cursor-pointer"
-              :class="skillChipClass(s.name)"
-              :title="s.description"
-              @click="toggleSkill(s.name)"
-            >
-              <span class="block text-[11px] font-medium leading-tight truncate">{{ s.name }}</span>
-              <span class="block text-[9px] leading-snug line-clamp-2 opacity-70">{{ s.description }}</span>
-            </button>
-          </div>
-          <div v-if="availableSkills.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
-            {{ t("pet.skills") }} —
-          </div>
-          </div>
-        </Teleport>
-      </div>
-
-      <!-- Reasoning toggle -->
-      <button
-        :class="[
-          CHIP,
-          config.noThinking
-            ? 'bg-gray-200 dark:bg-[#26262f] text-gray-500'
-            : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10',
-        ]"
-        :title="t('pet.reasoning')"
-        @click="toggleReasoning"
-      >
-        <Brain :size="11" class="flex-shrink-0" />
-        <span class="truncate">{{ t("pet.reasoning") }}</span>
-      </button>
-    </div>
-
-    <!-- Transcript -->
-    <div ref="scrollEl" class="flex-1 overflow-y-auto px-3 py-3 space-y-3 no-scrollbar">
+    <!-- Transcript: the main window's own message list renders the whole turn —
+         markdown, code blocks, thinking, tool calls, permission prompts. The
+         popup owns scrolling, so ChatMessages reports height changes instead. -->
+    <div ref="chatEl" class="flex-1 overflow-y-auto px-3 py-2 no-scrollbar">
       <div
         v-if="starting && messages.length === 0"
         class="h-full flex flex-col items-center justify-center gap-2 text-gray-500"
@@ -583,34 +525,65 @@ onBeforeUnmount(() => {
         <span class="text-[10px] text-gray-500/80">{{ t("pet.emptyHint") }}</span>
       </div>
 
-      <template v-for="(m, i) in messages" :key="i">
-        <!-- User question: right-aligned bubble -->
-        <div v-if="m.role === 'user'" class="flex justify-end">
-          <div
-            class="max-w-[85%] px-3 py-2 rounded-2xl rounded-br-md bg-indigo-500 text-white
-                   text-[12px] leading-relaxed whitespace-pre-wrap break-words"
-          >
-            {{ m.content }}
-          </div>
-        </div>
-        <!-- Agent answer: left-aligned, plain (no bubble chrome) -->
-        <div v-else class="flex justify-start">
-          <div
-            class="max-w-[92%] text-[12px] leading-relaxed whitespace-pre-wrap break-words"
-            :class="m.error ? 'text-red-500' : 'text-gray-700 dark:text-gray-800'"
-          >
-            {{ m.content }}
-            <span
-              v-if="m.streaming"
-              class="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-indigo-400 animate-pulse"
-            />
-          </div>
-        </div>
-      </template>
+      <ChatMessages
+        v-else
+        :messages="messages"
+        :agent-id="config.agentId"
+        :active="true"
+        @content-updated="onContentUpdated"
+      />
     </div>
 
-    <!-- Composer -->
+    <!-- Composer: mirrors the main window's session composer — skills above the
+         input, and the file/permission/model/reasoning controls on the action
+         row below it. -->
     <div class="flex-shrink-0 border-t border-gray-100 dark:border-[#26262f] p-2.5">
+      <!-- Skills (compact): the selected set as removable chips plus a picker. -->
+      <div class="flex items-center gap-1.5 mb-1.5 min-h-[24px]">
+        <div class="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 no-scrollbar">
+          <span
+            v-for="name in config.skills"
+            :key="name"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] flex-shrink-0
+                   bg-gray-100 text-gray-700 dark:bg-[#26262f] dark:text-gray-500 cursor-pointer
+                   hover:bg-gray-200 dark:hover:bg-[#35353f] transition-colors"
+            @click="toggleSkill(name)"
+          >
+            {{ name }}<X :size="9" />
+          </span>
+        </div>
+        <div class="relative flex-shrink-0" data-pet-popover>
+          <button :class="CHIP" :title="t('pet.skills')" @click="toggleMenu('skills', $event)">
+            <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
+            <span class="truncate">
+              {{ t("pet.skills") }}<template v-if="config.skills.length"> · {{ config.skills.length }}</template>
+            </span>
+            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
+          </button>
+          <Teleport to="body">
+            <div v-if="openMenu === 'skills'" :class="MENU" :style="menuStyle" data-pet-popover>
+            <div class="p-1.5 grid grid-cols-2 gap-1">
+              <button
+                v-for="s in availableSkills"
+                :key="s.name"
+                class="px-2 py-1.5 rounded-md border text-left transition-all cursor-pointer"
+                :class="skillChipClass(s.name)"
+                :title="s.description"
+                @click="toggleSkill(s.name)"
+              >
+                <span class="block text-[11px] font-medium leading-tight truncate">{{ s.name }}</span>
+                <span class="block text-[9px] leading-snug line-clamp-2 opacity-70">{{ s.description }}</span>
+              </button>
+            </div>
+            <div v-if="availableSkills.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
+              {{ t("pet.skills") }} —
+            </div>
+            </div>
+          </Teleport>
+        </div>
+      </div>
+
+      <!-- Input box -->
       <div
         class="flex items-end gap-2 rounded-xl border border-gray-200 dark:border-[#2c2c36]
                bg-gray-50 dark:bg-[#131318] px-2.5 py-2 focus-within:border-indigo-300"
@@ -619,23 +592,222 @@ onBeforeUnmount(() => {
           ref="inputEl"
           v-model="input"
           rows="1"
-          :placeholder="sending ? t('pet.answering') : t('pet.askSomething')"
+          :placeholder="busy ? t('pet.answering') : t('pet.askSomething')"
           class="flex-1 bg-transparent border-none outline-none resize-none text-[12px] text-gray-800
                  placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed max-h-28 no-scrollbar"
           @keydown="onKeydown"
         />
         <button
+          v-if="busy"
+          class="p-1.5 rounded-lg flex-shrink-0 transition-colors bg-red-500 text-white hover:bg-red-600 cursor-pointer"
+          :title="t('pet.stop')"
+          @click="doStop"
+        >
+          <Square :size="14" />
+        </button>
+        <button
+          v-else
           class="p-1.5 rounded-lg flex-shrink-0 transition-colors"
           :class="canSend
             ? 'bg-indigo-500 text-white hover:bg-indigo-600'
             : 'bg-gray-200 dark:bg-[#26262f] text-gray-400 cursor-not-allowed'"
           :disabled="!canSend"
+          :title="t('pet.send')"
           @click="doSend"
         >
-          <Loader2 v-if="sending" :size="14" class="animate-spin" />
-          <Send v-else :size="14" />
+          <Send :size="14" />
         </button>
       </div>
+
+      <!-- Action row: file + project folder + permission + model + reasoning, packed
+           on ONE line. No `flex-1` spacer here: spreading them to the two ends
+           made the attachments look like a separate row from the option chips. -->
+      <div class="flex items-center gap-1.5 mt-1.5 flex-nowrap overflow-hidden">
+        <button
+          class="p-1 rounded-md flex-shrink-0 text-gray-400 hover:text-gray-600 hover:bg-gray-100
+                 dark:hover:bg-[#26262f] transition-colors cursor-pointer"
+          :title="t('pet.attachFile')"
+          @click="attachFiles"
+        >
+          <Paperclip :size="13" />
+        </button>
+        <button
+          v-if="attachedFiles.length > 0"
+          class="relative min-w-[16px] h-[16px] px-1 rounded-full bg-gray-200 text-gray-700 dark:bg-[#26262f] dark:text-gray-500
+                 text-[9px] font-semibold flex items-center justify-center cursor-pointer hover:bg-gray-300 transition-colors flex-shrink-0"
+          :title="t('pet.attachments')"
+          @click="toggleAttachList($event)"
+        >{{ attachedFiles.length }}</button>
+
+        <div class="relative min-w-0" data-pet-popover>
+          <button
+            class="inline-flex items-center gap-1 px-1.5 h-6 rounded-md text-[10px] leading-none min-w-0
+                   text-gray-600 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-[#26262f] transition-colors cursor-pointer"
+            :title="config.directory || t('pet.noProject')"
+            @click="openDirMenu($event)"
+          >
+            <Folder :size="11" class="flex-shrink-0 opacity-70" />
+            <span class="truncate">{{ dirLabel || t("pet.noProject") }}</span>
+            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
+          </button>
+          <Teleport to="body">
+            <div v-if="openMenu === 'dir'" :class="MENU" :style="menuStyle" data-pet-popover>
+            <button
+              class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
+                     dark:hover:bg-[#26262f] transition-colors"
+              @click="pickDir('')"
+            >
+              <Check :size="11" class="flex-shrink-0" :class="!config.directory ? 'text-indigo-500' : 'opacity-0'" />
+              <span class="text-[11px] text-gray-500">{{ t("pet.noProject") }}</span>
+            </button>
+            <div v-if="recentDirs.length > 0" class="px-2 pt-1.5 pb-0.5 text-[9px] uppercase tracking-wide text-gray-500">
+              {{ t("pet.recentProjects") }}
+            </div>
+            <button
+              v-for="d in recentDirs"
+              :key="d"
+              class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
+                     dark:hover:bg-[#26262f] transition-colors"
+              :title="d"
+              @click="pickDir(d)"
+            >
+              <Check :size="11" class="flex-shrink-0" :class="d === config.directory ? 'text-indigo-500' : 'opacity-0'" />
+              <span class="text-[11px] truncate">{{ d.replace(/\/+$/, "").split("/").pop() || d }}</span>
+            </button>
+            <div class="my-1 border-t border-gray-100 dark:border-[#26262f]"></div>
+            <button
+              class="w-full flex items-center gap-2 px-2 py-1.5 text-left hover:bg-gray-50
+                     dark:hover:bg-[#26262f] transition-colors"
+              @click="browseDir"
+            >
+              <FolderOpen :size="11" class="flex-shrink-0 text-gray-500" />
+              <span class="text-[11px] text-gray-600 dark:text-gray-500">{{ t("pet.openFolder") }}</span>
+            </button>
+            </div>
+          </Teleport>
+        </div>
+
+        <div class="relative min-w-0" data-pet-popover>
+          <button :class="CHIP" :title="t('pet.permission')" @click="toggleMenu('perm', $event)">
+            <ShieldCheck :size="11" class="flex-shrink-0 opacity-70" />
+            <span class="truncate">{{ permissionLabel || t("pet.permission") }}</span>
+            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
+          </button>
+          <Teleport to="body">
+            <div v-if="openMenu === 'perm'" :class="MENU" :style="menuStyle" data-pet-popover>
+            <button
+              v-for="o in permissionOptions"
+              :key="o.id"
+              class="w-full flex items-start gap-2 px-2 py-1.5 text-left hover:bg-gray-50
+                     dark:hover:bg-[#26262f] transition-colors"
+              @click="pickPermission(o.id)"
+            >
+              <Check
+                :size="11"
+                class="flex-shrink-0 mt-px"
+                :class="o.id === config.permissionMode ? 'text-indigo-500' : 'opacity-0'"
+              />
+              <span class="min-w-0 flex-1">
+                <span class="block text-[11px]">{{ o.label }}</span>
+                <span class="block text-[9px] text-gray-500 leading-snug">{{ o.description }}</span>
+              </span>
+            </button>
+            <div
+              v-if="config.permissionMode === 'ask_approval'"
+              class="mx-2 mt-1 mb-0.5 px-2 py-1.5 rounded-md bg-amber-50 dark:bg-amber-500/10
+                     text-[9px] leading-snug text-amber-600 dark:text-amber-400"
+            >
+              {{ t("pet.deniedNote") }}
+            </div>
+            </div>
+          </Teleport>
+        </div>
+
+        <div class="relative min-w-0" data-pet-popover>
+          <button :class="CHIP" :title="modelLabel || t('pet.model')" @click="openModelMenu($event)">
+            <span class="truncate">{{ modelLabel || t("pet.model") }}</span>
+            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
+          </button>
+          <Teleport to="body">
+            <div v-if="openMenu === 'model'" :class="MENU" :style="menuStyle" data-pet-popover>
+            <button
+              v-for="m in availableModels"
+              :key="m.id"
+              class="w-full flex items-center gap-1.5 px-2 py-1.5 text-left transition-colors"
+              :class="isUnavailableLocalModel(m)
+                ? 'opacity-50 cursor-pointer hover:bg-gray-50 dark:hover:bg-[#26262f]'
+                : 'hover:bg-gray-50 dark:hover:bg-[#26262f]'"
+              :title="isUnavailableLocalModel(m) ? t('pet.localModelNotRunning') : (m.alias || m.name)"
+              @click="pickModel(m.id)"
+            >
+              <Check
+                :size="11"
+                class="flex-shrink-0"
+                :class="m.id === config.modelId ? 'text-indigo-500' : 'opacity-0'"
+              />
+              <span class="min-w-0 flex-1">
+                <span class="block text-[11px] truncate">{{ m.alias || m.name }}</span>
+                <span
+                  class="block text-[9px] truncate"
+                  :class="isUnavailableLocalModel(m) ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500'"
+                >
+                  {{ isUnavailableLocalModel(m) ? t("pet.localModelNotRunning") : m.provider_name }}
+                </span>
+              </span>
+            </button>
+            <div v-if="availableModels.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
+              {{ t("pet.model") }} —
+            </div>
+            </div>
+          </Teleport>
+        </div>
+
+        <button
+          :class="[
+            CHIP,
+            config.noThinking
+              ? 'bg-gray-200 dark:bg-[#26262f] text-gray-500'
+              : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10',
+          ]"
+          :title="t('pet.reasoning')"
+          @click="toggleReasoning"
+        >
+          <Brain :size="11" class="flex-shrink-0" />
+        </button>
+      </div>
+
+      <!-- Staged attachments list. Teleported like the option menus so it is
+           never clipped by the action row (`overflow-hidden`) and uses the same
+           open-up/​open-down anchoring. -->
+      <Teleport to="body">
+        <div
+          v-if="attachedFiles.length > 0 && attachListOpen"
+          :class="MENU"
+          :style="menuStyle"
+          class="w-[280px]"
+          data-pet-popover
+        >
+          <div
+            v-for="f in attachedFiles"
+            :key="f.path"
+            class="group flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-[#26262f]"
+          >
+            <Paperclip :size="11" class="text-gray-400 flex-shrink-0" />
+            <div class="flex-1 min-w-0">
+              <div class="text-[11px] truncate" :title="f.path">{{ f.name }}</div>
+              <div class="text-[9px] text-gray-500 truncate">{{ f.path }}</div>
+            </div>
+            <span class="text-[9px] text-gray-500 flex-shrink-0">{{ formatFileSize(f.size) }}</span>
+            <button
+              class="p-1 rounded text-gray-400 hover:text-red-500 transition-colors flex-shrink-0 cursor-pointer"
+              :title="t('pet.removeAttachment')"
+              @click="removeAttachedFile(f.path)"
+            >
+              <X :size="11" />
+            </button>
+          </div>
+        </div>
+      </Teleport>
     </div>
   </div>
 </template>
@@ -645,5 +817,17 @@ onBeforeUnmount(() => {
 :global(body),
 :global(#app) {
   background: transparent !important;
+}
+
+/*
+ * The shared message list is designed for the main window's ~896px chat column,
+ * where its agent bubble never reaches the global `min-width: 320px` floor. The
+ * popup can be dragged down to 360px, where the bubble would be ~296px wide —
+ * and `min-width` beats `max-width` in CSS, so the bubble would overflow its row
+ * (a 24px horizontal scroll inside a 460px card). Drop the floor here only; the
+ * main window is unaffected.
+ */
+:deep(.msg-agent-bubble) {
+  min-width: 0;
 }
 </style>

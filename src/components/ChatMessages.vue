@@ -51,7 +51,15 @@ export interface Message {
 }
 
 // ═══ Props ═══
-const props = defineProps<{ messages: Message[]; agentId?: string; active?: boolean }>();
+// `active` defaults to TRUE. Vue's Boolean-prop rule makes an omitted Boolean
+// prop `false`, which would silently mean "background session" and render the
+// placeholder instead of the transcript — exactly the blank-transcript bug the
+// pet popup hit. Defaulting to true matches the intent documented on the root
+// element ("only an explicit false renders the placeholder").
+const props = withDefaults(
+  defineProps<{ messages: Message[]; agentId?: string; active?: boolean }>(),
+  { active: true },
+);
 const emit = defineEmits<{ (e: "contentUpdated"): void }>();
 
 // ═══ Message Groups: consecutive agent messages merge into one bubble ═══
@@ -246,6 +254,78 @@ const toolExpanded = ref<Set<string>>(new Set());
 const respondedPermissions = ref<Set<string>>(new Set());
 const respondedInteractions = ref<Set<string>>(new Set());
 
+// ═══ Activity timeline (thinking + tool calls) — collapsed to ONE live line ═══
+//
+// A group merges every consecutive agent message, so a long task stacks dozens of
+// thinking blocks and tool calls inside a single bubble and pushes the actual
+// answer off screen. Collapsed, the group renders only its LATEST activity as one
+// line that keeps changing as work proceeds ("运行 Bash · 3s"); expanding reveals
+// the full list. Keyed by group index (stable: groups are only ever appended to).
+const activityExpanded = ref<Set<number>>(new Set());
+
+/**
+ * Per-group summary of its activity blocks.
+ *
+ * `latest` is the "${messageIndex}:think" / "${messageIndex}:${toolIndex}" key of
+ * the last activity, so the template can ask "am I the one to show?" from inside
+ * either the thinking or the tool loop. `count` decides whether collapsing is
+ * worth it at all — a single activity renders exactly as before.
+ */
+const groupActivityInfo = computed(() => {
+  const info = new Map<number, { latest: string; count: number }>();
+  messageGroups.value.forEach((group, gIdx) => {
+    if (group.type !== "agent") return;
+    let latest = "";
+    let count = 0;
+    for (const { msg, oi } of group.items) {
+      // Order matters: a message's thinking precedes its tool calls in time.
+      if (msg.thinking) {
+        count++;
+        latest = `${oi}:think`;
+      }
+      const tools = msg.toolCalls ?? [];
+      for (let ti = 0; ti < tools.length; ti++) {
+        count++;
+        latest = `${oi}:${ti}`;
+      }
+    }
+    info.set(gIdx, { latest, count });
+  });
+  return info;
+});
+
+/** Whether a given activity block should render (everything renders once expanded). */
+function isActivityVisible(gIdx: number, key: string): boolean {
+  const info = groupActivityInfo.value.get(gIdx);
+  // Unknown group or a lone activity → render normally (no collapsing).
+  if (!info || info.count <= 1) return true;
+  return activityExpanded.value.has(gIdx) || info.latest === key;
+}
+
+/**
+ * Tool calls of one message that should render, paired with their index.
+ *
+ * Collapsed, only the group's latest activity survives — and it may be a thinking
+ * block rather than a tool call, in which case NOTHING here renders. Expanding
+ * (or a group with a single activity) returns everything unchanged.
+ */
+function visibleTools(
+  gIdx: number,
+  msgIdx: number,
+): { tc: ToolCall; ti: number }[] {
+  const msg = props.messages[msgIdx];
+  const tools = msg?.toolCalls ?? [];
+  const info = groupActivityInfo.value.get(gIdx);
+  // No collapsing for this group: every tool call renders as before.
+  if (!info || info.count <= 1) return tools.map((tc, ti) => ({ tc, ti }));
+  if (activityExpanded.value.has(gIdx)) return tools.map((tc, ti) => ({ tc, ti }));
+  const visible: { tc: ToolCall; ti: number }[] = [];
+  tools.forEach((tc, ti) => {
+    if (isActivityVisible(gIdx, `${msgIdx}:${ti}`)) visible.push({ tc, ti });
+  });
+  return visible;
+}
+
 // 用户手动切换过的 thinking 索引。一旦用户主动点过（展开或收起），自动
 // 展开/折叠逻辑就不再干预该条 thought——否则流式 chunk 触发的 deep watch
 // 会反复把用户刚展开的历史 thought 折叠回去，表现为"没法展开，一直折叠"。
@@ -259,11 +339,30 @@ function shouldAutoExpandThinking(msg: Message): boolean {
 watch(
   () => props.messages,
   (msgs) => {
+    // Auto-expanding a thought is suppressed while its group is collapsed: the
+    // whole point of collapsing is one line of live progress, and expanding the
+    // thought text would push the answer down again. The label line stays; the
+    // body appears only after the user opens the group or clicks the thought.
+    const collapsedOwningGroup = (idx: number): boolean => {
+      const groups = messageGroups.value;
+      for (let g = 0; g < groups.length; g++) {
+        if (groups[g].items.some((it) => it.oi === idx)) {
+          const info = groupActivityInfo.value.get(g);
+          return !!info && info.count > 1 && !activityExpanded.value.has(g);
+        }
+      }
+      return false;
+    };
+
     let hasActiveThinking = false;
     for (let i = 0; i < msgs.length; i++) {
       // Auto-expand thinking that hasn't reached content phase yet
       // (skip thoughts the user explicitly toggled)
-      if (!userToggledThinking.value.has(i) && shouldAutoExpandThinking(msgs[i])) {
+      if (
+        !userToggledThinking.value.has(i) &&
+        shouldAutoExpandThinking(msgs[i]) &&
+        !collapsedOwningGroup(i)
+      ) {
         thinkingExpanded.value.add(i);
         hasActiveThinking = true;
       }
@@ -298,6 +397,12 @@ function toggleToolCall(msgIdx: number, toolIdx: number) {
   const key = `${msgIdx}-${toolIdx}`;
   if (toolExpanded.value.has(key)) toolExpanded.value.delete(key);
   else toolExpanded.value.add(key);
+}
+
+/** Collapse/expand a group's activity timeline (see `isActivityCollapsed`). */
+function toggleActivity(gIdx: number) {
+  if (activityExpanded.value.has(gIdx)) activityExpanded.value.delete(gIdx);
+  else activityExpanded.value.add(gIdx);
 }
 
 // ═══ Tool detail log expansion — show FULL input/output on demand ═══
@@ -967,11 +1072,28 @@ function truncateLabel(label: string, maxLen = 32): string {
           <span v-else class="text-[13px] font-bold text-gray-400">A</span>
         </div>
         <div class="msg-agent-bubble max-w-[85%] px-5 py-4">
+          <!-- Activity timeline header: when a group has more than one thinking
+               block / tool call, everything but the LATEST is hidden so the
+               answer stays on screen. The line changes as work proceeds; this
+               button reveals the full record. -->
+          <button
+            v-if="groupActivityInfo.get(gIdx) && groupActivityInfo.get(gIdx)!.count > 1"
+            @click="toggleActivity(gIdx)"
+            class="w-full flex items-center gap-1 px-1 py-0.5 mb-2 text-[11px] text-gray-400 hover:text-gray-600 transition-colors cursor-pointer text-left"
+          >
+            <ChevronDown v-if="activityExpanded.has(gIdx)" :size="10" />
+            <ChevronRight v-else :size="10" />
+            <span class="truncate">{{
+              activityExpanded.has(gIdx)
+                ? $t("chat.toolHideAll")
+                : $t("chat.toolShowAll", { count: groupActivityInfo.get(gIdx)!.count })
+            }}</span>
+          </button>
           <!-- Iterate each message in the group -->
           <template v-for="(item, ii) in group.items" :key="item.oi">
             <!-- Thinking -->
             <div
-              v-if="item.msg.thinking"
+              v-if="item.msg.thinking && isActivityVisible(gIdx, `${item.oi}:think`)"
               :class="ii > 0 ? 'mt-3 pt-3 border-t border-gray-100' : ''"
               class="mb-2.5"
             >
@@ -1007,11 +1129,15 @@ function truncateLabel(label: string, maxLen = 32): string {
 
             <!-- Tool calls for this message -->
             <div
-              v-if="item.msg.toolCalls && item.msg.toolCalls.length > 0"
+              v-if="
+                item.msg.toolCalls &&
+                item.msg.toolCalls.length > 0 &&
+                visibleTools(gIdx, item.oi).length > 0
+              "
               class="mb-2.5 space-y-1.5"
             >
               <div
-                v-for="(tc, ti) in item.msg.toolCalls"
+                v-for="{ tc, ti } in visibleTools(gIdx, item.oi)"
                 :key="ti"
               >
                 <button

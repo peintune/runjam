@@ -1,11 +1,15 @@
 /**
  * Desktop-pet conversation engine.
  *
- * The pet popup is a *lightweight* Q&A surface, but it deliberately reuses the
- * real session machinery rather than talking to the model directly: questions
- * go through a genuine agent session (ACP), so the pet inherits the same
- * models, the same permission handling and the same streaming events as the
- * main window — "复用新建会话的能力".
+ * The pet popup reuses the real session machinery rather than talking to the
+ * model directly: questions go through a genuine agent session (ACP), so the
+ * pet inherits the same models, the same permission handling and the same
+ * streaming events as the main window — "复用新建会话的能力".
+ *
+ * It also reuses the main window's *rendering*: the transcript is the shared
+ * `ChatMessages` component and the messages are the same `Message` shape, so a
+ * turn looks identical in both places (markdown, thinking, tool calls,
+ * permission prompts, attachments at the bottom).
  *
  * Behaviour agreed with the product owner:
  * - The pet owns a *dedicated* session (never the main window's active one),
@@ -23,13 +27,17 @@
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
+// The popup renders its transcript with the main window's own message list, so
+// it consumes/lists the very same `Message` shape (thinking, tool calls,
+// permission prompts). Reusing the type — rather than a reduced copy — is what
+// keeps the two surfaces in sync as the main window evolves.
+import type { Message } from "../components/ChatMessages.vue";
 import {
   startSession as apiStartSession,
   sendInput,
   stopSession,
   sessionAlive,
   setSessionPermissionMode,
-  respondPermission,
 } from "../api/sessions";
 import {
   getLastAgent,
@@ -45,6 +53,13 @@ import {
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { listSkills, type SkillInfo } from "../api/sessions";
 import { setReasoningDisabled } from "../api/proxy";
+import { useLlamaStore } from "../stores/useLlamaStore";
+import {
+  buildAttachmentPayload,
+  attachmentDisplaySuffix,
+  pickAttachedFiles,
+  type AttachedFile,
+} from "./useAttachments";
 import {
   saveSession,
   saveConversationMessage,
@@ -127,13 +142,69 @@ export function mergeStreamedText(accumulated: string, chunk: string): string {
  * model output.
  *
  * The backend pushes the ACP session id as a `text` event prefixed with
- * `__ACP_SESSION_ID__` (see `acp_client.rs`). The popup is a plain-text surface
- * with no filtering, so without this it renders the raw marker — the
- * `__ACP_SESSION_ID__xxxx` the user sees on every new conversation.
- * Exported so the rule is unit-testable.
+ * `__ACP_SESSION_ID__` (see `acp_client.rs`). It is protocol plumbing, not model
+ * output, so without this it would render as the raw marker — the
+ * `__ACP_SESSION_ID__xxxx` the user would otherwise see on every new
+ * conversation. Exported so the rule is unit-testable.
  */
 export function isInternalStreamChunk(content: string): boolean {
   return content.startsWith(ACP_SESSION_ID_MARKER);
+}
+
+/**
+ * Last path segment of a model path ("a/b/Qwen3.gguf" → "Qwen3.gguf").
+ *
+ * llama.cpp reports the model as a full path while `models.json` stores a bare
+ * file name (or another path form), so comparisons must be on the file name —
+ * the same rule the main window's `getFilename` uses. Handles both separators so
+ * a path recorded on Windows still matches.
+ */
+export function baseName(pathOrName: string): string {
+  const parts = pathOrName.split(/[/\\]/);
+  return parts[parts.length - 1] || pathOrName;
+}
+
+/**
+ * Whether a model cannot be used from the popup because its local server is not
+ * the one currently running.
+ *
+ * Only LOCAL (llama.cpp) models are affected: they are served by a single
+ * process, so a model is usable only when it is the one that process has loaded.
+ * Starting a server is a Settings-page action, so the popup greys these out and
+ * routes the user there. Every non-local model is always usable.
+ */
+export function isLocalModelUnavailable(
+  model: { provider: string; name: string },
+  runningPort: number,
+  runningModel: string | null,
+): boolean {
+  if (model.provider !== "llama") return false;
+  if (!runningPort || !runningModel) return true;
+  return baseName(runningModel) !== baseName(model.name);
+}
+
+/**
+ * Settle every "still running" marker on the transcript after a turn is halted.
+ *
+ * ACP has no interrupt call, so stopping kills the agent process — which means
+ * no `finish` event ever arrives to clear these flags. Left alone they keep the
+ * composer locked (`busy`) and the transcript animating (the `now` tick) forever,
+ * so a stopped session would look like it were still answering. The main window
+ * has the same cleanup for the same reason.
+ *
+ * Tool calls are marked `failed`, not `completed`: the tool was interrupted, and
+ * a success check would misreport what happened.
+ *
+ * Mutates in place (the message objects are reactive and shared with the view).
+ */
+export function settleInterruptedMessages(messages: PetMessage[]): void {
+  for (const m of messages) {
+    if (m.role !== "agent") continue;
+    m.isProcessing = false;
+    for (const tc of m.toolCalls ?? []) {
+      if (tc.status === "started" || tc.status === "running") tc.status = "failed";
+    }
+  }
 }
 
 /** Session id + creation time of the pet's current conversation, persisted so
@@ -219,13 +290,13 @@ export function normalizePetConfig(raw: unknown): PetConfig {
   };
 }
 
-export interface PetMessage {
-  role: "user" | "agent";
-  content: string;
-  /** True while this agent message is still streaming. */
-  streaming?: boolean;
-  error?: boolean;
-}
+/**
+ * The pet's transcript uses the main window's own `Message` shape (imported
+ * above), so the shared `ChatMessages` component renders it unchanged. A
+ * distinct alias here documents that this array is the pet's — not a second
+ * type with its own fields to keep in sync.
+ */
+export type PetMessage = Message;
 
 function loadStored(): PetStoredSession | null {
   try {
@@ -311,14 +382,51 @@ export function usePetChat() {
   const availableSkills = ref<SkillInfo[]>([]);
   /** Recent project directories (shared with the main window). */
   const recentDirs = ref<string[]>(loadRecentDirs());
+  /** Files attached to the message being composed (parsed at send time). */
+  const attachedFiles = ref<AttachedFile[]>([]);
+
+  // Local llama.cpp server state, shared with the settings page via Pinia, so
+  // the popup can tell whether a local model is actually running (only then is
+  // it selectable — starting a server is done from Settings).
+  const llamaStore = useLlamaStore();
 
   let unlisten: UnlistenFn | null = null;
   let lastActivityAt = 0;
-  /** Accumulates the current streaming agent message. */
+  /** Accumulates the current streaming agent message's text. */
   let streamBuffer = "";
+  /** Accumulates the current thinking block (separate from `streamBuffer`:
+   *  a turn interleaves thought → text → tools, each into its own bubble). */
+  let thinkingBuffer = "";
+  /** When the current thinking block began, for the "Thought • 3s" label. */
+  let thinkingStartTime = 0;
+  /** Frozen thinking duration once the block ends (agent switched to text). */
+  let thoughtDuration = "";
+  /** When the whole turn began, for the message's total duration. */
+  let turnStartTime = 0;
+  /**
+   * True when the session's agent process was (re)started and therefore has no
+   * memory of the transcript so far.
+   *
+   * Set by `restartSessionProcess`. The next `send` then hands the recent turns
+   * to the agent as context — without it, a process swapped in after a config
+   * change or a Stop would answer with no idea what the conversation was about.
+   */
+  let processFresh = false;
 
   const hasMessages = computed(() => messages.value.length > 0);
   const canSend = computed(() => input.value.trim().length > 0 && !sending.value);
+
+  /**
+   * Independent snapshot of whether the composer must be locked.
+   *
+   * `sending` is set by `send()` and cleared on `finish`; but a backgrounded
+   * popup can miss the finish (window hidden mid-turn), so the transcript's own
+   * `isProcessing` flags are the source of truth for the UI. Derived rather than
+   * duplicated so the two can never disagree.
+   */
+  const busy = computed(
+    () => sending.value || messages.value.some((m) => m.role === "agent" && m.isProcessing === true),
+  );
 
   /** Persist the toolbar choices so they pre-fill next time. */
   function persistConfig() {
@@ -336,17 +444,61 @@ export function usePetChat() {
     }
   }
 
-  /** Load the models assigned to `agent`. */
+  /**
+   * Load the models the popup can pick from, mirroring the main window.
+   *
+   * Uses `getModels()` (ALL configured models) rather than `getAgentModels()`
+   * (only those explicitly assigned to one agent): the agent-joins filter hid
+   * every model the user had not pre-assigned, which in particular hid local
+   * llama models — so the popup could not select a running local model at all.
+   *
+   * `agent` is accepted but no longer filters: the main window shows the same
+   * full list regardless of the selected agent, and the popup must match it.
+   */
   async function loadModelsFor(agent: string) {
-    if (!agent) {
-      availableModels.value = [];
-      return;
-    }
+    void agent; // kept for call-site compatibility; see the note above
     try {
-      availableModels.value = await getAgentModels(agent);
+      const list = await getModels();
+      availableModels.value = withRunningLocalModel(list);
     } catch {
       availableModels.value = [];
     }
+  }
+
+  /**
+   * Ensure the currently-running local model appears in the list.
+   *
+   * A llama server started outside the settings page (another instance, a
+   * previous run) is not in `models.json`, so the popup would have no way to
+   * pick the model that is actually serving. The main window auto-adds it the
+   * same way; add it here only when the running model is known.
+   */
+  function withRunningLocalModel(list: ModelEntry[]): ModelEntry[] {
+    const port = llamaStore.runningPort;
+    const running = llamaStore.runningModel;
+    if (!port || !running) return list;
+    const file = baseName(running);
+    if (list.some((m) => m.provider === "llama" && baseName(m.name) === file)) return list;
+    return [
+      ...list,
+      {
+        id: `llama-${running}-auto`,
+        name: running,
+        alias: file,
+        provider: "llama",
+        provider_name: "Llama",
+        provider_icon: "llama",
+        api_base: `http://localhost:${port}/v1`,
+        api_key: "llama",
+        protocol: "openai_chat",
+        context_window: 0,
+        support_reasoning: false,
+        support_tools: true,
+        tags: [],
+        use_proxy: false,
+        force_reasoning_none: false,
+      } as ModelEntry,
+    ];
   }
 
   /** Load the built-in skill catalog. */
@@ -360,7 +512,16 @@ export function usePetChat() {
 
   /** Refresh everything the toolbar needs. */
   async function loadOptions() {
-    await Promise.all([loadAgents(), loadSkills()]);
+    // The popup is its OWN webview with its OWN Pinia instance: nothing has
+    // populated the llama store here (App.vue does that for the main window), so
+    // without this the local server would always look stopped and every local
+    // model would be greyed out as unavailable. Refresh BEFORE loading models so
+    // `withRunningLocalModel` sees the running model.
+    await Promise.all([
+      loadAgents(),
+      loadSkills(),
+      llamaStore.refresh().catch(() => {}),
+    ]);
     await loadModelsFor(config.value.agentId);
     recentDirs.value = loadRecentDirs();
   }
@@ -368,7 +529,9 @@ export function usePetChat() {
   /** Surface an error in the transcript. The pet windows do not mount App.vue,
    *  so the global toast host is unavailable — errors belong inline here. */
   function pushError(text: string) {
-    messages.value.push({ role: "agent", content: text, error: true });
+    // No dedicated `error` flag on the shared `Message` type — the main window
+    // reports failures as ordinary agent text too, so they render identically.
+    messages.value.push({ role: "agent", content: text, isProcessing: false });
   }
 
   /** Resolve which agent to use: the toolbar's explicit pick when it is still
@@ -405,6 +568,17 @@ export function usePetChat() {
   /** Resolve the model to use: the toolbar's explicit pick, else the agent's
    *  stored session-model default, else the first model assigned to it. */
   async function resolveDefaultModel(agent: string): Promise<ModelEntry | null> {
+    // The popup's own selectable list FIRST: it is a superset of the persisted
+    // models, because it also contains the auto-added entry for a local model
+    // that is running but not recorded in `models.json` (started by another
+    // instance, or renamed on disk). Looking only at `getModels()` would fail to
+    // find that id and silently fall back to a DIFFERENT model — the user would
+    // then chat with the wrong model believing they picked the local one.
+    if (config.value.modelId) {
+      const pickedHere = availableModels.value.find((m) => m.id === config.value.modelId);
+      if (pickedHere) return pickedHere;
+    }
+
     let models: ModelEntry[] = [];
     try {
       models = await getModels();
@@ -459,12 +633,22 @@ export function usePetChat() {
     }
     sessionId.value = "";
     streamBuffer = "";
+    thinkingBuffer = "";
+    thoughtDuration = "";
+    thinkingStartTime = 0;
+    turnStartTime = 0;
+    processFresh = false;
     saveStored(null);
   }
 
   /** Subscribe to this session's streamed ACP events and fold them into the
-   *  message list. Only text/error/finish matter for a Q&A popup — tool calls
-   *  and thinking are ignored to keep the UI minimal. */
+   *  transcript.
+   *
+   * Mirrors the main window's `handleAcpEvent`: a turn is not just text — it
+   * interleaves thinking blocks, tool calls and (sometimes) permission prompts,
+   * and each phase gets its own bubble. The shared `ChatMessages` component
+   * renders all of it, so the popup has to accumulate the same structure the
+   * main window does, or those sections would simply never appear. */
   async function attachListener(id: string) {
     if (unlisten) {
       try { unlisten(); } catch {}
@@ -475,88 +659,258 @@ export function usePetChat() {
       if (p.session_id !== id) return;
       lastActivityAt = Date.now();
       switch (p.type) {
-        case "permission_request": {
-          // Safety net. The session is started with `approve_for_me`, so the
-          // backend normally auto-approves before this ever reaches us. If the
-          // mode is unavailable for an agent (or the user picked read_only),
-          // the request would otherwise hang the turn: the popup has no
-          // permission UI, so no `finish` would ever arrive and the composer
-          // would stay disabled forever. Deny it and surface a readable note.
-          const requestId = p.request_id || "";
-          if (requestId) {
-            respondPermission(id, requestId, "deny").catch(() => {});
-          }
-          const what = p.prompt ? `「${p.prompt}」` : "一个操作";
-          pushError(`需要授权才能执行${what}，已自动拒绝。可改用主窗口完成该操作。`);
-          finalizeStreaming();
-          sending.value = false;
+        case "start": {
+          // A new agent bubble. If the previous one already carried text, keep
+          // it (Gemini emits several messages per turn) — just open a fresh
+          // bubble for what follows.
+          if (streamBuffer) persist("agent", streamBuffer);
+          messages.value.push({ role: "agent", content: "", startTime: Date.now(), isProcessing: true });
+          streamBuffer = "";
+          thinkingBuffer = "";
+          thoughtDuration = "";
+          thinkingStartTime = 0;
+          if (turnStartTime === 0) turnStartTime = Date.now();
+          sending.value = true;
           break;
         }
-        case "start":
-          streamBuffer = "";
+        case "thinking": {
+          // If the current bubble already has text or tools, the thought belongs
+          // to a NEW bubble so the transcript reads linearly.
+          const lastThink = lastAgentMsg(messages.value);
+          if (lastThink && (lastThink.content || (lastThink.toolCalls?.length ?? 0) > 0)) {
+            pushPhaseMessage();
+            thinkingBuffer = "";
+            thoughtDuration = "";
+            thinkingStartTime = 0;
+          }
+          if (p.content) {
+            if (thinkingStartTime === 0) thinkingStartTime = Date.now();
+            // Snapshot vs delta: Gemini resends the whole thought each chunk,
+            // Claude/Codex send deltas — same heuristic as text (see
+            // `mergeStreamedText`).
+            thinkingBuffer = mergeStreamedText(thinkingBuffer, p.content);
+            ensureAgentMsg().thinking = thinkingBuffer;
+          }
+          if (p.status === "done" || p.duration) {
+            thoughtDuration = thinkingStartTime > 0
+              ? formatDuration(Date.now() - thinkingStartTime)
+              : (p.duration || thoughtDuration);
+            if (p.status === "done") thinkingStartTime = 0;
+            ensureAgentMsg().thoughtDuration = thoughtDuration;
+          }
           break;
+        }
         case "text": {
+          const content = p.content ?? "";
           // The backend smuggles the ACP session id through a `text` event with
           // this magic prefix (see acp_client.rs). It is protocol plumbing, not
           // model output — showing it would leak `__ACP_SESSION_ID__xxxx` into
           // the transcript. The main window filters it the same way.
-          const content = p.content ?? "";
           if (isInternalStreamChunk(content)) break;
+          // Thinking → text transition freezes the thought's timer.
+          if (thinkingStartTime > 0) {
+            thoughtDuration = formatDuration(Date.now() - thinkingStartTime);
+            thinkingStartTime = 0;
+            ensureAgentMsg().thoughtDuration = thoughtDuration;
+          }
           // Snapshot-aware merge: Claude/Gemini resend the whole message each
           // chunk, Codex sends deltas — see `mergeStreamedText`.
           streamBuffer = mergeStreamedText(streamBuffer, content);
-          upsertStreaming(streamBuffer);
+          // Text resuming after a tool call belongs in a new bubble, otherwise
+          // it mixes into the tool-only bubble.
+          const lastText = lastAgentMsg(messages.value);
+          if (!content && lastText && (lastText.toolCalls?.length ?? 0) > 0 && !lastText.content) {
+            pushPhaseMessage();
+          }
+          ensureAgentMsg().content = streamBuffer;
+          break;
+        }
+        case "tool_call": {
+          // Text phase ended → next text belongs to a later bubble.
+          streamBuffer = "";
+          const lastToolCheck = lastAgentMsg(messages.value);
+          if (lastToolCheck && lastToolCheck.content) pushPhaseMessage();
+
+          const tc = ensureAgentMsg();
+          if (!tc.toolCalls) tc.toolCalls = [];
+          const toolName = p.tool_name || "";
+          const isRunning = p.status === "running";
+          if (isRunning) {
+            // `tool_call_update` (running) refreshes the in-flight entry rather
+            // than appending a duplicate.
+            let found = false;
+            for (let i = tc.toolCalls.length - 1; i >= 0; i--) {
+              const existing = tc.toolCalls[i];
+              if ((existing.status === "started" || existing.status === "running") && existing.toolName === toolName) {
+                if (p.input) existing.input = p.input;
+                if (p.title) existing.title = p.title;
+                existing.status = "running";
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              tc.toolCalls.push({ toolName, input: p.input || "", status: "running", startTime: p.start_time, title: p.title });
+            }
+          } else {
+            tc.toolCalls.push({ toolName, input: p.input || "", status: p.status || "started", startTime: p.start_time, title: p.title });
+          }
+          break;
+        }
+        case "tool_result": {
+          // Attach the output to the message that owns the tool call — which may
+          // not be the last one if a thinking bubble was pushed meanwhile.
+          const tr = lastToolMsg(messages.value) || ensureAgentMsg();
+          const toolName = p.tool_name || "";
+          if (tr.toolCalls && tr.toolCalls.length > 0) {
+            let found = false;
+            for (let i = tr.toolCalls.length - 1; i >= 0; i--) {
+              const tc = tr.toolCalls[i];
+              if (tc.status === "started" || tc.status === "running") {
+                if (!toolName || tc.toolName === toolName) {
+                  tc.output = p.output || "";
+                  const out = (p.output || "").toLowerCase();
+                  const failed =
+                    (out.includes("error:") || out.includes("failed:")) &&
+                    !out.includes("completed with no output");
+                  tc.status = failed ? "failed" : "completed";
+                  if (p.duration_ms !== undefined) tc.durationMs = p.duration_ms;
+                  if (p.title) tc.title = p.title;
+                  found = true;
+                  break;
+                }
+              }
+            }
+            if (!found) {
+              const last = tr.toolCalls[tr.toolCalls.length - 1];
+              last.output = p.output || "";
+              last.status = "completed";
+              if (p.duration_ms !== undefined) last.durationMs = p.duration_ms;
+            }
+          }
+          break;
+        }
+        case "permission_request": {
+          // Each request gets its own bubble so simultaneous prompts (e.g.
+          // WebSearch + WebFetch) don't overwrite one another. The shared
+          // `ChatMessages` component renders the option buttons and answers via
+          // `respondPermission` itself, so unlike the old popup we no longer
+          // auto-deny here.
+          messages.value.push({
+            role: "agent",
+            content: "",
+            isProcessing: true,
+            permission: {
+              requestId: p.request_id || "",
+              prompt: p.prompt || "",
+              options: p.options || [],
+              sessionId: id,
+            },
+          });
+          break;
+        }
+        case "interaction": {
+          const im = ensureAgentMsg();
+          im.interaction = { prompt: p.prompt || "", options: p.options || [], sessionId: id };
           break;
         }
         case "finish": {
-          // Commit whatever we have; a finish with no text means the agent
-          // produced nothing (e.g. it answered via a tool only).
-          finalizeStreaming();
+          // Close out the turn: no bubble is "processing" any more, and a
+          // trailing empty one (opened by a `start` that produced nothing) is
+          // dropped rather than left as a blank bubble.
           sending.value = false;
+          thinkingStartTime = 0;
+          for (const m of messages.value) {
+            if (m.role === "agent") m.isProcessing = false;
+          }
+          const last = lastAgentMsg(messages.value);
+          if (last && !last.content && !last.thinking && (last.toolCalls?.length ?? 0) === 0) {
+            messages.value.pop();
+          }
+          const tail = lastAgentMsg(messages.value);
+          if (tail) {
+            if (turnStartTime > 0) tail.totalDurationMs = Date.now() - turnStartTime;
+            const inTok = p.input_tokens || 0;
+            const outTok = p.output_tokens || 0;
+            if (p.input_tokens) tail.inputTokens = p.input_tokens;
+            if (p.output_tokens) tail.outputTokens = p.output_tokens;
+            if (p.cached_tokens) tail.cachedTokens = p.cached_tokens;
+            if (inTok + outTok > 0) tail.totalTokens = inTok + outTok;
+          }
+          if (streamBuffer) persist("agent", streamBuffer);
+          streamBuffer = "";
+          thinkingBuffer = "";
+          thoughtDuration = "";
+          turnStartTime = 0;
           break;
         }
         case "error": {
-          finalizeStreaming();
           const msg = p.message || "出错了，请重试";
-          messages.value.push({
-            role: "agent",
-            content: msg,
-            error: true,
-          });
-          persist("agent", msg);
           sending.value = false;
+          for (const m of messages.value) {
+            if (m.role === "agent") m.isProcessing = false;
+          }
+          // Drop a trailing empty placeholder so the error reads as its own line.
+          const le = lastAgentMsg(messages.value);
+          if (le && !le.content && !le.thinking) messages.value.pop();
+          messages.value.push({ role: "agent", content: msg, isProcessing: false });
+          persist("agent", msg);
+          streamBuffer = "";
+          thinkingBuffer = "";
+          turnStartTime = 0;
           break;
         }
         default:
-          // thinking / tool_call / tool_result / interaction / permission_request
-          // are intentionally not surfaced in the minimal popup.
           break;
       }
     });
   }
 
-  /** Replace the trailing streaming message with `text`, creating it if needed. */
-  function upsertStreaming(text: string) {
-    const last = messages.value[messages.value.length - 1];
-    if (last && last.role === "agent" && last.streaming) {
-      last.content = text;
-    } else {
-      messages.value.push({ role: "agent", content: text, streaming: true });
-    }
+  /** The last agent message, or null when the transcript has none yet. */
+  function lastAgentMsg(msgs: PetMessage[]): PetMessage | null {
+    for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === "agent") return msgs[i];
+    return null;
   }
 
-  function finalizeStreaming() {
-    const last = messages.value[messages.value.length - 1];
-    if (last && last.role === "agent" && last.streaming) {
-      last.streaming = false;
-      // Drop an empty bubble produced by a start/finish pair with no text.
-      if (!last.content.trim()) {
-        messages.value.pop();
-        return;
-      }
-      persist("agent", last.content);
+  /** The last agent message that carries tool calls (falls back to the last
+   *  agent message) — tool results belong there, not on a later bubble. */
+  function lastToolMsg(msgs: PetMessage[]): PetMessage | null {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "agent" && m.toolCalls && m.toolCalls.length > 0) return m;
     }
-    streamBuffer = "";
+    return lastAgentMsg(msgs);
+  }
+
+  /** Get (or create) the agent bubble that streamed content attaches to. */
+  function ensureAgentMsg(): PetMessage {
+    let m = lastAgentMsg(messages.value);
+    if (!m) {
+      m = { role: "agent", content: "", startTime: Date.now(), isProcessing: true };
+      messages.value.push(m);
+    }
+    return m;
+  }
+
+  /** Close the current bubble and open a fresh one for the next phase, so a
+   *  turn's thinking / tool / text phases read as separate entries. */
+  function pushPhaseMessage(): PetMessage {
+    for (let i = messages.value.length - 1; i >= 0; i--) {
+      if (messages.value[i].role === "agent") {
+        messages.value[i].isProcessing = false;
+        break;
+      }
+    }
+    const msg: PetMessage = { role: "agent", content: "", startTime: Date.now(), isProcessing: true };
+    messages.value.push(msg);
+    return msg;
+  }
+
+  /** Compact duration label for the thinking block ("Thought • 3s"). */
+  function formatDuration(ms: number): string {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 
   /** Persist a turn so the pet conversation can be reopened from the sidebar
@@ -587,11 +941,14 @@ export function usePetChat() {
           agentId.value = stored.agentId;
           modelId.value = stored.model;
           // The main window live-propagates permission-mode changes to every
-          // running session of an agent. If the user switched this agent to
-          // `ask_approval` mid-flight, the reused session would start gating
-          // tool calls on a prompt this popup cannot render — force the mode
-          // back to unattended for the pet's own session.
-          setSessionPermissionMode(stored.id, "approve_for_me").catch(() => {});
+          // running session of an agent. Without this, a change made for the
+          // main window would silently re-gate the pet's tools on a prompt the
+          // user did not ask for here. Re-assert the mode this popup was told to
+          // use — the user's explicit pick when they made one, otherwise the
+          // unattended default (`resolvePetPermissionMode`). The popup CAN render
+          // permission prompts now, so an explicit `ask_approval` is honoured
+          // rather than overridden.
+          setSessionPermissionMode(stored.id, config.value.permissionMode || "approve_for_me").catch(() => {});
           await attachListener(stored.id);
           // Same conversation, but the user changed agent/model/folder/skills:
           // swap the process in place. The transcript stays; only the agent
@@ -601,10 +958,17 @@ export function usePetChat() {
           }
           return true;
         }
+        // The conversation is still within its idle window but its process is
+        // gone — the user pressed Stop, or the process died. Keep the SAME
+        // session (id, transcript, sidebar entry) and just bring a process back:
+        // a brand-new session here is what littered the sidebar with duplicate
+        // "🐾 宠物会话" rows, which the user asked us to stop doing.
+        if (await restartSessionProcess(stored.id)) return true;
       }
-      // Stale or dead: retire it and start over. A stale-but-still-alive
-      // session would otherwise leak its agent process for the rest of the
-      // app's lifetime — `endSession` stops the agent, not just our state.
+      // Stale (past the idle window) or unrestartable: retire it and start over.
+      // A stale-but-still-alive session would otherwise leak its agent process
+      // for the rest of the app's lifetime — `endSession` stops the agent, not
+      // just our state.
       await endSession();
     }
     return await createSession();
@@ -668,6 +1032,9 @@ export function usePetChat() {
       if (stored && stored.id === id) {
         saveStored({ ...stored, configKey: petConfigKey(config.value), agentId: agent.id, model: model?.id || "" });
       }
+      // The new process starts with no memory of the transcript; the next send
+      // hands it the recent turns as context.
+      processFresh = true;
       await attachListener(id);
       return true;
     } catch (err) {
@@ -766,6 +1133,43 @@ export function usePetChat() {
     }
   }
 
+  /**
+   * Stop the running answer.
+   *
+   * Mirrors the main window's `handleStop`: ACP has no "interrupt" request, so
+   * the only way to halt a turn is to terminate the agent process. The LIVE
+   * flags are cleared first (the process dies without emitting a `finish`, so
+   * nothing else would clear them and the transcript would keep spinning), and
+   * the session is marked stopped so the sidebar reflects reality.
+   *
+   * The transcript is deliberately KEPT: the conversation continues, and the
+   * next send restarts a process under the same id with the recent history
+   * injected (see `send`).
+   */
+  async function stop() {
+    const id = sessionId.value;
+    sending.value = false;
+    // Settle every live marker. Without this, an `isProcessing` message (or a
+    // tool call left at "running") keeps `busy` true forever — the composer
+    // would stay locked and the transcript would keep animating.
+    settleInterruptedMessages(messages.value);
+    // A stopped turn has no more streamed text coming.
+    streamBuffer = "";
+    thinkingBuffer = "";
+    thinkingStartTime = 0;
+    turnStartTime = 0;
+    if (id) {
+      await stopSession(id).catch((err) => {
+        console.error("[pet] failed to stop session:", err);
+      });
+      // The process is gone; the next send must start a new one and give it the
+      // recent transcript, or the agent would answer with no memory of it.
+      processFresh = true;
+      // Let the main window refresh its sidebar (the row should read "stopped").
+      emit(PET_SESSION_CHANGED_EVENT, { id }).catch(() => {});
+    }
+  }
+
   /** Send the current input as a question. */
   async function send() {
     const text = input.value.trim();
@@ -774,11 +1178,32 @@ export function usePetChat() {
     const ok = await ensureSession();
     if (!ok || !sessionId.value) return;
 
-    messages.value.push({ role: "user", content: text });
-    persist("user", text);
+    // Attachments are parsed into the outgoing text but NOT shown in the
+    // transcript (only their file names are) — same split as the main window.
+    const files = attachedFiles.value;
+    let sendText = text;
+    let userDisplay = text;
+    if (files.length > 0) {
+      const { text: withAttachments, failures } = await buildAttachmentPayload(files, text);
+      sendText = withAttachments;
+      userDisplay = text + attachmentDisplaySuffix(files);
+      if (failures.length > 0) {
+        // The pet has no toast host (it never mounts App.vue), so failures are
+        // reported inline before the turn starts.
+        pushError(`附件解析失败：${failures.join("; ")}`);
+      }
+      attachedFiles.value = [];
+    }
+
+    messages.value.push({ role: "user", content: userDisplay });
+    persist("user", userDisplay);
     input.value = "";
     sending.value = true;
     streamBuffer = "";
+    thinkingBuffer = "";
+    thoughtDuration = "";
+    thinkingStartTime = 0;
+    turnStartTime = 0;
     lastActivityAt = Date.now();
     // Refresh the stored activity stamp: this is what `ensureSession` measures
     // the idle window against, so the conversation stays "alive" as long as the
@@ -788,12 +1213,27 @@ export function usePetChat() {
       saveStored({ ...stored, lastActiveAt: lastActivityAt });
     }
 
+    // A freshly (re)started process has no memory of this conversation, so hand
+    // it the last couple of exchanges — the same technique the main window uses
+    // after a restart. The just-pushed user message is excluded (the backend
+    // appends the new prompt itself); only the PRIOR turns become context.
+    let history: string[] | undefined;
+    if (processFresh) {
+      const prior = messages.value
+        .slice(0, -1)
+        .filter((m) => m.content)
+        .slice(-4)
+        .map((m) => `${m.role}: ${m.content}`);
+      if (prior.length > 0) history = prior;
+      processFresh = false;
+    }
+
     try {
-      await sendInput(sessionId.value, text);
+      await sendInput(sessionId.value, sendText, history);
       // Bump the session's recency so it sorts to the top of the sidebar.
       touchSession(sessionId.value).catch(() => {});
     } catch (err) {
-      messages.value.push({ role: "agent", content: `发送失败：${err}`, error: true });
+      messages.value.push({ role: "agent", content: `发送失败：${err}`, isProcessing: false });
       sending.value = false;
     }
   }
@@ -803,31 +1243,44 @@ export function usePetChat() {
     await endSession();
     messages.value = [];
     input.value = "";
+    attachedFiles.value = [];
     sending.value = false;
     await createSession();
   }
 
   /**
    * Hand the current conversation over to the main window: bring it to front and
-   * switch it to this session, where the full transcript (tool calls, thinking,
-   * permission dialogs) is available.
-   *
-   * The popup deliberately renders only plain text, so anything that needs the
-   * full session UI — reviewing what the agent actually did, answering a
-   * permission prompt — happens in the main window instead.
+   * switch it to this session, where the wider layout (file tree, terminal) is
+   * available. The transcript itself is the same on both surfaces.
    */
   async function openInMainWindow() {
     // Make sure there is something to open on the other side.
     if (!sessionId.value) {
       await ensureSession();
     }
+    await openMainWindowAt({ id: sessionId.value });
+  }
+
+  /**
+   * Ask the main window to come forward at a given route.
+   *
+   * The popup is a separate webview with no router, so it cannot navigate
+   * itself; the main window owns routing. Used to send a user to Settings (e.g.
+   * a local model that is not running must be started there).
+   */
+  async function openMainWindowAt(payload: { id?: string | null; route?: string }) {
     // The main window cannot be focused from a background webview, so ask the
-    // backend to do it; the event carries which session to show.
+    // backend to do it; the event carries where to go.
     await invoke("focus_main_window").catch((err) => {
       console.error("[pet] failed to focus main window:", err);
     });
-    emit(PET_OPEN_IN_MAIN_EVENT, { id: sessionId.value }).catch(() => {});
+    emit(PET_OPEN_IN_MAIN_EVENT, payload).catch(() => {});
     await close_pet_chat_silently();
+  }
+
+  /** Send the user to the local-models settings page (start a server there). */
+  async function openLocalModelsSettings() {
+    await openMainWindowAt({ id: sessionId.value || null, route: "/settings/models" });
   }
 
   /** Hide the popup without waiting on the backend — used when handing off. */
@@ -872,10 +1325,13 @@ export function usePetChat() {
       [config.value.modelId, config.value.permissionMode] = ["", ""];
       persistConfig();
       await loadModelsFor(config.value.agentId);
-      // Pre-fill the new agent's own default model so the toolbar shows what
-      // will actually run instead of an empty selector.
-      if (availableModels.value.length > 0) {
-        config.value.modelId = availableModels.value[0].id;
+      // Pre-fill a model so the toolbar shows what will actually run instead of
+      // an empty selector. Skip models that cannot be used right now: the list
+      // now includes local models, and pre-selecting one whose server is not
+      // running would arm a model that fails on send.
+      const usable = availableModels.value.find((m) => !isUnavailableLocalModel(m));
+      if (usable) {
+        config.value.modelId = usable.id;
         persistConfig();
       }
     }
@@ -915,13 +1371,63 @@ export function usePetChat() {
     recentDirs.value = loadRecentDirs();
   }
 
+  /**
+   * Whether a model is a LOCAL model (llama.cpp) that is NOT currently serving.
+   *
+   * Such a model cannot be used from the popup: starting a llama server is a
+   * settings-page action. The popup shows these greyed out and routes the user to
+   * Settings instead of silently failing on send. Non-local models are always
+   * selectable, and a local model that IS running is selectable too.
+   */
+  function isUnavailableLocalModel(model: ModelEntry): boolean {
+    return isLocalModelUnavailable(model, llamaStore.runningPort, llamaStore.runningModel);
+  }
+
+  /** Re-read the local-server state so the model menu reflects reality. */
+  async function refreshLocalServer() {
+    try {
+      await llamaStore.refresh();
+    } catch {
+      // leave the last known state; the menu just shows what it had
+    }
+    // The running model may have appeared/disappeared since the list was built.
+    availableModels.value = withRunningLocalModel(availableModels.value.filter(
+      // Drop a previously auto-added entry whose server has since stopped.
+      (m) => !(m.provider === "llama" && m.id.startsWith("llama-") && m.id.endsWith("-auto")),
+    ));
+  }
+
   /** Load a short greeting referencing the active agent/model. */
   function greet() {
     if (agentName.value || modelName.value) return;
     messages.value.push({
       role: "agent",
       content: "你好，我是 RunJam 助手。有什么可以帮你的？",
+      isProcessing: false,
     });
+  }
+
+  /** Open the native picker and stage the chosen files for the next send. */
+  async function attachFiles() {
+    try {
+      const existing = new Set(attachedFiles.value.map((f) => f.path));
+      const added = await pickAttachedFiles(existing);
+      if (added.length > 0) attachedFiles.value = [...attachedFiles.value, ...added];
+    } catch (err) {
+      console.error("[pet] attach files failed:", err);
+    }
+  }
+
+  /** Drop a staged attachment before it is sent. */
+  function removeAttachedFile(path: string) {
+    attachedFiles.value = attachedFiles.value.filter((f) => f.path !== path);
+  }
+
+  /** Stage a file the caller already knows about (e.g. a dropped path). */
+  function addAttachedFiles(files: AttachedFile[]) {
+    const existing = new Set(attachedFiles.value.map((f) => f.path));
+    const fresh = files.filter((f) => !existing.has(f.path));
+    if (fresh.length > 0) attachedFiles.value = [...attachedFiles.value, ...fresh];
   }
 
   function dispose() {
@@ -935,6 +1441,7 @@ export function usePetChat() {
     messages,
     input,
     sending,
+    busy,
     starting,
     sessionId,
     agentId,
@@ -944,11 +1451,18 @@ export function usePetChat() {
     hasMessages,
     canSend,
     send,
+    stop,
     newConversation,
     openInMainWindow,
+    openLocalModelsSettings,
     ensureSession,
     greet,
     dispose,
+    // Attachments (files staged for the next message).
+    attachedFiles,
+    attachFiles,
+    removeAttachedFile,
+    addAttachedFiles,
     // Toolbar (agent / model / folder / permission / skills / reasoning).
     config,
     availableAgents,
@@ -961,12 +1475,15 @@ export function usePetChat() {
     toggleReasoning,
     setDirectory,
     refreshRecentDirs,
+    // Local model availability (greyed out when its server is not running).
+    isUnavailableLocalModel,
+    refreshLocalServer,
     idleTimeoutMs: PET_IDLE_TIMEOUT_MS,
     getLastActivityAt: () => lastActivityAt,
   };
 }
 
-/** Minimal shape of the broadcast `acp:<id>` payload (subset of SessionView's). */
+/** Shape of the broadcast `acp:<id>` payload (subset of SessionView's `AcpPayload`). */
 interface PetAcpPayload {
   session_id: string;
   type:
@@ -980,9 +1497,21 @@ interface PetAcpPayload {
     | "finish"
     | "error";
   content?: string;
+  status?: string;
+  duration?: string;
   message?: string;
   stop_reason?: string;
   request_id?: string;
   /** Human-readable label of the tool/action a `permission_request` is about. */
   prompt?: string;
+  options?: { key: string; label: string; is_default: boolean }[];
+  tool_name?: string;
+  input?: string;
+  output?: string;
+  start_time?: number;
+  duration_ms?: number;
+  title?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
 }

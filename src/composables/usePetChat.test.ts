@@ -241,3 +241,149 @@ describe("pet session idle window (问题: 配置切换不应新建会话)", () 
     expect(isPetSessionFresh(now - PET_IDLE_TIMEOUT_MS, now)).toBe(false);
   });
 });
+
+describe("settleInterruptedMessages (停止会话时清理 live 标记)", () => {
+  it("clears isProcessing so the composer unlocks and the transcript stops animating", async () => {
+    const { settleInterruptedMessages } = await freshPetChat();
+    const messages = [
+      { role: "user" as const, content: "hi" },
+      { role: "agent" as const, content: "partial…", isProcessing: true },
+    ];
+    settleInterruptedMessages(messages as never);
+    // `busy` is derived from isProcessing — leaving it true would lock the
+    // composer forever, since no `finish` arrives when the process is killed.
+    expect(messages[1].isProcessing).toBe(false);
+  });
+
+  it("marks in-flight tool calls as failed, not completed", async () => {
+    const { settleInterruptedMessages } = await freshPetChat();
+    const messages = [
+      {
+        role: "agent" as const,
+        content: "",
+        isProcessing: true,
+        toolCalls: [
+          { toolName: "Bash", input: "…", status: "running" },
+          { toolName: "Read", input: "…", status: "started" },
+          { toolName: "Write", input: "…", status: "completed" },
+        ],
+      },
+    ];
+    settleInterruptedMessages(messages as never);
+    // An interrupted tool did not finish — a success check would mislead.
+    expect(messages[0].toolCalls?.map((t) => t.status)).toEqual([
+      "failed",
+      "failed",
+      "completed",
+    ]);
+  });
+
+  it("leaves user messages untouched", async () => {
+    const { settleInterruptedMessages } = await freshPetChat();
+    const messages = [{ role: "user" as const, content: "hi", isProcessing: true }];
+    settleInterruptedMessages(messages as never);
+    expect(messages[0].isProcessing).toBe(true);
+  });
+
+  it("tolerates a message with no toolCalls", async () => {
+    const { settleInterruptedMessages } = await freshPetChat();
+    const messages = [{ role: "agent" as const, content: "", isProcessing: true }];
+    expect(() => settleInterruptedMessages(messages as never)).not.toThrow();
+    expect(messages[0].isProcessing).toBe(false);
+  });
+});
+
+describe("baseName (本地模型文件名比较)", () => {
+  it("takes the last path segment", async () => {
+    const { baseName } = await freshPetChat();
+    expect(baseName("/Users/me/models/Qwen3-1.7B-Q4_K_M.gguf")).toBe("Qwen3-1.7B-Q4_K_M.gguf");
+  });
+
+  it("passes a bare file name through unchanged", async () => {
+    const { baseName } = await freshPetChat();
+    expect(baseName("Qwen3-1.7B-Q4_K_M.gguf")).toBe("Qwen3-1.7B-Q4_K_M.gguf");
+  });
+
+  it("handles Windows separators too", async () => {
+    // A path recorded on Windows must still match the same model.
+    const { baseName } = await freshPetChat();
+    expect(baseName("C:\\Users\\me\\models\\Qwen3.gguf")).toBe("Qwen3.gguf");
+  });
+
+  it("is what makes the running-model comparison work", async () => {
+    const { baseName } = await freshPetChat();
+    // llama.cpp reports a full path while models.json stores a bare name —
+    // comparing the raw strings would never match, so every local model would
+    // look "not running".
+    const reportedByServer = "/Users/me/Library/Application Support/com.runjam.RunJam/models/Ornith-1.5-9B-Q4_K_M.gguf";
+    const storedInConfig = "A/Ornith-1.5-9B-Q4_K_M.gguf";
+    expect(baseName(reportedByServer)).toBe(baseName(storedInConfig));
+  });
+});
+
+describe("isLocalModelUnavailable (弹框可选性)", () => {
+  const local = (name: string) => ({ provider: "llama", name });
+  const remote = { provider: "openai", name: "gpt-6-luna" };
+
+  it("never blocks a non-local model", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    // Cloud models work with no local server at all.
+    expect(isLocalModelUnavailable(remote, 0, null)).toBe(false);
+    expect(isLocalModelUnavailable(remote, 19090, "other.gguf")).toBe(false);
+  });
+
+  it("blocks a local model when no server is running", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    expect(isLocalModelUnavailable(local("Qwen3.gguf"), 0, null)).toBe(true);
+  });
+
+  it("allows the local model the server actually loaded", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    // The server reports a full path; the config stores a shorter one.
+    expect(
+      isLocalModelUnavailable(
+        local("A/Ornith-1.5-9B-Q4_K_M.gguf"),
+        19090,
+        "/Users/me/Library/Application Support/com.runjam.RunJam/models/Ornith-1.5-9B-Q4_K_M.gguf",
+      ),
+    ).toBe(false);
+  });
+
+  it("blocks a local model that is not the one running", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    // Only one local model can be served at a time.
+    expect(isLocalModelUnavailable(local("Qwen3.gguf"), 19090, "Ornith.gguf")).toBe(true);
+  });
+});
+
+describe("picking a model to use when switching agents", () => {
+  // Mirrors the selection rule in `applyConfig`: the first model that is
+  // actually usable. The popup's list now includes local models, and a local
+  // model whose server is not running must not be pre-selected — that would arm
+  // a model which fails on the next send.
+  it("skips a local model that is not running", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    const list = [
+      { provider: "llama", name: "Stopped-Qwen3.gguf" },   // first, unusable
+      { provider: "openai", name: "gpt-6-luna" },          // usable
+    ];
+    const usable = list.find((m) => !isLocalModelUnavailable(m, 0, null));
+    expect(usable?.name).toBe("gpt-6-luna");
+  });
+
+  it("prefers the running local model when it is first", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    const list = [
+      { provider: "llama", name: "Running.gguf" },
+      { provider: "openai", name: "gpt-6-luna" },
+    ];
+    const usable = list.find((m) => !isLocalModelUnavailable(m, 19090, "/m/Running.gguf"));
+    expect(usable?.name).toBe("Running.gguf");
+  });
+
+  it("falls back to nothing when every model is an unavailable local one", async () => {
+    const { isLocalModelUnavailable } = await freshPetChat();
+    const list = [{ provider: "llama", name: "A.gguf" }, { provider: "llama", name: "B.gguf" }];
+    expect(list.find((m) => !isLocalModelUnavailable(m, 0, null))).toBeUndefined();
+  });
+});

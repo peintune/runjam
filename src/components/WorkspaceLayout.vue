@@ -271,8 +271,15 @@ onMounted(async () => {
   // Desktop pet: "open in main window" from the popup. Bring the session it was
   // talking in into this window's view (leaving the task board if needed), so
   // the user lands on the full transcript instead of the minimal popup.
-  listen<{ id: string | null }>(PET_OPEN_IN_MAIN_EVENT, (e) => {
-    const id = e.payload?.id;
+  listen<{ id: string | null; route?: string }>(PET_OPEN_IN_MAIN_EVENT, (e) => {
+    const { id, route: target } = e.payload ?? {};
+    // A route request (e.g. "open Settings → Local models") needs no session:
+    // the popup uses it to hand the user off to a page it cannot render itself.
+    if (target) {
+      router.push(target).catch(() => {});
+      if (id) store.loadSessions().then(() => store.selectSession(id)).catch(() => {});
+      return;
+    }
     if (!id) return;
     store.loadSessions()
       .then(() => {

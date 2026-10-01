@@ -529,8 +529,13 @@ const userAddedModels = computed(() => {
                   </button>
                 </template>
                 <template v-else>
+                  <!-- Always rendered. It used to be hidden whenever ANY server held
+                       the port (`v-if="!runningServerPort"`), which left the page with
+                       no way forward when the port was taken by another RunJam
+                       instance or a leftover process — the buttons simply vanished.
+                       Starting either switches the server to this model or reports
+                       why it could not. -->
                   <button
-                    v-if="!runningServerPort"
                     @click="handleStartServer(rm.filename)"
                     class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                   >
@@ -599,8 +604,8 @@ const userAddedModels = computed(() => {
                 </button>
               </template>
               <template v-else>
+                <!-- Always rendered — see the note on the recommended list above. -->
                 <button
-                  v-if="!runningServerPort"
                   @click="handleStartServer(model.name)"
                   class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 active:scale-[0.98] transition-all duration-150 cursor-pointer"
                 >

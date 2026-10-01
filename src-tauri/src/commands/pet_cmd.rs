@@ -160,8 +160,12 @@ fn supports_join_all_applications() -> bool {
 ///    `FullScreenAuxiliary` remains the best available fallback.
 ///
 /// Must run on the main thread (AppKit is main-thread-only).
+///
+/// `force_reorder` re-orders the window so AppKit recomputes which Space it
+/// belongs to. Needed for the post-launch re-assert (see the note at the end of
+/// the function); a plain call at creation time does not need it.
 #[cfg(target_os = "macos")]
-fn elevate_over_fullscreen(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn elevate_over_fullscreen(window: &tauri::WebviewWindow, force_reorder: bool) -> Result<(), String> {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior as B, NSWindowStyleMask};
 
     let ptr = window
@@ -237,10 +241,23 @@ fn elevate_over_fullscreen(window: &tauri::WebviewWindow) -> Result<(), String> 
     }
     window_ref.setCollectionBehavior(behavior);
 
-    // A window that is already on screen is re-ordered so AppKit re-evaluates
-    // which Space it belongs to with the new behavior (a hidden window is left
-    // hidden — `orderFrontRegardless` would otherwise reveal it early).
+    // `setCollectionBehavior` alone does NOT move an already-visible window into
+    // the new spaces: AppKit re-evaluates a window's space only when the window
+    // is (re-)ordered or moved. `orderFrontRegardless` on an already-visible
+    // window is a no-op. That is why the icon only showed up over another app's
+    // full-screen window after the user DRAGGED it — the drag moved the window
+    // and forced the re-evaluation.
+    //
+    // `force_reorder` exists for the post-launch re-assert: by then the window is
+    // already visible and already carries the behaviour we set (too early, before
+    // AppKit assigned it a space), so a plain `orderFrontRegardless` would do
+    // nothing. `orderOut` + `orderFrontRegardless` inside one run-loop turn keeps
+    // the window on screen (AppKit commits no redraw between the two calls) while
+    // making it recompute its spaces.
     if window_ref.isVisible() {
+        if force_reorder {
+            window_ref.orderOut(None);
+        }
         window_ref.orderFrontRegardless();
     }
     Ok(())
@@ -389,16 +406,16 @@ fn attach_panel_class(window: &objc2_app_kit::NSWindow) -> Result<(), String> {
 /// Every path logs under `[pet]` so a silent no-op can be told apart from a
 /// successful elevation in the dev console.
 #[cfg(target_os = "macos")]
-fn elevate_over_fullscreen_on_main(app: &AppHandle, label: &str) {
+fn elevate_over_fullscreen_on_main(app: &AppHandle, label: &str, force_reorder: bool) {
     if objc2::MainThreadMarker::new().is_some() {
-        elevate_now(app, label);
+        elevate_now(app, label, force_reorder);
         return;
     }
 
     let app_handle = app.clone();
     let label = label.to_string();
     let label_for_err = label.clone();
-    if let Err(e) = app.run_on_main_thread(move || elevate_now(&app_handle, &label)) {
+    if let Err(e) = app.run_on_main_thread(move || elevate_now(&app_handle, &label, force_reorder)) {
         eprintln!("[pet] {label_for_err}: run_on_main_thread failed: {e}");
     }
 }
@@ -406,20 +423,38 @@ fn elevate_over_fullscreen_on_main(app: &AppHandle, label: &str) {
 /// Shared body of [`elevate_over_fullscreen_on_main`]; callers must be on the
 /// main thread.
 #[cfg(target_os = "macos")]
-fn elevate_now(app: &AppHandle, label: &str) {
+fn elevate_now(app: &AppHandle, label: &str, force_reorder: bool) {
     let Some(window) = app.get_webview_window(label) else {
         eprintln!("[pet] {label}: window not found for elevation");
         return;
     };
     // Silent on success — only a failure is worth reporting.
-    if let Err(e) = elevate_over_fullscreen(&window) {
+    if let Err(e) = elevate_over_fullscreen(&window, force_reorder) {
         eprintln!("[pet] {label}: elevation failed: {e}");
     }
 }
 
 /// No-op off macOS (Windows/Linux have no equivalent "full screen space").
 #[cfg(not(target_os = "macos"))]
-fn elevate_over_fullscreen_on_main(_app: &AppHandle, _label: &str) {}
+fn elevate_over_fullscreen_on_main(_app: &AppHandle, _label: &str, _force_reorder: bool) {}
+
+/// Re-apply the cross-application space behaviour to every pet window.
+///
+/// MUST be called once the event loop is running (i.e. from `RunEvent::Ready`),
+/// not merely from `setup()`. Windows created in `setup()` have not entered a
+/// Space yet, so `setCollectionBehavior` there is silently ineffective: the icon
+/// then stays hidden behind another app's full-screen window until something
+/// forces AppKit to re-evaluate the Space — which is exactly what dragging the
+/// icon did. Re-asserting after the loop starts makes it appear on the first
+/// full-screen switch instead.
+pub fn reassert_pet_elevation(app: &AppHandle) {
+    if app.get_webview_window(PET_ICON_LABEL).is_some() {
+        elevate_over_fullscreen_on_main(app, PET_ICON_LABEL, true);
+    }
+    if app.get_webview_window(PET_CHAT_LABEL).is_some() {
+        elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL, true);
+    }
+}
 
 /// Create the always-on-top launcher icon. Idempotent: if it already exists the
 /// window is just re-positioned (e.g. after a monitor change).
@@ -428,7 +463,7 @@ pub fn ensure_pet_icon(app: &AppHandle) -> Result<(), String> {
         let _ = existing.set_position(corner_position(app, ICON_SIZE, ICON_SIZE, ICON_MARGIN));
         // Re-assert the cross-application space behaviour (idempotent) so a
         // re-created/toggled icon is not left with only tao's defaults.
-        elevate_over_fullscreen_on_main(app, PET_ICON_LABEL);
+        elevate_over_fullscreen_on_main(app, PET_ICON_LABEL, false);
         return Ok(());
     }
 
@@ -469,15 +504,18 @@ pub fn ensure_pet_icon(app: &AppHandle) -> Result<(), String> {
         .build()
         .map_err(|e| format!("[pet] failed to create icon window: {e}"))?;
     // The builder flag only covers `CanJoinAllSpaces`; add the auxiliary layer
-    // so the icon also survives another app being full screen.
-    elevate_over_fullscreen_on_main(app, PET_ICON_LABEL);
+    // so the icon also survives another app being full screen. `force_reorder`
+    // because a window built here has not been assigned a Space yet AND tao
+    // defers its `orderFront` to `applicationDidFinishLaunching` — i.e. this
+    // window goes on screen carrying whatever behaviour it had BEFORE this call.
+    elevate_over_fullscreen_on_main(app, PET_ICON_LABEL, true);
     Ok(())
 }
 
 /// Create the chat popup (hidden). Idempotent.
 fn ensure_pet_chat(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     if let Some(existing) = app.get_webview_window(PET_CHAT_LABEL) {
-        elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL);
+        elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL, false);
         return Ok(existing);
     }
 
@@ -512,9 +550,9 @@ fn ensure_pet_chat(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let window = builder
         .build()
         .map_err(|e| format!("[pet] failed to create chat window: {e}"))?;
-    // Same auxiliary-layer treatment as the icon, so the popup stays visible
-    // when another app is full screen.
-    elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL);
+    // Same auxiliary-layer treatment as the icon (and for the same reason
+    // `force_reorder` is passed — see the icon's builder above).
+    elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL, true);
     Ok(window)
 }
 

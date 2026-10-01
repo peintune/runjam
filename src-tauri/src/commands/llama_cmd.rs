@@ -231,16 +231,53 @@ pub fn start_llama_server(model_path: String, app_handle: AppHandle) -> Result<u
     println!("[DEBUG] start_llama_server: model_path={}, model_filename={}", model_path, model_filename);
     
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
+        let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
+        // We started this server, so its identity is known — but it may have been
+        // started for a DIFFERENT model. Starting "model B" while "model A" runs
+        // must not silently relabel A as B: the user would then chat with the
+        // wrong model under B's name.
+        if let Some(running) = probe_running_model(port) {
+            if running != model_filename {
+                return Err(format!(
+                    "本地服务正在运行「{running}」，无法直接启动「{model_filename}」。请先停止当前服务，再启动该模型。"
+                ));
+            }
+        }
         *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
-        println!("[DEBUG] Server already running (flag), set LLAMA_SERVER_MODEL to: {}", model_filename);
-        return Ok(LLAMA_SERVER_PORT.load(Ordering::Relaxed));
+        println!("[DEBUG] Server already running (flag), model confirmed: {}", model_filename);
+        return Ok(port);
     }
-    
+
     if check_server_running(19090) {
+        // The server on 19090 may belong to ANOTHER RunJam instance (or be left
+        // over from a previous run). This process has no idea which model it
+        // loaded, so ask it BEFORE adopting it: silently adopting would make the
+        // UI claim the requested model is running while a different one actually
+        // answers. Validate first so a rejected request leaves no state behind.
+        let probed = probe_running_model(19090);
+        if let Some(running) = probed.as_deref() {
+            if running != model_filename {
+                return Err(format!(
+                    "端口 19090 上已有一个本地服务在运行「{running}」，它不是「{model_filename}」。请先停止该服务，再启动此模型。"
+                ));
+            }
+        }
+
         LLAMA_SERVER_PORT.store(19090, Ordering::Relaxed);
         LLAMA_SERVER_RUNNING.store(true, Ordering::Relaxed);
-        *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
-        println!("[DEBUG] Server detected on port 19090, set LLAMA_SERVER_MODEL to: {}", model_filename);
+        match probed {
+            // Confirmed to be the model the caller asked for.
+            Some(running) => {
+                *LLAMA_SERVER_MODEL.lock().unwrap() = Some(running.clone());
+                println!("[DEBUG] Adopted existing server on 19090 running {} (matches request)", running);
+            }
+            // Model could not be read; adopt it as before so a working server is
+            // still usable, but record the requested name.
+            None => {
+                *LLAMA_SERVER_MODEL.lock().unwrap() = Some(model_filename.clone());
+                println!("[DEBUG] Server detected on 19090 (model unknown), assuming {}", model_filename);
+            }
+        }
         return Ok(19090);
     }
     
@@ -406,6 +443,50 @@ fn check_server_running(port: u16) -> bool {
     }
 }
 
+/// Extract the loaded model's file name from a llama.cpp `/v1/models` payload.
+///
+/// Split out from [`probe_running_model`] so the parsing can be unit-tested
+/// against a real captured response — the network call itself cannot run in a
+/// test. Handles both shapes llama.cpp has used:
+///   - OpenAI-compatible: `{ "data": [ { "id": "<path>" } ] }`
+///   - native:            `{ "models": [ { "name": "<path>" } ] }`
+/// The value is a full path, so only the last segment is kept for comparison.
+pub(crate) fn parse_running_model(body: &serde_json::Value) -> Option<String> {
+    let list = body
+        .get("data")
+        .or_else(|| body.get("models"))
+        .and_then(|v| v.as_array())?;
+    let first = list.first()?;
+    let raw = first
+        .get("id")
+        .or_else(|| first.get("model"))
+        .or_else(|| first.get("name"))
+        .and_then(|v| v.as_str())?;
+    let file = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    if file.is_empty() {
+        None
+    } else {
+        Some(file.to_string())
+    }
+}
+
+/// Ask a running llama.cpp server which model it actually loaded.
+///
+/// The in-process `LLAMA_SERVER_MODEL` is useless for a server we did NOT start
+/// (another RunJam instance, or a process left over from a previous run): that
+/// variable is `null` in this process, so the UI would show "no model running"
+/// while the port is busy. llama.cpp reports the loaded model through the
+/// OpenAI-compatible `/v1/models` endpoint, which is the only reliable source.
+///
+/// Returns the file name (last path segment) so it can be compared against the
+/// model the user asked to start. `None` when the endpoint cannot be read.
+fn probe_running_model(port: u16) -> Option<String> {
+    let url = format!("http://127.0.0.1:{}/v1/models", port);
+    let response = ureq::get(&url).timeout(Duration::from_millis(1500)).call().ok()?;
+    let body: serde_json::Value = response.into_json().ok()?;
+    parse_running_model(&body)
+}
+
 #[tauri::command]
 pub async fn get_server_status() -> Result<serde_json::Value, String> {
     let port = LLAMA_SERVER_PORT.load(Ordering::Relaxed);
@@ -425,11 +506,17 @@ pub async fn get_server_status() -> Result<serde_json::Value, String> {
     for p in candidates.into_iter().filter(|&p| p != 0) {
         if check_server_running(p) {
             LLAMA_SERVER_PORT.store(p, Ordering::Relaxed);
-            println!("[DEBUG] Detected server on port {}, model={:?}", p, model);
+            // Fall back to asking the server itself when this process has no
+            // record of the model — the case for a server started by another
+            // instance or left over from a previous run. Without this the UI
+            // would show "nothing running" while the port is in use, which made
+            // the whole local-models page look broken.
+            let reported = model.clone().or_else(|| probe_running_model(p));
+            println!("[DEBUG] Detected server on port {}, model={:?}", p, reported);
             return Ok(serde_json::json!({
                 "running": true,
                 "port": p,
-                "model": model
+                "model": reported
             }));
         }
     }
@@ -685,4 +772,56 @@ pub fn create_llama_model(model_name: String, port: u16) -> Result<String, Strin
         "support_reasoning": false,
         "tags": ["local"],
     }).to_string())
+}
+#[cfg(test)]
+mod tests {
+    use super::parse_running_model;
+
+    /// A real response captured from a running llama-server (`GET /v1/models`).
+    /// Keeping the actual payload — rather than a hand-written minimal object —
+    /// is what makes this a regression test against reality.
+    const REAL_PAYLOAD: &str = r#"{
+      "models":[{"name":"/Users/me/Library/Application Support/com.runjam.RunJam/models/Ornith-1.5-9B-Q4_K_M.gguf","model":"/Users/me/Library/Application Support/com.runjam.RunJam/models/Ornith-1.5-9B-Q4_K_M.gguf","modified_at":"","size":"","digest":"","type":"model","description":"","tags":[""],"capabilities":["completion"],"parameters":"","details":{"parent_model":"","format":"gguf","family":"","families":[""],"parameter_size":"","quantization_level":""}}],
+      "object":"list",
+      "data":[{"id":"/Users/me/Library/Application Support/com.runjam.RunJam/models/Ornith-1.5-9B-Q4_K_M.gguf","object":"model","created":1750000000,"owned_by":"llamacpp"}]
+    }"#;
+
+    #[test]
+    fn parses_the_real_llama_server_payload() {
+        let body: serde_json::Value = serde_json::from_str(REAL_PAYLOAD).unwrap();
+        assert_eq!(
+            parse_running_model(&body).as_deref(),
+            Some("Ornith-1.5-9B-Q4_K_M.gguf"),
+        );
+    }
+
+    #[test]
+    fn accepts_the_native_models_shape() {
+        // llama.cpp's own (non-OpenAI) shape, in case a build reports it instead.
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"models":[{"name":"/x/Qwen3-1.7B-Q4_K_M.gguf"}]}"#).unwrap();
+        assert_eq!(
+            parse_running_model(&body).as_deref(),
+            Some("Qwen3-1.7B-Q4_K_M.gguf"),
+        );
+    }
+
+    #[test]
+    fn returns_none_for_unusable_payloads() {
+        // A body without a model list must not be mistaken for "no model".
+        for raw in ["{}", "{\"data\":[]}", "{\"data\":[{}]}"] {
+            let body: serde_json::Value = serde_json::from_str(raw).unwrap();
+            assert!(parse_running_model(&body).is_none(), "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn the_comparison_uses_the_file_name_not_the_full_path() {
+        // `start_llama_server` compares this against the requested file name, so
+        // a full path here would make every model look "different".
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"data":[{"id":"/a/b/A/Ornith-1.5-9B-Q4_K_M.gguf"}]}"#).unwrap();
+        let got = parse_running_model(&body).unwrap();
+        assert!(!got.contains('/'), "must be a bare file name, got {got}");
+    }
 }
