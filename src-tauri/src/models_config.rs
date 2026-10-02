@@ -54,12 +54,16 @@ fn get_home_dir() -> PathBuf {
 }
 
 pub fn read_models_from_agent_config(agent_id: &str) -> Vec<ModelEntry> {
-    let home = get_home_dir();
+    // Read RunJam's ISOLATED config, not the user's file. These are the models
+    // RunJam's sessions actually run; reading `~/.claude` here would return the
+    // user's own setup (or nothing) and contradict what was written.
     let mut models = Vec::new();
 
     match agent_id {
         "claude-code" => {
-            let path = home.join(".claude").join("settings.json");
+            let Some(path) = crate::agent_isolation::isolated_config_file("claude-code") else {
+                return Vec::new();
+            };
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -77,7 +81,9 @@ pub fn read_models_from_agent_config(agent_id: &str) -> Vec<ModelEntry> {
             }
         }
         "codex-cli" => {
-            let path = home.join(".codex").join("config.toml");
+            let Some(path) = crate::agent_isolation::isolated_config_file("codex-cli") else {
+                return Vec::new();
+            };
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(doc) = toml::from_str::<toml::Value>(&content) {
@@ -95,7 +101,9 @@ pub fn read_models_from_agent_config(agent_id: &str) -> Vec<ModelEntry> {
             }
         }
         "gemini-cli" => {
-            let path = home.join(".gemini").join("settings.json");
+            let Some(path) = crate::agent_isolation::isolated_config_file("gemini-cli") else {
+                return Vec::new();
+            };
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -688,14 +696,19 @@ impl ModelConfig {
 
 /// Write model config to an agent's config file.
 pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String> {
-    // 覆写前先留存原生快照（幂等，仅首次真正落盘）
-    ensure_native_snapshot(agent_id);
-
-    let home = get_home_dir();
+    // Write into RunJam's OWN isolated config dir — never the user's
+    // `~/.claude` / `~/.codex` / `~/.gemini`. Those files belong to the user and
+    // overwriting them destroyed real setups (see `agent_isolation`). Isolation is
+    // enforced on the spawn side too, by pointing the agent's config-root env var
+    // at the same directory, so what we write here is what the agent reads.
+    //
+    // There is deliberately no backup step any more: this file is RunJam's own
+    // data, so there is nothing of the user's to preserve.
+    let dir_for_agent = crate::agent_isolation::isolated_config_dir(agent_id);
 
     match agent_id {
         "claude-code" => {
-            let dir = home.join(".claude");
+            let dir = dir_for_agent.ok_or_else(|| "Unknown agent for isolation".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("settings.json");
             let mut settings: serde_json::Value = if path.exists() {
@@ -704,11 +717,6 @@ pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String
             } else {
                 serde_json::json!({})
             };
-
-            // Remove legacy runjam_models key
-            if let Some(obj) = settings.as_object_mut() {
-                obj.remove("runjam_models");
-            }
 
             // Write env vars from the first model
             if let Some(first) = models.first() {
@@ -762,7 +770,8 @@ pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String
                 .map_err(|e| format!("Failed to write claude config: {}", e))?;
         }
         "codex-cli" => {
-            let dir = home.join(".codex");
+            let dir = crate::agent_isolation::isolated_config_dir("codex-cli")
+                .ok_or_else(|| "no isolated dir for codex-cli".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("config.toml");
             
@@ -845,7 +854,9 @@ pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String
             }
         }
         "gemini-cli" => {
-            let dir = home.join(".gemini");
+            let dir = crate::agent_isolation::isolated_config_dir("gemini-cli")
+                .map(|d| d.join(".gemini"))
+                .ok_or_else(|| "no isolated dir for gemini-cli".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("settings.json");
             let mut settings: serde_json::Value = if path.exists() {
@@ -894,11 +905,10 @@ pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), Stri
     // 覆写前先留存原生快照（与 sync_to_agent 共用同一份，幂等）
     ensure_native_snapshot(agent_id);
 
-    let home = get_home_dir();
-
     match agent_id {
         "claude-code" => {
-            let dir = home.join(".claude");
+            let dir = crate::agent_isolation::isolated_config_dir("claude-code")
+                .ok_or_else(|| "no isolated dir for claude-code".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("settings.json");
             let mut settings: serde_json::Value = if path.exists() {
@@ -924,7 +934,8 @@ pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), Stri
                 .map_err(|e| format!("Failed to configure claude proxy: {}", e))?;
         }
         "codex-cli" => {
-            let dir = home.join(".codex");
+            let dir = crate::agent_isolation::isolated_config_dir("codex-cli")
+                .ok_or_else(|| "no isolated dir for codex-cli".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("config.toml");
             let content = if path.exists() {
@@ -950,7 +961,9 @@ pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), Stri
                 .map_err(|e| format!("Failed to configure codex proxy: {}", e))?;
         }
         "gemini-cli" => {
-            let dir = home.join(".gemini");
+            let dir = crate::agent_isolation::isolated_config_dir("gemini-cli")
+                .map(|d| d.join(".gemini"))
+                .ok_or_else(|| "no isolated dir for gemini-cli".to_string())?;
             std::fs::create_dir_all(&dir).ok();
             let path = dir.join("settings.json");
             let mut settings: serde_json::Value = if path.exists() {
@@ -988,11 +1001,12 @@ pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Resul
     // 覆写前先留存原生快照（幂等）
     ensure_native_snapshot(agent_id);
 
-    let home = get_home_dir();
-
     match agent_id {
         "claude-code" => {
-            let path = home.join(".claude").join("settings.json");
+            let path = crate::agent_isolation::isolated_config_dir("claude-code")
+                .ok_or_else(|| "no isolated dir for claude-code".to_string())?
+                .join("settings.json");
+            std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("."))).ok();
             if !path.exists() {
                 return Ok(());
             }
@@ -1022,7 +1036,10 @@ pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Resul
                 .map_err(|e| format!("Failed to write claude config: {}", e))?;
         }
         "codex-cli" => {
-            let path = home.join(".codex").join("config.toml");
+            let path = crate::agent_isolation::isolated_config_dir("codex-cli")
+                .ok_or_else(|| "no isolated dir for codex-cli".to_string())?
+                .join("config.toml");
+            std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("."))).ok();
             if !path.exists() {
                 return Ok(());
             }
@@ -1050,7 +1067,11 @@ pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Resul
                 .map_err(|e| format!("Failed to write codex config: {}", e))?;
         }
         "gemini-cli" => {
-            let path = home.join(".gemini").join("settings.json");
+            let path = crate::agent_isolation::isolated_config_dir("gemini-cli")
+                .map(|d| d.join(".gemini"))
+                .ok_or_else(|| "no isolated dir for gemini-cli".to_string())?
+                .join("settings.json");
+            std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new("."))).ok();
             if !path.exists() {
                 return Ok(());
             }
@@ -1222,15 +1243,49 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 清理 runjam 为某个 agent 额外创建的边车文件。
+/// Remove the auxiliary files an OLD RunJam version wrote into the user's config
+/// directory (`~/.codex/.env`, `~/.codex/auth.json`).
+///
+/// RunJam no longer writes those files at all — its config lives in an isolated
+/// directory (see `agent_isolation`) — but a legacy install may have left them
+/// behind, and they would keep pointing the user's own `codex` at a RunJam proxy
+/// that is only alive while RunJam runs.
+///
+/// Only ever removes a file RunJam ITSELF created: it must contain a RunJam API
+/// key (matching a model in RunJam's own model list). A file the user authored —
+/// most importantly a real `auth.json` holding their Codex login tokens — is left
+/// strictly alone.
+///
+/// This guard matters: an earlier version deleted the user's `auth.json`
+/// unconditionally, destroying a real Codex login.
 fn cleanup_ancillary_files(agent_id: &str, home: &std::path::Path) {
-    if agent_id == "codex-cli" {
-        let dir = home.join(".codex");
-        for name in [".env", "auth.json"] {
-            let p = dir.join(name);
-            if p.exists() {
-                std::fs::remove_file(&p).ok();
-            }
+    // Keys RunJam is known to have written, taken from its own model list.
+    let runjam_keys: Vec<String> = ModelConfig::load()
+        .models
+        .iter()
+        .map(|m| m.api_key.clone())
+        .filter(|k| !k.is_empty())
+        .collect();
+    cleanup_ancillary_files_with_keys(agent_id, home, &runjam_keys);
+}
+
+/// Testable core of [`cleanup_ancillary_files`]: the set of keys RunJam may have
+/// written is passed in, so a test does not have to seed the real model store
+/// (whose location is not redirectable).
+fn cleanup_ancillary_files_with_keys(agent_id: &str, home: &std::path::Path, runjam_keys: &[String]) {
+    if agent_id != "codex-cli" {
+        return;
+    }
+    let dir = home.join(".codex");
+    for name in [".env", "auth.json"] {
+        let p = dir.join(name);
+        let Ok(content) = std::fs::read_to_string(&p) else { continue };
+        // Keep anything that does not carry a RunJam-issued key.
+        if runjam_keys.iter().any(|k| content.contains(k.as_str())) {
+            rjlog!("[RESTORE] removing RunJam-written {}/{}", dir.display(), name);
+            std::fs::remove_file(&p).ok();
+        } else {
+            rjlog!("[RESTORE] keeping {}/{} (not written by RunJam)", dir.display(), name);
         }
     }
 }
@@ -1767,16 +1822,24 @@ enabled = true
         std::fs::read_to_string(&p).unwrap_or_default()
     }
 
+    /// THE core guarantee of the isolation refactor.
+    ///
+    /// `sync_to_agent` must write RunJam's model settings into RunJam's OWN
+    /// directory and leave the user's `~/.claude` / `~/.codex` / `~/.gemini`
+    /// byte-for-byte untouched.
+    ///
+    /// This replaces an older test that asserted the OPPOSITE (that syncing
+    /// overwrote the user's config and a snapshot could restore it). That
+    /// behaviour caused a real incident: a user's Codex setup was overwritten,
+    /// including `auth.json`, which had no backup — their stored login was lost
+    /// and their standalone `codex` stopped working. There is now nothing of the
+    /// user's to back up, because nothing of the user's is written.
     #[test]
-    fn test_e2e_snapshot_then_restore_preserves_native_content_exactly() {
+    fn test_sync_writes_only_to_the_isolated_dir_and_never_touches_user_config() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let (home, native) = setup_isolated_home("exact");
+        let (home, native) = setup_isolated_home("isolation");
         std::env::set_var("RUNJAM_HOME", &home);
 
-        // 1) 未覆写前：快照不存在
-        assert!(!home.join(".claude/settings.json.runjam-native").exists());
-
-        // 2) 模拟用户配置 runjam 模型 → 覆写原生配置
         let entry = ModelEntry {
             id: "m1".into(), name: "gpt-6-luna".into(), alias: "gpt-6-luna".into(),
             provider: "openai".into(), provider_name: "OpenAI".into(), provider_icon: "".into(),
@@ -1785,31 +1848,92 @@ enabled = true
             support_tools: true, tags: vec![], use_proxy: false, force_reasoning_none: false,
         };
         for agent in ["claude-code", "codex-cli", "gemini-cli"] {
-            ensure_native_snapshot(agent); // 覆写前留存
-            sync_to_agent(agent, &[entry.clone()]).expect("sync should succeed");
+            sync_to_agent(agent, std::slice::from_ref(&entry)).expect("sync should succeed");
         }
 
-        // 快照必须存在，且**逐字节等于**原生内容
-        assert_eq!(read(native_snapshot_path("claude-code").unwrap()), native["claude"]);
-        assert_eq!(read(native_snapshot_path("codex-cli").unwrap()), native["codex"]);
-        assert_eq!(read(native_snapshot_path("gemini-cli").unwrap()), native["gemini"]);
+        // 1) The user's own files are unchanged — byte for byte.
+        assert_eq!(
+            read(home.join(".claude/settings.json")), native["claude"],
+            "claude user config must not be modified",
+        );
+        assert_eq!(
+            read(home.join(".codex/config.toml")), native["codex"],
+            "codex user config must not be modified",
+        );
+        assert_eq!(
+            read(home.join(".gemini/settings.json")), native["gemini"],
+            "gemini user config must not be modified",
+        );
 
-        // 覆写确实改动了文件（否则测试没有意义）
-        assert_ne!(read(home.join(".claude/settings.json")), native["claude"]);
-        assert_ne!(read(home.join(".codex/config.toml")), native["codex"]);
+        // 2) No stray files created beside the user's config (the old code wrote
+        //    .runjam-native snapshots and .env/auth.json there).
+        assert!(!home.join(".claude/settings.json.runjam-native").exists());
+        assert!(!home.join(".codex/config.toml.runjam-native").exists());
+        assert!(!home.join(".codex/auth.json").exists(), "must never write auth.json");
+        assert!(!home.join(".codex/.env").exists(), "must never write .env");
 
-        // 3) 还原
-        for agent in ["claude-code", "codex-cli", "gemini-cli"] {
-            restore_agent_config(agent).expect("restore should succeed");
+        // 3) The settings DID land in the isolated directory, so RunJam's own
+        //    sessions still get the configured model (isolation must not mean
+        //    "silently writes nowhere").
+        let codex_iso = crate::agent_isolation::isolated_config_file("codex-cli").unwrap();
+        let codex_written = read(codex_iso.clone());
+        assert!(codex_written.contains("gpt-6-luna"), "isolated codex config must have the model: {codex_written}");
+        assert!(codex_written.contains("127.0.0.1:59268"), "isolated codex config must have the base_url");
+
+        let claude_iso = crate::agent_isolation::isolated_config_file("claude-code").unwrap();
+        let claude_written = read(claude_iso.clone());
+        assert!(claude_written.contains("ANTHROPIC_BASE_URL"), "isolated claude config must route via the proxy: {claude_written}");
+
+        let gemini_iso = crate::agent_isolation::isolated_config_file("gemini-cli").unwrap();
+        let gemini_written = read(gemini_iso.clone());
+        assert!(gemini_written.contains("GEMINI_MODEL"), "isolated gemini config must have the model: {gemini_written}");
+
+        // 4) The isolation directory is nowhere near the user's home config.
+        for f in [&codex_iso, &claude_iso, &gemini_iso] {
+            let p = f.to_string_lossy().to_string();
+            assert!(p.contains("agent-config"), "must live under the isolation root: {p}");
         }
-
-        // 4) 恢复后必须与原生内容逐字节一致（这是本功能的核心保证）
-        assert_eq!(read(home.join(".claude/settings.json")), native["claude"], "claude 配置必须完整还原");
-        assert_eq!(read(home.join(".codex/config.toml")), native["codex"], "codex 配置必须完整还原");
-        assert_eq!(read(home.join(".gemini/settings.json")), native["gemini"], "gemini 配置必须完整还原");
 
         std::env::remove_var("RUNJAM_HOME");
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    /// The restore path must never delete a credential file the USER owns.
+    ///
+    /// An earlier version removed `~/.codex/auth.json` unconditionally, which
+    /// destroyed a real Codex login. Only a file carrying a RunJam-issued key may
+    /// be removed.
+    #[test]
+    fn test_cleanup_keeps_user_auth_json_but_removes_runjam_written_one() {
+        let dir = std::env::temp_dir().join(format!("runjam_aux_{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join(".codex")).unwrap();
+        let codex = dir.join(".codex");
+        let rj_key = "sk-runjam-issued-key".to_string();
+
+        // 1) A user-owned auth.json (OAuth-style, no RunJam key) must survive.
+        let user_auth = r#"{"tokens":{"access_token":"user-oauth-token"}}"#;
+        std::fs::write(codex.join("auth.json"), user_auth).unwrap();
+        cleanup_ancillary_files_with_keys("codex-cli", &dir, std::slice::from_ref(&rj_key));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("auth.json")).unwrap_or_default(),
+            user_auth,
+            "a user-owned auth.json must be left untouched",
+        );
+
+        // 2) A RunJam-written auth.json is recognisable by its key and may go.
+        std::fs::write(codex.join("auth.json"), format!(r#"{{"api_key":"{rj_key}"}}"#)).unwrap();
+        std::fs::write(codex.join(".env"), format!("OPENAI_API_KEY={rj_key}\n")).unwrap();
+        cleanup_ancillary_files_with_keys("codex-cli", &dir, std::slice::from_ref(&rj_key));
+        assert!(!codex.join("auth.json").exists(), "RunJam-written auth.json should be removed");
+        assert!(!codex.join(".env").exists(), "RunJam-written .env should be removed");
+
+        // 3) Other agents are untouched entirely.
+        std::fs::write(codex.join("auth.json"), format!(r#"{{"api_key":"{rj_key}"}}"#)).unwrap();
+        cleanup_ancillary_files_with_keys("claude-code", &dir, std::slice::from_ref(&rj_key));
+        assert!(codex.join("auth.json").exists(), "a different agent must not touch codex files");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

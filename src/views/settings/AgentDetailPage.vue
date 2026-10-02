@@ -12,6 +12,7 @@ import { useAgentStore } from "../../stores/useAgentStore";
 import {
   getAgentStatuses, installAgent, uninstallAgent, setAgentEnabled,
   checkNodejs, getNodejsInstallGuide, readAgentConfig, writeAgentConfig,
+  getAgentDirInfo,
   testAgent,
   type AgentInfo, type AgentStatus,
 } from "../../api/agents";
@@ -75,7 +76,23 @@ function getProviderColorClass(providerId: string): string {
   return providerColorMap[providerId] || 'border-gray-300 text-gray-700 bg-gray-50';
 }
 
+/** The config file RunJam actually edits for an agent.
+ *
+ * Asked of the backend rather than assembled here: the isolated layout is the
+ * backend's business (`agent_isolation` — note the CLI short name, e.g.
+ * `<data>/agent-config/claude/settings.json`, not `claude-code`). A
+ * hand-written path would send the user looking in the wrong directory when
+ * they want to adjust permissions themselves.
+ */
+const isolatedConfigPath = ref<Record<string, string>>({});
+
 const agentMeta: Record<string, { website: string; installManual: string; configPath: string; description: string }> = {
+  // NOTE: `configPath` is the path the CLI uses on its own. RunJam drives each
+  // agent with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `GEMINI_CLI_HOME` pointed at
+  // its own directory (see `agent_isolation`), so this is NOT the file RunJam
+  // edits — `isolatedConfigPath()` above is. Never show this one as "the config
+  // RunJam manages", or it invites the user to edit a file that a RunJam session
+  // will never read.
   "claude-code": {
     website: "https://docs.anthropic.com/en/docs/claude-code",
     installManual: "npm install -g @anthropic-ai/claude-code",
@@ -281,6 +298,13 @@ async function toggleEnabled(id: string, enabled: boolean) {
 async function loadConfig(id: string) {
   try { configContent.value[id] = await readAgentConfig(id); configDirty.value[id] = false; }
   catch { configContent.value[id] = ''; }
+  // The exact file being edited, from the backend, so the path shown next to
+  // the editor is one the user can actually open.
+  try {
+    const info = await getAgentDirInfo(id);
+    const name = id === "codex-cli" ? "config.toml" : "settings.json";
+    isolatedConfigPath.value[id] = info.path ? `${info.path}/${name}` : name;
+  } catch { /* display-only; the editor still works without it */ }
 }
 
 async function saveConfig(id: string) {
@@ -615,7 +639,14 @@ async function saveConfig(id: string) {
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
               <h3 class="text-[14px] font-semibold text-gray-800 tracking-tight">{{ $t("agent.configFile") }}</h3>
-              <span class="text-[12px] text-gray-400 font-mono bg-gray-100 px-2.5 py-0.5 rounded-lg">{{ agentMeta[agent.id]?.configPath }}</span>
+              <!-- Show the path actually being edited: RunJam's isolated copy, not
+                   the user's `~/.codex` etc. Displaying the user's path here would
+                   mislead — edits would appear to change the user's own setup when
+                   they only affect RunJam's sessions. -->
+              <span
+                class="text-[12px] text-gray-400 font-mono bg-gray-100 px-2.5 py-0.5 rounded-lg"
+                :title="$t('agent.configIsolatedHint')"
+              >{{ isolatedConfigPath[agent.id] }}</span>
             </div>
             <div class="flex items-center gap-3">
               <span class="text-[12px] text-gray-400 hidden sm:inline">{{ $t("agent.configEditHint") }}</span>

@@ -547,6 +547,7 @@ const zhCN: Record<TranslationKey, string> = {
   "agent.operationLog": "操作日志",
   "agent.configFile": "配置文件",
   "agent.configEditHint": "直接编辑原始 JSON 配置",
+  "agent.configIsolatedHint": "RunJam 使用独立配置文件，不会修改你自己的 CLI 配置",
   "agent.saving": "保存中…",
   "agent.saveChanges": "保存更改",
   "agent.configPlaceholder": "配置文件内容——保存时若不存在将自动创建",

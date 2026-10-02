@@ -442,6 +442,14 @@ pub async fn install_agent(app: tauri::AppHandle, agent_id: String, db: State<'_
         // so the agent shows as "Available" right away without manual Test click.
         // Even if install_path detection missed the binary, AcpClient::new uses
         // resolve_agent_paths() which has its own detection logic.
+        //
+        // Seed the permission defaults first: the connection test (and the
+        // session the user opens next) runs the real CLI, so an unseeded config
+        // is exactly where the "add Bash(curl:*) yourself" prompt came from.
+        if let Err(e) = crate::agent_permissions::ensure_default_permissions(&agent_id) {
+            eprintln!("[AGENT INSTALL] Could not seed default permissions for {}: {}", agent_id, e);
+        }
+
         let now = chrono::Local::now().to_rfc3339();
         let _ = app.emit(
             &event_name,
@@ -667,12 +675,12 @@ pub async fn uninstall_agent(app: tauri::AppHandle, agent_id: String, db: State<
 /// Read an agent's config file content.
 #[tauri::command]
 pub fn read_agent_config(agent_id: String) -> Result<String, String> {
-    let config_path = match agent_id.as_str() {
-        "claude-code" => dirs_home().join(".claude").join("settings.json"),
-        "codex-cli" => dirs_home().join(".codex").join("config.toml"),
-        "gemini-cli" => dirs_home().join(".gemini").join("settings.json"),
-        _ => return Err(format!("Unknown agent: {}", agent_id)),
-    };
+    // RunJam's OWN isolated config, not the user's `~/.claude` etc. This editor
+    // exists so the user can adjust what RunJam's sessions actually use; pointing
+    // it at the user's file would both show the wrong content and imply that edits
+    // affect the agent, which they would not (RunJam never reads that file).
+    let config_path = crate::agent_isolation::isolated_config_file(&agent_id)
+        .ok_or_else(|| format!("Unknown agent: {}", agent_id))?;
 
     if config_path.exists() {
         std::fs::read_to_string(&config_path)
@@ -685,12 +693,11 @@ pub fn read_agent_config(agent_id: String) -> Result<String, String> {
 /// Write an agent's config file content.
 #[tauri::command]
 pub fn write_agent_config(agent_id: String, content: String) -> Result<(), String> {
-    let config_path = match agent_id.as_str() {
-        "claude-code" => dirs_home().join(".claude").join("settings.json"),
-        "codex-cli" => dirs_home().join(".codex").join("config.toml"),
-        "gemini-cli" => dirs_home().join(".gemini").join("settings.json"),
-        _ => return Err(format!("Unknown agent: {}", agent_id)),
-    };
+    // Same target as `read_agent_config` (RunJam's isolated copy), so what the
+    // user edits here is what the session runs — and the user's own config is
+    // never written.
+    let config_path = crate::agent_isolation::isolated_config_file(&agent_id)
+        .ok_or_else(|| format!("Unknown agent: {}", agent_id))?;
 
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -726,23 +733,32 @@ pub struct FileEntry {
     pub size_bytes: u64,
 }
 
+/// An `AgentDirInfo` for an id RunJam does not manage, or a directory that does
+/// not exist yet. Shared so both "no such agent" and "nothing written yet"
+/// report the same empty shape.
+fn empty_agent_dir_info() -> AgentDirInfo {
+    AgentDirInfo {
+        path: String::new(),
+        exists: false,
+        total_size_bytes: 0,
+        config_file: None,
+        history_file: None,
+        history_size_bytes: 0,
+        history_lines: 0,
+        subdirs: vec![],
+        key_files: vec![],
+    }
+}
+
 #[tauri::command]
 pub fn get_agent_dir_info(agent_id: String) -> AgentDirInfo {
-    let dir = match agent_id.as_str() {
-        "claude-code" => dirs_home().join(".claude"),
-        "codex-cli" => dirs_home().join(".codex"),
-        "gemini-cli" => dirs_home().join(".gemini"),
-        _ => return AgentDirInfo {
-            path: String::new(),
-            exists: false,
-            total_size_bytes: 0,
-            config_file: None,
-            history_file: None,
-            history_size_bytes: 0,
-            history_lines: 0,
-            subdirs: vec![],
-            key_files: vec![],
-        },
+    // RunJam's OWN isolated config dir, not the user's `~/.claude`. This panel
+    // exists to inspect what a RunJam session actually reads, and each CLI is
+    // launched with its config-root env var pointed here (`agent_isolation`);
+    // showing the user's directory would report on a file no session touches.
+    let dir = match crate::agent_isolation::isolated_config_dir(&agent_id) {
+        Some(dir) => dir,
+        None => return empty_agent_dir_info(),
     };
 
     let path_str = dir.to_string_lossy().to_string();
@@ -844,12 +860,6 @@ fn dir_size(path: &PathBuf) -> u64 {
         }
     }
     total
-}
-
-fn dirs_home() -> PathBuf {
-    directories::UserDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[tauri::command]

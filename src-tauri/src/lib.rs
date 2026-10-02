@@ -12,6 +12,8 @@ mod search;
 mod acp_client;
 mod proxy;
 mod node_util;
+mod agent_isolation;
+mod agent_permissions;
 mod skill;
 pub mod log_util;
 mod util;
@@ -321,6 +323,18 @@ pub fn run() {
                     if let Err(e) = commands::pet_cmd::ensure_pet_icon(app.handle()) {
                         eprintln!("[pet] {e}");
                     }
+                }
+            }
+
+            // Seed the agents' default permission settings (allow the everyday
+            // commands, keep the dangerous ones denied) so a first run does not
+            // greet the user with "add Bash(curl:*) to settings.json". Idempotent
+            // and merge-only — see `agent_permissions`. For the three agents
+            // RunJam drives, so an install that predates this feature is fixed on
+            // upgrade too, not just on a fresh install.
+            for agent_id in ["claude-code", "codex-cli", "gemini-cli"] {
+                if let Err(e) = crate::agent_permissions::ensure_default_permissions(agent_id) {
+                    eprintln!("[PERMS] {agent_id}: {e}");
                 }
             }
 

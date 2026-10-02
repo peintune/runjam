@@ -755,16 +755,71 @@ impl AcpClient {
         for arg in args {
             cmd.arg(arg);
         }
+
+        // Make sure the agent's own permission settings exist before it starts,
+        // so a freshly installed CLI does not greet ordinary work (curl, writing
+        // a file) with "add Bash(curl:*) to settings.json". Merge-only: anything
+        // the user already set is left untouched (see `agent_permissions`).
+        if let Err(e) = crate::agent_permissions::ensure_default_permissions(agent_type) {
+            rjlog!("[PERMS] Could not seed default permissions for {}: {}", agent_type, e);
+        }
+
+        // Point the agent at RunJam's OWN config directory so it never reads or
+        // writes the user's (`~/.claude`, `~/.codex`, `~/.gemini`).
+        //
+        // This fixes a real incident: RunJam used to write its proxy and model
+        // settings straight into those files, overwriting the user's own
+        // configuration — and `~/.codex/auth.json` was replaced without a backup,
+        // destroying their Codex login so their standalone `codex` stopped working.
+        // Each CLI supports an env var relocating its config root (verified by
+        // running each one; see `agent_isolation`), so RunJam can stay entirely
+        // inside its own data directory.
+        //
+        // Set for EVERY agent, before the per-agent branches below, so no path can
+        // accidentally reach a user file.
+        if let Some((var, dir)) = crate::agent_isolation::isolated_config_env(agent_type) {
+            rjlog!("[ACP] Isolating {} config: {}={}", agent_type, var, dir);
+            cmd.env(var, dir);
+        }
+
         if agent_type == "codex" {
             // codex-acp 默认的 codex 沙箱是 read-only 且禁网（web_search / curl
-            // 会因无法解析 DNS 而全部失败，exit code 6）。通过 -c 覆盖把沙箱提升
-            // 为 workspace-write，并打开网络，让 codex 能搜索网页、读写工作区文件，
-            // 同时仍保留沙箱（非 danger-full-access）。
-            // 注意：network_access 不是顶层键，它位于 [sandbox_workspace_write] 表
-            // 下，必须用点表示法 sandbox_workspace_write.network_access 覆盖；
+            // 会因无法解析 DNS 而全部失败，exit code 6），而 RunJam 的权限档位
+            // 之前完全没有传给 codex（UI 切档位对它不生效）。这里按
+            // permission_mode 映射成 -c 覆盖：-c 优先级高于 config.toml，所以
+            // UI 里选的档位真实生效，且不会在配置文件里留下第二份会失效的真相。
+            // 注意：network_access 不是顶层键，它位于 [sandbox_workspace_write]
+            // 表下，必须用点表示法 sandbox_workspace_write.network_access 覆盖；
             // 写成顶层的 network_access=true 会被 codex 忽略，网络仍保持关闭。
-            cmd.arg("-c").arg(r#"sandbox_workspace_write.network_access=true"#);
-            cmd.arg("-c").arg(r#"sandbox_mode="workspace-write""#);
+            let (approval_policy, sandbox_mode) =
+                crate::agent_permissions::codex_permission_overrides(permission_mode);
+            if sandbox_mode == "workspace-write" {
+                cmd.arg("-c").arg(r#"sandbox_workspace_write.network_access=true"#);
+            }
+            cmd.arg("-c")
+                .arg(format!(r#"sandbox_mode="{}""#, sandbox_mode));
+            cmd.arg("-c")
+                .arg(format!(r#"approval_policy="{}""#, approval_policy));
+            rjlog!(
+                "[ACP] codex permission overrides: permission_mode={} approval_policy={} sandbox_mode={}",
+                permission_mode,
+                approval_policy,
+                sandbox_mode
+            );
+        }
+
+        if agent_type == "gemini" || agent_type == "gemini-cli" {
+            // RunJam's permission mode was never passed to gemini, so the UI
+            // picker did nothing for it. The launch flag is the only channel
+            // that can express `yolo`: gemini's settings schema accepts only
+            // default/auto_edit/plan for `general.defaultApprovalMode`.
+            let approval_mode = crate::agent_permissions::gemini_approval_mode(permission_mode);
+            cmd.arg(format!("--approval-mode={}", approval_mode));
+            rjlog!(
+                "[ACP] gemini approval override: permission_mode={} --approval-mode={}",
+                permission_mode,
+                approval_mode
+            );
         }
         cmd.stdout(Stdio::piped())
             .stdin(Stdio::piped())
@@ -870,7 +925,11 @@ impl AcpClient {
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
             if !home.is_empty() {
-                let config_path = std::path::PathBuf::from(&home).join(".codex").join("config.toml");
+                // Read from RunJam's ISOLATED dir: that is where the config was
+                // written (see `agent_isolation`). Reading the user's file here
+                // would both read the wrong data and touch a file we no longer own.
+                let config_path = crate::agent_isolation::isolated_config_file("codex-cli")
+                    .unwrap_or_else(|| std::path::PathBuf::from(&home).join(".codex").join("config.toml"));
                 rjlog!("[CODEX ENV] Reading config from: {}", config_path.display());
                 match std::fs::read_to_string(&config_path) {
                     Ok(content) => {
@@ -955,7 +1014,9 @@ impl AcpClient {
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
             if !home.is_empty() {
-                let settings_path = std::path::PathBuf::from(&home).join(".gemini").join("settings.json");
+                // Same reasoning as codex above: read the isolated copy.
+                let settings_path = crate::agent_isolation::isolated_config_file("gemini-cli")
+                    .unwrap_or_else(|| std::path::PathBuf::from(&home).join(".gemini").join("settings.json"));
                 if let Ok(content) = std::fs::read_to_string(&settings_path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(env) = settings.get("env").and_then(|v| v.as_object()) {
@@ -1684,13 +1745,16 @@ impl AcpClient {
         *self.permission_mode.lock().unwrap() = mode.to_string();
         rjlog!("[ACP DEBUG] Live permission mode updated to: {}", mode);
 
-        // Only claude-agent-acp owns a real session-level mode ("plan",
-        // "acceptEdits", "auto", "bypassPermissions") that we can switch live;
-        // other agents keep the reader-side approve/deny behavior.
-        if self.agent_type != "claude" {
-            return;
-        }
-        let Some(mode_id) = Self::permission_mode_to_acp_mode(mode) else {
+        // claude and gemini both expose a real session-level mode over ACP
+        // ("plan"/"acceptEdits"/"auto"/"bypassPermissions" for claude,
+        // "default"/"autoEdit"/"yolo"/"plan" for gemini), so a mid-session
+        // change can be pushed into the running agent. Without that, an agent
+        // that already stopped requesting permissions (e.g. after Plan-Mode
+        // denials) would keep refusing tools no matter how we answer future
+        // requests. codex owns no such switch — its policy is fixed at launch
+        // (`codex_permission_overrides`) and our reader-side approve/deny
+        // behaviour is what `approve_for_me` rides on.
+        let Some(mode_id) = Self::permission_mode_to_acp_mode(&self.agent_type, mode) else {
             return;
         };
         let session_id = self.session_id.lock().unwrap().clone();
@@ -1708,14 +1772,27 @@ impl AcpClient {
         }
     }
 
-    /// Map RunJam's permission modes to the permission-mode ids understood by
-    /// claude-agent-acp (`session/set_mode`).
-    fn permission_mode_to_acp_mode(mode: &str) -> Option<&'static str> {
-        match mode {
-            "read_only" => Some("plan"),
-            "ask_approval" => Some("acceptEdits"),
-            "approve_for_me" => Some("auto"),
-            "full_access" => Some("bypassPermissions"),
+    /// Map RunJam's permission modes to the mode ids each ACP agent understands
+    /// in `session/set_mode`. `None` for an agent with no live mode switch.
+    fn permission_mode_to_acp_mode(agent_type: &str, mode: &str) -> Option<&'static str> {
+        match agent_type {
+            "claude" => Some(match mode {
+                "read_only" => "plan",
+                "ask_approval" => "acceptEdits",
+                "approve_for_me" => "auto",
+                "full_access" => "bypassPermissions",
+                _ => return None,
+            }),
+            // gemini advertises these ids via `session/new` (buildAvailableModes).
+            // Note the camelCase `autoEdit`; gemini's own launch flag spells the
+            // same mode `auto_edit` (see `agent_permissions::gemini_approval_mode`).
+            "gemini" => Some(match mode {
+                "read_only" => "plan",
+                "ask_approval" => "default",
+                "approve_for_me" => "autoEdit",
+                "full_access" => "yolo",
+                _ => return None,
+            }),
             _ => None,
         }
     }
@@ -2039,7 +2116,9 @@ impl AcpClient {
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
             if !home.is_empty() {
-                let settings_path = std::path::PathBuf::from(&home).join(".gemini").join("settings.json");
+                // Same reasoning as codex above: read the isolated copy.
+                let settings_path = crate::agent_isolation::isolated_config_file("gemini-cli")
+                    .unwrap_or_else(|| std::path::PathBuf::from(&home).join(".gemini").join("settings.json"));
                 if let Ok(content) = std::fs::read_to_string(&settings_path) {
                     if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(env) = settings.get("env").and_then(|v| v.as_object()) {

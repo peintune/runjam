@@ -547,6 +547,7 @@ const en = {
   "agent.operationLog": "Operation Log",
   "agent.configFile": "Configuration File",
   "agent.configEditHint": "Edit the raw JSON config directly",
+  "agent.configIsolatedHint": "RunJam uses its own isolated config file; your own CLI config is never modified",
   "agent.saving": "Saving...",
   "agent.saveChanges": "Save Changes",
   "agent.configPlaceholder": "Config file content — will be created on save if it doesn't exist",
