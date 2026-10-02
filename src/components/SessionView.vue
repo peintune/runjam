@@ -11,6 +11,12 @@ import { sendInput, startSession as apiStartSession, stopSession as tauriStopSes
 import { saveConversationMessage, getConversationMessages, saveSession, updateSessionModel } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
+import {
+  newRunawayTracker,
+  recordToolCall,
+  type RunawayTracker,
+  type RunawayVerdict,
+} from "../composables/useRunawayGuard";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
@@ -1030,6 +1036,10 @@ interface SessionState {
     *  dispatched (session/runner.rs send_input), so it is true even when the
     *  agent never replied at all. */
    hasTurnOutput: boolean;
+   /** Detects a tool call that repeats identically (or a turn that makes far too
+    *  many calls) so a non-converging agent loop can be stopped instead of
+    *  running for hours. Reset at the start of every turn. */
+   runaway: RunawayTracker;
    }
 
 // Max send attempts including the first try; failures auto-retry up to this.
@@ -1074,6 +1084,7 @@ function getSessionState(sessionId: string): SessionState {
       hasActiveTool: false,
       hasStarted: false,
       hasTurnOutput: false,
+      runaway: newRunawayTracker(),
     };
     sessionStates.set(sessionId, state);
   }
@@ -1461,6 +1472,29 @@ function logAcpEvent(sessionId: string, p: AcpPayload) {
   acpEventLogCount = 0;
 }
 
+/**
+ * Report that the runaway guard stopped this turn.
+ *
+ * Written into the transcript (not just a toast) so the reason for the stop is
+ * still readable afterwards — the user sees WHY it halted instead of the answer
+ * simply ending. Deliberately does NOT arm the auto-retry: re-sending would walk
+ * straight back into the same non-converging loop.
+ */
+function reportRunaway(sessionId: string, state: SessionState, verdict: RunawayVerdict) {
+  const tool = verdict.signature.split("::")[0] || "tool";
+  const reason =
+    verdict.reason === "repeated"
+      ? t("chat.runawayRepeated", { count: verdict.count, tool })
+      : t("chat.runawayTooMany", { count: verdict.total });
+  state.messages.push({ role: "agent", content: reason, isProcessing: false });
+  if (sessionId) persistMessage(sessionId, "agent", reason);
+  track("runaway_guard_stopped", {
+    reason: verdict.reason,
+    count: verdict.count,
+    total: verdict.total,
+  });
+}
+
 function handleAcpEventInner(sessionId: string, p: AcpPayload) {
   const state = getSessionState(sessionId);
   const isActiveSession = store.activeSessionId === sessionId;
@@ -1626,6 +1660,24 @@ function handleAcpEventInner(sessionId: string, p: AcpPayload) {
       }
       break;
     case "tool_call": {
+      // Runaway guard: count this call and abort the turn if the agent is stuck
+      // repeating one identical command (or has made far too many calls).
+      //
+      // Only "started" counts. The backend emits `ToolCall` twice per call —
+      // once when it starts and again (with status "completed") from
+      // `tool_call_end` — so counting every event would double the tally and
+      // trip the limit at half the intended number of real attempts.
+      if (p.status === "started") {
+        const verdict = recordToolCall(state.runaway, p.tool_name || "", p.input || "");
+        if (verdict) {
+          reportRunaway(sessionId, state, verdict);
+          // Stop the turn THIS event belongs to (not the visible session), then
+          // skip the rest of this branch: the abort already settled every
+          // message, and adding another tool entry would leave a "running" one.
+          void stopSessionTurn(sessionId);
+          break;
+        }
+      }
       // 有工具正在执行：等待 tool_result 期间豁免无活动超时（长命令正常静默）
       state.hasActiveTool = true;
       // 文本回复结束、转入工具调用：清空 activeContent，避免下一轮文本 chunk
@@ -2341,6 +2393,9 @@ async function handleSend() {
     st.hasActiveTool = false;
     st.hasStarted = false;
     st.hasTurnOutput = false;
+    // Reset the runaway counter for the new turn: a tool call repeated across
+    // turns is normal, only repetition WITHIN one turn means it is stuck.
+    st.runaway = newRunawayTracker();
     // 只允许"本会话的规范实例"挂重试定时器。新会话的首条消息从 __new__ 页发出时，
     // handleSend 运行在即将被 KeepAlive 替换掉的旧实例上（props.sessionId=''），它
     // 监听的是 acp: 空通道，永远收不到该会话的事件——在这里挂定时器既无法被事件
@@ -2463,6 +2518,39 @@ async function toggleSkill(name: string) {
     if (next.has(name)) next.delete(name); else next.add(name);
     selectedSkills.value = next;
   }
+}
+
+/**
+ * Stop ONE specific session's turn.
+ *
+ * `handleStop` (the Stop button) targets the session the user is LOOKING at —
+ * it relies on `store.activeSession` and `effectiveSessionId`. The runaway guard
+ * reacts to an event, and that event may belong to a background session the user
+ * switched away from (KeepAlive keeps several alive). Stopping "the visible one"
+ * there would kill the wrong session and leave the runaway running, so this
+ * variant takes the affected id explicitly.
+ */
+async function stopSessionTurn(sid: string) {
+  if (!sid) return;
+  const state = getSessionState(sid);
+  clearRetry(state);
+  state.hasActiveTool = false;
+  state.hasStarted = false;
+  state.hasTurnOutput = false;
+  state.isProcessing = false;
+  for (const m of state.messages) {
+    if (m.role !== 'agent') continue;
+    m.isProcessing = false;
+    for (const tc of m.toolCalls ?? []) {
+      if (tc.status === "started" || tc.status === "running") tc.status = "failed";
+    }
+  }
+  if (store.activeSessionId === sid) {
+    isProcessing.value = false;
+    syncMessagesToView(state);
+    msgStore.setMessages(sid, [...state.messages]);
+  }
+  await store.stopSession(sid);
 }
 
 async function handleStop() {

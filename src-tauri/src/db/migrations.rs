@@ -84,6 +84,32 @@ pub fn run_migrations(conn: &Connection) {
             attempts        INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        -- MCP (Model Context Protocol) servers configured in RunJam.
+        --
+        -- Stored here rather than in each agent's own config file because the
+        -- whole point is to define a server ONCE and have every agent use it:
+        -- Claude Code, Codex and Gemini each read MCP servers from their own
+        -- locations, so a RunJam-owned list is what makes one definition work
+        -- everywhere. Injected into every new session via ACP `mcpServers`.
+        --
+        -- transport selects how the server is reached: stdio (a local command),
+        -- http or sse (a URL). Only the columns relevant to the chosen transport
+        -- are used; the rest stay empty. args/env/headers hold JSON arrays
+        -- because ACP models them as ARRAYS of {name,value} pairs, not objects —
+        -- serializing them as an object is silently ignored by the agent.
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            transport       TEXT NOT NULL DEFAULT 'stdio',
+            command         TEXT NOT NULL DEFAULT '',
+            args            TEXT NOT NULL DEFAULT '[]',
+            env             TEXT NOT NULL DEFAULT '[]',
+            url             TEXT NOT NULL DEFAULT '',
+            headers         TEXT NOT NULL DEFAULT '[]',
+            enabled         INTEGER NOT NULL DEFAULT 1,
+            created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         ",
     )
     .expect("Failed to run migrations");

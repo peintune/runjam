@@ -63,6 +63,11 @@ const router = createRouter({
           component: () => import("../views/settings/CostsSettings.vue"),
         },
         {
+          path: "mcp",
+          name: "settings-mcp",
+          component: () => import("../views/settings/McpSettings.vue"),
+        },
+        {
           path: "skills",
           name: "settings-skills",
           component: () => import("../views/settings/SkillsSettings.vue"),
@@ -102,6 +107,7 @@ const PAGE_VIEW_IDS: Record<string, string> = {
   "settings-general": "settings-general",
   "settings-pet": "settings-pet",
   "settings-costs": "settings-costs",
+  "settings-mcp": "settings-mcp",
   "settings-skills": "settings-skills",
   "settings-about": "settings-about",
 };

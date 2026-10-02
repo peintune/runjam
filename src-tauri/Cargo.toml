@@ -1,6 +1,6 @@
 [package]
 name = "runjam"
-version = "1.0.94"
+version = "1.0.95"
 description = "RunJam — A unified desktop manager for AI coding agents"
 authors = ["RunJam Contributors"]
 edition = "2021"

@@ -127,10 +127,11 @@ impl SessionManager {
         match client {
             ClientType::Acp(acp, _) => {
                 let mut acp_client = acp.lock().unwrap();
-                let prompt = match history {
-                    Some(h) if !h.is_empty() => format!("Previous conversation:\n{}\n---\nNew message: {}", h.join("\n"), text),
-                    _ => text.to_string(),
-                };
+                let prompt = build_prompt(
+                    acp_client.project_context().as_deref(),
+                    history,
+                    text,
+                );
                 acp_client.send_prompt(&prompt).map_err(|e| {
                     crate::telemetry::report_error_from_app(
                         app,
@@ -226,5 +227,77 @@ impl SessionManager {
         self.active.remove(id);
         rjlog!("[SESSION DEBUG] session stopped, clients in map: {}", self.clients.lock().unwrap().len());
         Ok(())
+    }
+}
+
+/// Assemble the text actually sent to the agent for one turn.
+///
+/// Up to three parts, in order: the project scope hint, the previous turns (a
+/// restarted process has no memory), then the user's own message. `---` plus the
+/// `New message:` label marks where the user's words begin, so the agent does not
+/// mistake the surrounding context for the request itself.
+///
+/// When there is nothing to prepend, the user's text is forwarded verbatim —
+/// this is the common case for a fresh session with no project selected, and
+/// wrapping it would only add noise.
+pub(crate) fn build_prompt(
+    project_context: Option<&str>,
+    history: Option<&[String]>,
+    text: &str,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(ctx) = project_context {
+        parts.push(ctx.to_string());
+    }
+    if let Some(h) = history {
+        if !h.is_empty() {
+            parts.push(format!("Previous conversation:\n{}", h.join("\n")));
+        }
+    }
+    if parts.is_empty() {
+        text.to_string()
+    } else {
+        format!("{}\n---\nNew message: {}", parts.join("\n"), text)
+    }
+}
+
+#[cfg(test)]
+mod build_prompt_tests {
+    use super::build_prompt;
+
+    #[test]
+    fn forwards_the_message_unchanged_when_there_is_no_context() {
+        assert_eq!(build_prompt(None, None, "why is it broken?"), "why is it broken?");
+    }
+
+    #[test]
+    fn puts_the_project_scope_before_the_user_message() {
+        let prompt = build_prompt(Some("[Context] project: /repo"), None, "why broken?");
+        let (scope, msg) = prompt.split_once("---\nNew message: ").expect("separator present");
+        // The separator is "\n---\n", so the scope segment ends with that newline.
+        assert_eq!(scope.trim_end(), "[Context] project: /repo");
+        // The user's own words come last, unmodified.
+        assert_eq!(msg, "why broken?");
+    }
+
+    #[test]
+    fn combines_scope_and_history_in_order() {
+        let history = vec!["user: hi".to_string(), "agent: hello".to_string()];
+        let prompt = build_prompt(Some("[Context] /repo"), Some(&history), "and now?");
+        let scope_at = prompt.find("project").or_else(|| prompt.find("/repo")).unwrap();
+        let hist_at = prompt.find("Previous conversation:").unwrap();
+        let msg_at = prompt.find("and now?").unwrap();
+        // Order is what makes the message unambiguous: scope, then history, then
+        // the actual request.
+        assert!(scope_at < hist_at && hist_at < msg_at, "got: {prompt}");
+        assert!(prompt.contains("user: hi") && prompt.contains("agent: hello"));
+    }
+
+    #[test]
+    fn ignores_an_empty_history() {
+        // An empty slice must not produce a dangling "Previous conversation:"
+        // header that would look like the context exists when it does not.
+        let prompt = build_prompt(None, Some(&[]), "question");
+        assert_eq!(prompt, "question");
     }
 }

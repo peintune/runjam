@@ -692,6 +692,12 @@ pub struct AcpClient {
     /// responses (initialize / session/new / set_mode) must never do so.
     pending_prompts: Arc<Mutex<HashSet<u64>>>,
     cwd: String,
+    /// True when the working directory came from the user's explicit project
+    /// selection, rather than the default per-session scratch directory. Only
+    /// then does it make sense to tell the agent "you are working in this
+    /// project" — the scratch directory is not a project and saying so would
+    /// mislead it.
+    project_scoped: bool,
     mode: String,
     agent_type: String,
     /// Live-updatable permission mode, shared with the stdout reader thread so
@@ -700,6 +706,12 @@ pub struct AcpClient {
     /// True once stop() has terminated+reaped the process (prevents Drop from
     /// double-killing a reaped pid).
     stopped: bool,
+    /// MCP servers to hand the agent in `session/new`.
+    ///
+    /// Captured at start time (the session is created immediately after) so the
+    /// agent receives the user's MCP list without `AcpClient` needing a handle
+    /// to the app. Empty when the user configured none — the previous behaviour.
+    mcp_servers: Vec<serde_json::Value>,
 }
 
 impl AcpClient {
@@ -725,11 +737,19 @@ impl AcpClient {
         let default_dir = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| package_dir.to_string());
+        // Record this BEFORE `unwrap_or` consumes `directory`.
+        let project_scoped = directory.is_some();
         let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
         // Ensure the working directory exists — Command::current_dir fails
         // with ENOENT ("No such file or directory") if it doesn't.
         std::fs::create_dir_all(&cwd).ok();
+
+        // MCP servers configured in RunJam, translated to the ACP wire shape.
+        // Read here (not in `new_session`) because the app handle is only in
+        // scope on this path. Failing to read must never block the session — an
+        // empty list just means "no MCP servers", the previous behaviour.
+        let mcp_servers = crate::commands::mcp_cmd::acp_servers_from_app(app);
 
         let mut cmd = hidden_command(&cmd_path);
         for arg in args {
@@ -1643,10 +1663,12 @@ impl AcpClient {
             responses,
             pending_prompts,
             cwd: cwd.to_string(),
+            project_scoped,
             mode: mode.to_string(),
             agent_type: agent_type.to_string(),
             permission_mode: permission_mode_shared,
             stopped: false,
+            mcp_servers,
         };
 
         Ok(client)
@@ -1807,9 +1829,13 @@ impl AcpClient {
     }
 
     fn new_session(&mut self) -> Result<(), String> {
+        // MCP servers the user configured in RunJam. Defining them here is what
+        // makes one server work with EVERY agent: each agent otherwise reads
+        // MCP config from its own location, so the same server had to be
+        // re-declared per agent.
         let params = serde_json::json!({
             "cwd": self.cwd,
-            "mcpServers": [],
+            "mcpServers": self.mcp_servers,
             "mode": self.mode,
         });
         let result = self.send_request("session/new", params)
@@ -1836,6 +1862,25 @@ impl AcpClient {
         self.send_request_no_wait("session/prompt", params)
             .map(|_| "ok".to_string())
             .map_err(|e| format!("Prompt failed: {}", e))
+    }
+
+    /// Context telling the agent which project it is working in, or `None` when
+    /// the session is not project-scoped.
+    ///
+    /// The ACP handshake already passes the directory as the session `cwd`, but
+    /// that only sets where the agent PROCESS runs — agents answer the question
+    /// as asked and do not infer "the user means this repository". Without a
+    /// nudge, a question like "why does X not work?" is answered in the abstract
+    /// even though a repository full of relevant code is right there. This makes
+    /// the scope explicit so the agent looks at the project before answering.
+    ///
+    /// Only emitted for a user-chosen project directory: the per-session scratch
+    /// directory is not a project, and claiming otherwise would misdirect it.
+    pub fn project_context(&self) -> Option<String> {
+        if !self.project_scoped {
+            return None;
+        }
+        Some(project_context_text(&self.cwd))
     }
 
     pub async fn test_connection(&mut self) -> Result<(), String> {
@@ -2060,6 +2105,10 @@ impl AcpClient {
             responses,
             pending_prompts: Arc::new(Mutex::new(HashSet::new())),
             cwd: package_dir.clone(),
+            // Test connection: cwd is the agent's install dir, not a project.
+            project_scoped: false,
+            // Connection test only: no MCP servers involved.
+            mcp_servers: Vec::new(),
             mode: "default".to_string(),
             agent_type: "claude".to_string(),
             permission_mode: Arc::new(Mutex::new("ask_approval".to_string())),
@@ -2089,6 +2138,22 @@ impl Drop for AcpClient {
     }
 }
 
+/// Scope hint prepended to a prompt so the agent answers about the user's
+/// project instead of in the abstract.
+///
+/// Written on ONE line per sentence: the prompt is assembled by joining parts
+/// with newlines, so a multi-line template here would blur where the hint ends
+/// and the user's own words begin. Called only for a user-chosen project
+/// directory — see `AcpClient::project_context`.
+pub(crate) fn project_context_text(cwd: &str) -> String {
+    format!(
+        "[Context] The user is working in this project directory: {cwd}\n\
+         When the request is about \"this project\", its code, a feature or a file, \
+         inspect that directory (list files, read the relevant ones) before \
+         answering. Do not reply in the abstract when the code is available here."
+    )
+}
+
 /// Terminate an agent process tree by pid. Works without holding the client
 /// lock, so stop paths never block on a hung handshake that holds it.
 /// On Unix the agent runs in its own process group (process_group(0)), so a
@@ -2106,4 +2171,34 @@ pub(crate) fn terminate_process_tree(pid: u32) {
     let _ = std::process::Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .status();
+}
+
+#[cfg(test)]
+mod project_context_tests {
+    use super::project_context_text;
+
+    #[test]
+    fn names_the_project_directory() {
+        let text = project_context_text("/Users/me/code/runjam");
+        // The exact path is what makes the hint actionable.
+        assert!(text.contains("/Users/me/code/runjam"), "got: {text}");
+    }
+
+    #[test]
+    fn tells_the_agent_to_inspect_rather_than_generalise() {
+        let text = project_context_text("/repo");
+        // The whole point: a repo is available, so the answer must not be
+        // generic advice. Both halves carry that instruction.
+        assert!(text.contains("inspect"), "got: {text}");
+        assert!(text.contains("Do not reply in the abstract"), "got: {text}");
+    }
+
+    #[test]
+    fn stays_compact_so_it_does_not_dilute_the_prompt() {
+        // It is prepended to EVERY message, so it must stay short.
+        let text = project_context_text("/repo");
+        assert!(text.len() < 500, "context grew to {} chars", text.len());
+        // Two lines: the prefix line and the instruction line.
+        assert_eq!(text.lines().count(), 2, "got: {text}");
+    }
 }
