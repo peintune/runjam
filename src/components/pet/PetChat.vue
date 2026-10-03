@@ -530,6 +530,7 @@ onBeforeUnmount(() => {
         :messages="messages"
         :agent-id="config.agentId"
         :active="true"
+        :cwd="config.directory"
         @content-updated="onContentUpdated"
       />
     </div>

@@ -5,6 +5,11 @@ import { useSessionLayout } from "../composables/useSessionLayout";
 import FileTree from "./FileTree.vue";
 import FileEditor from "./FileEditor.vue";
 import FilePreview from "./FilePreview.vue";
+import HtmlPreview from "./HtmlPreview.vue";
+import DocxPreview from "./DocxPreview.vue";
+import SheetPreview from "./SheetPreview.vue";
+import PresentationPreview from "./PresentationPreview.vue";
+import { forgetFileViewer } from "../composables/useFileOpener";
 import { FileText, X } from "lucide-vue-next";
 import { openInFinder } from "../api/app";
 
@@ -38,13 +43,24 @@ const activeFile = computed(() => {
   return openFiles.value[activeFileIndex.value];
 });
 
-function isOfficeFile(ext: string) {
-  return ["pptx", "ppt", "docx", "doc", "xlsx", "xls", "odt", "odp", "ods", "csv"].includes(ext);
+/** Formats the file tree hands to the system application instead of opening a
+ *  tab for.
+ *
+ *  This is the file tree's long-standing behaviour (office documents open in
+ *  Word/Keynote/Excel). `pdf` joins the list for the same reason: RunJam has no
+ *  dependable in-app PDF renderer — a browser cannot draw one in an `<img>`, and
+ *  Tauri's WKWebView on macOS does not render PDFs inline — so the system viewer
+ *  is the honest option rather than a blank pane.
+ *
+ *  `openInFinder` is named for historical reasons; it calls the platform's "open
+ *  with default app" (on macOS `open`, not `open -R`), which is what we want. */
+function opensWithSystemApp(ext: string) {
+  return ["pptx", "ppt", "docx", "doc", "xlsx", "xls", "odt", "odp", "ods", "csv", "pdf"].includes(ext);
 }
 
 function handleSelectFile(path: string) {
   const ext = path.split(".").pop()?.toLowerCase() || "";
-  if (isOfficeFile(ext)) {
+  if (opensWithSystemApp(ext)) {
     openInFinder(path).catch((err) => console.error("Failed to open file:", err));
     return;
   }
@@ -60,6 +76,8 @@ function handleSelectFile(path: string) {
 
 function closeTab(index: number) {
   const files = [...openFiles.value];
+  const closing = files[index];
+  if (closing) forgetFileViewer(closing);
   files.splice(index, 1);
   openFiles.value = files;
   if (files.length === 0) {
@@ -84,14 +102,23 @@ function isImage(ext: string) {
   return ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext);
 }
 
-function isPdf(ext: string) {
-  return ext === "pdf";
-}
-
+/** The viewer for the active file.
+ *
+ *  A file opened from a session (a path link, or a tool-call button) carries the
+ *  viewer chosen when it was opened — including the rich viewers a `.docx` or
+ *  `.pptx` needs. A file opened from the FILE TREE has no entry and uses the
+ *  tree's own rule (image/PDF preview, everything else in the editor), which is
+ *  the behaviour that panel had before this feature existed and is kept as-is.
+ */
 const fileMode = computed(() => {
   if (!activeFile.value) return null;
+  const recorded = layout.fileViewers[activeFile.value];
+  if (recorded) return recorded;
+  // A file from the FILE TREE has no recorded viewer: keep the panel's original
+  // rule (image preview, everything else in the editor). A PDF has no entry
+  // because `resolveViewer` never records one — it opens with the system viewer.
   const ext = activeFile.value.split(".").pop()?.toLowerCase() || "";
-  if (isImage(ext) || isPdf(ext)) return "preview";
+  if (isImage(ext)) return "preview";
   return "editor";
 });
 
@@ -172,7 +199,30 @@ watch(() => layout.fileTreeWidth, (w) => { fileTreeResize.size.value = w; });
           @close="handleCloseEditor"
         />
         <FilePreview
-          v-else-if="activeFile && fileMode === 'preview'"
+          v-else-if="activeFile && (fileMode === 'preview' || fileMode === 'image' || fileMode === 'unsupported')"
+          :key="activeFile"
+          :file-path="activeFile"
+        />
+        <!-- Rich viewers, used only for files opened from a session (see
+             `fileMode`): a docx/pptx/xlsx has a real renderer now, so it must not
+             fall back to the text editor, which would show raw bytes. -->
+        <HtmlPreview
+          v-else-if="activeFile && fileMode === 'html'"
+          :key="activeFile"
+          :file-path="activeFile"
+        />
+        <DocxPreview
+          v-else-if="activeFile && fileMode === 'docx'"
+          :key="activeFile"
+          :file-path="activeFile"
+        />
+        <SheetPreview
+          v-else-if="activeFile && fileMode === 'sheet'"
+          :key="activeFile"
+          :file-path="activeFile"
+        />
+        <PresentationPreview
+          v-else-if="activeFile && fileMode === 'presentation'"
           :key="activeFile"
           :file-path="activeFile"
         />

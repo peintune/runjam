@@ -15,7 +15,7 @@ import AppTabsBar from "./AppTabsBar.vue";
 import { useWorkspaceStore } from "../stores/useWorkspaceStore";
 import { useAppTabsStore } from "../stores/useAppTabsStore";
 import { useDragResize } from "../composables/useDragResize";
-import { useSessionLayout, layoutKeyFor } from "../composables/useSessionLayout";
+import { useSessionLayout, layoutKeyFor, isWorkspaceAreaVisible } from "../composables/useSessionLayout";
 import { PET_SESSION_CHANGED_EVENT, PET_OPEN_IN_MAIN_EVENT } from "../composables/usePetChat";
 import { homeDir } from "@tauri-apps/api/path";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -44,7 +44,6 @@ function loadSidebarUserPinned(): boolean {
 const sidebarUserPinned = ref(loadSidebarUserPinned());
 const sidebarPinned = ref(true);
 const sidebarHover = ref(false);
-const isWorkspaceMode = ref(false);
 
 /** 用户手动展开/收起导航：若这次是主动展开，记住该表态（持久化）。 */
 function setSidebarPinned(v: boolean) {
@@ -67,7 +66,7 @@ function collapseSidebarForPanel() {
 const store = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
-const { layout, switchDirectory, saveLayout } = useSessionLayout();
+const { layout, switchDirectory, saveLayout, openFileSignal } = useSessionLayout();
 const appTabs = useAppTabsStore();
 
 /** True when rendering the task-board view (route /board) instead of a session. */
@@ -129,27 +128,53 @@ const activeDirectory = computed(() => {
   return "";
 });
 
-// 文件树与终端各自独立可见。两者任一个打开都需要进入工作区模式（腾出右侧
-// 空间），但打开终端**不会**顺带打开文件树。
-const anyPanelOpen = computed(() => showFileTree.value || showTerminal.value);
-
-/** 左侧工作区面板（文件树 + 编辑器）是否占用空间。终端已挪到内容区底部横跨
- *  整宽，所以只开终端时这里为 false —— 对话区独占上层宽度，否则会留一块
- *  空白的编辑器区域。 */
+/** 工作区面板（文件树 + 编辑器）是否占用空间。
+ *
+ *  判据就是**文件树开关**：右上角那个按钮既是"打开侧边文件列表"，也是整个
+ *  右侧工作区（文件树 + 编辑器）的总开关。打开文件时会自动展开文件树（见
+ *  `openFileSignal` 的 watcher），所以二者天然一致；关了文件树却还留一个孤立
+ *  的编辑器占着宽度，就是实际发生过的 bug。
+ *
+ *  这里**刻意不看"工作区模式"**（曾有一个 isWorkspaceMode ref）。那个标志在
+ *  打开终端时也会被置位，于是「某会话历史上用过文件树/开过文件」（这些按目录
+ *  持久化）会让"只点终端"也把编辑器一起显示出来、把对话区挤窄。终端是底部
+ *  横跨的区域，与上层工作区互不相干，不该参与这个判断。
+ *
+ *  `activeDirectory` 仍需校验：没有工作目录时编辑器无内容可显示。 */
 const showWorkspaceArea = computed(() =>
-  !isBoard.value && isWorkspaceMode.value && !!activeDirectory.value &&
-  (showFileTree.value || layout.openFiles.length > 0)
+  isWorkspaceAreaVisible({
+    isBoard: isBoard.value,
+    hasDirectory: !!activeDirectory.value,
+    showFileTree: showFileTree.value,
+  }),
 );
 
-/** 文件树按钮：切换文件树；若因此开启第一个面板，则进入工作区模式。 */
+// 会话里点开一个文件（消息正文/thinking 的文件链接，或工具调用的打开按钮）
+// 时，把文件树一并展开，这样面板立刻有内容可看（否则只显示刚打开的那一个
+// 文件）。
+//
+// 监听的是 openFileSignal（一个自增计数），不是 openFiles/activeFileIndex 的
+// 差异。因为"重新打开一个已经打开的文件、且面板当前是隐藏的"这种情况，state
+// 前后完全一样（length 不变，index 也不变），差异式监听必然漏掉它 —— 那正是
+// 「打开文件 → 关闭文件树 → 再点同一个文件没反应」的成因。信号没有这个盲区。
+//
+// 一并把文件树展开：用户刚点开一个文件，旁边同时给出同级文件更有用。
+watch(openFileSignal, () => {
+  if (layout.openFiles.length === 0) return;
+  if (!showFileTree.value) {
+    showFileTree.value = true;
+    layout.showFileTree = true;
+  }
+  collapseSidebarForPanel();
+  saveLayout();
+});
+
+/** 文件树按钮：切换文件树。打开时收窄侧栏，为右侧工作区腾出空间。 */
 function toggleFileTree() {
   showFileTree.value = !showFileTree.value;
   layout.showFileTree = showFileTree.value;
   if (showFileTree.value) {
-    isWorkspaceMode.value = true;
     collapseSidebarForPanel();
-  } else if (!anyPanelOpen.value) {
-    isWorkspaceMode.value = false;
   }
   saveLayout();
 }
@@ -162,12 +187,9 @@ function toggleTerminal() {
   showTerminal.value = !showTerminal.value;
   layout.showTerminal = showTerminal.value;
   if (showTerminal.value) {
-    // 打开终端：进入工作区模式，但保持文件树原状 —— 用户只点终端就只开终端。
-    isWorkspaceMode.value = true;
+    // 只收窄侧栏给终端腾宽度；**不**去动上层工作区 —— 终端是底部横跨的区域，
+    // 用户只点终端就只开终端，不该顺带弹出编辑器。
     collapseSidebarForPanel();
-  } else if (!anyPanelOpen.value) {
-    // 隐藏终端且文件树也没开：退出工作区模式还原对话区宽度（进程仍在跑）。
-    isWorkspaceMode.value = false;
   }
   saveLayout();
 }
@@ -198,10 +220,6 @@ async function confirmCloseTerminal() {
   await terminalPanelRef.value?.killAll();
   showTerminal.value = false;
   layout.showTerminal = false;
-  // 文件树也没开的话，退出工作区模式还原对话区宽度
-  if (!anyPanelOpen.value) {
-    isWorkspaceMode.value = false;
-  }
   saveLayout();
 }
 
@@ -232,15 +250,11 @@ watch(() => store.activeSessionId, (newId, oldId) => {
       showTerminal.value = layout.showTerminal;
       showFileTree.value = layout.showFileTree;
     }
-    // 面板可见性由 layout 决定，工作区模式必须跟着走，否则状态与显示不一致：
-    // showTerminal 已为 true 却隐藏着面板，再点终端按钮会误弹关闭确认框。
-    isWorkspaceMode.value = showFileTree.value || showTerminal.value;
   } else {
     // 回到新建会话页：不复用上一个会话的面板状态，给用户一个干净的新建页
     // （否则会直接弹出上个会话的文件树/终端，且 cwd 落到 home）。
     showFileTree.value = false;
     showTerminal.value = false;
-    isWorkspaceMode.value = false;
   }
 });
 
@@ -252,7 +266,6 @@ onMounted(async () => {
     switchDirectory(key);
     showTerminal.value = layout.showTerminal;
     showFileTree.value = layout.showFileTree;
-    isWorkspaceMode.value = showFileTree.value || showTerminal.value;
   }
   // App tabs: re-align child webviews on window resize and restore the
   // previously active tab when returning to the workspace.
@@ -301,19 +314,21 @@ const sidebarResize = useDragResize({
   onDragEnd: (size) => { layout.sidebarWidth = size; },
 });
 
-// ---- Resizable chat panel ----
-const chatResize = useDragResize({
+// ---- Resizable workspace panel（右侧：文件树 + 编辑器）----
+// 拖拽调整的是右侧工作区的宽度；对话区占据剩下的空间。句柄在它左边，所以
+// 仍然是 reversed（向左拖 = 变宽）。
+const workspaceResize = useDragResize({
   direction: "horizontal",
   minSize: 300,
   defaultSize: 420,
   reversed: true,
-  initialSize: layout.chatWidth,
-  onDragEnd: (size) => { layout.chatWidth = size; },
+  initialSize: layout.workspaceWidth,
+  onDragEnd: (size) => { layout.workspaceWidth = size; },
 });
 
 // Sync resize sizes when layout changes (session switch)
 watch(() => layout.sidebarWidth, (w) => { sidebarResize.size.value = w; });
-watch(() => layout.chatWidth, (w) => { chatResize.size.value = w; });
+watch(() => layout.workspaceWidth, (w) => { workspaceResize.size.value = w; });
 
 // App webview visibility is managed globally by a router guard
 // (see src/router/index.ts): leaving the workspace routes hides every app
@@ -437,38 +452,15 @@ onBeforeUnmount(() => {
         @mousedown="sidebarResize.startDrag"
       />
 
-      <!-- Main content area：纵向分为上下两层。上层是「左侧工作区 + 右侧对话」，
-           下层是横跨整个内容区宽度的终端（文件树、编辑器、对话都在它上方）。 -->
+      <!-- Main content area：纵向分为上下两层。上层是「左侧对话 + 右侧工作区」，
+           下层是横跨整个内容区宽度的终端。
+           对话区固定在左边（也是视线与操作的落点），文件树/编辑器从右侧展开。 -->
       <div class="flex-1 flex flex-col min-w-0 min-h-0 gap-[3px]">
-        <!-- Upper row: workspace + chat -->
+        <!-- Upper row: chat + workspace -->
         <div class="flex-1 flex min-w-0 min-h-0 gap-[3px]">
-          <!-- Workspace Panel -->
-          <!-- v-show (not v-if): mounting/unmounting the whole workspace on every
-               explorer toggle is what made opening/closing it freeze for seconds —
-               it re-imported Monaco and re-scanned the file tree each time.
-               Keeping it mounted means those expensive resources persist. -->
-          <WorkspacePanel
-            ref="workspacePanelRef"
-            v-show="showWorkspaceArea"
-            :show-file-tree="showFileTree"
-            :root-path="activeDirectory"
-          />
-
-          <!-- Resize handle between workspace and chat -->
+          <!-- Chat / Session View（始终在左，占满未被工作区占用的宽度） -->
           <div
-            v-if="showWorkspaceArea"
-            class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
-            :class="chatResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
-            @mousedown="chatResize.startDrag"
-          />
-
-          <!-- Chat / Session View -->
-          <div
-            class="flex-shrink-0 rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] flex flex-col min-h-0"
-            :style="showWorkspaceArea
-              ? { width: chatResize.size.value + 'px' }
-              : {}"
-            :class="showWorkspaceArea ? '' : 'flex-1'"
+            class="rounded-lg overflow-hidden bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.04)] flex flex-col min-h-0 flex-1 min-w-0"
           >
             <KeepAlive :max="20">
               <SessionView
@@ -479,6 +471,31 @@ onBeforeUnmount(() => {
               />
               <TaskBoardView v-else />
             </KeepAlive>
+          </div>
+
+          <!-- Resize handle between chat and workspace -->
+          <div
+            v-if="showWorkspaceArea"
+            class="w-px flex-shrink-0 cursor-col-resize transition-colors rounded-full hover:bg-blue-400/40"
+            :class="workspaceResize.isDragging.value ? 'bg-blue-400' : 'bg-transparent'"
+            @mousedown="workspaceResize.startDrag"
+          />
+
+          <!-- Workspace Panel（右侧：文件树 + 编辑器）。
+               v-show (not v-if): mounting/unmounting the whole workspace on every
+               explorer toggle is what made opening/closing it freeze for seconds —
+               it re-imported Monaco and re-scanned the file tree each time.
+               Keeping it mounted means those expensive resources persist. -->
+          <div
+            v-show="showWorkspaceArea"
+            class="flex-shrink-0 flex min-h-0"
+            :style="{ width: workspaceResize.size.value + 'px' }"
+          >
+            <WorkspacePanel
+              ref="workspacePanelRef"
+              :show-file-tree="showFileTree"
+              :root-path="activeDirectory"
+            />
           </div>
         </div>
 

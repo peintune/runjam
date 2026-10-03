@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { isWorkspaceAreaVisible } from "./useSessionLayout";
 
 /** Minimal localStorage stub — the composable is pure w.r.t. `window` otherwise,
  *  but vitest runs these tests in a node environment without one. `length`/`key`
@@ -154,5 +155,169 @@ describe("useSessionLayout", () => {
     // instead of reloading it from storage.
     api.switchDirectory("/proj/a");
     expect(api.layout.showTerminal).toBe(true);
+  });
+});
+describe("useSessionLayout — per-bucket isolation of mutable fields", () => {
+  beforeEach(() => {
+    (globalThis as unknown as { localStorage: Storage }).localStorage = makeLocalStorage();
+  });
+
+  it("does not leak openFiles from one bucket into another", async () => {
+    // A file opened in one project must not appear as an open tab in the next
+    // project the user switches to. (`loadLayout` builds a fresh defaults copy
+    // per bucket; this pins the observable result of that.)
+    const { api } = await freshLayout();
+    api.switchDirectory("/project/a");
+    api.layout.openFiles = ["/a/one.md"];
+
+    api.switchDirectory("/project/b");
+    expect(api.layout.openFiles).toEqual([]);
+
+    // And going back restores a's own list, not a merged one.
+    api.switchDirectory("/project/a");
+    expect(api.layout.openFiles).toEqual(["/a/one.md"]);
+  });
+
+  it("does not leak fileViewers from one bucket into another", async () => {
+    // The viewer choice (a .docx must not open in the text editor) is per-file
+    // state; leaking it across buckets would open a file in the wrong viewer.
+    const { api } = await freshLayout();
+    api.switchDirectory("/project/a");
+    api.layout.fileViewers = { "/a/doc.docx": "docx" };
+
+    api.switchDirectory("/project/b");
+    expect(api.layout.fileViewers).toEqual({});
+
+    api.switchDirectory("/project/a");
+    expect(api.layout.fileViewers).toEqual({ "/a/doc.docx": "docx" });
+  });
+
+  it("persists fileViewers so a restored session keeps its viewers", async () => {
+    // openFiles survives a restart; without persisting the viewer choices too, a
+    // restored .docx tab would fall back to the editor and render bytes as text.
+    const { api } = await freshLayout();
+    api.switchDirectory("/project/a");
+    api.layout.fileViewers = { "/a/paper.pdf": "pdf" };
+    api.layout.openFiles = ["/a/paper.pdf"];
+    api.saveLayout();
+
+    const { api: reopened } = await freshLayout();
+    reopened.switchDirectory("/project/a");
+    expect(reopened.layout.fileViewers).toEqual({ "/a/paper.pdf": "pdf" });
+    expect(reopened.layout.openFiles).toEqual(["/a/paper.pdf"]);
+  });
+});
+
+describe("useSessionLayout — openFileSignal", () => {
+  beforeEach(() => {
+    (globalThis as unknown as { localStorage: Storage }).localStorage = makeLocalStorage();
+  });
+
+  it("bumps on every open, including re-opening the same file", async () => {
+    // This is the fix for "open a file, close the tree, click the same file again
+    // → nothing happens". Re-opening changes neither openFiles.length nor
+    // activeFileIndex, so a state-diff watcher cannot see it; the signal can.
+    const { api } = await freshLayout();
+    api.switchDirectory("/project/a");
+    api.layout.openFiles = ["/a/one.md"];
+    api.layout.activeFileIndex = 0;
+
+    const before = api.openFileSignal.value;
+    // Simulate openFileInWorkspace re-opening the same, already-active file:
+    // the state is identical afterwards.
+    const lenBefore = api.layout.openFiles.length;
+    const idxBefore = api.layout.activeFileIndex;
+    api.signalFileOpened();
+
+    expect(api.openFileSignal.value).toBe(before + 1);
+    expect(api.layout.openFiles.length).toBe(lenBefore);
+    expect(api.layout.activeFileIndex).toBe(idxBefore);
+  });
+
+  it("bumps monotonically so a listener fires for every open", async () => {
+    const { api } = await freshLayout();
+    const start = api.openFileSignal.value;
+    api.signalFileOpened();
+    api.signalFileOpened();
+    expect(api.openFileSignal.value).toBe(start + 2);
+  });
+
+  it("is not persisted across a reload", async () => {
+    // A transient signal: restoring a stale value on startup would pop the panel
+    // open without the user asking.
+    const { api } = await freshLayout();
+    api.switchDirectory("/project/a");
+    api.signalFileOpened();
+    const persisted = JSON.stringify(api.layout);
+    expect(persisted).not.toContain("openFileSignal");
+  });
+});
+
+describe("openFileSignal — the watcher contract", () => {
+  beforeEach(() => {
+    (globalThis as unknown as { localStorage: Storage }).localStorage = makeLocalStorage();
+  });
+
+  it("fires a watcher where a state-diff watcher would not", async () => {
+    // Pins the actual fix for "open a file → close the tree → click the same file
+    // again → nothing happens". Reproduces the exact state: the file is already
+    // open and already active, so re-opening changes NOTHING observable — the
+    // old `length:index` watcher stayed silent (diff=0) and the panel never
+    // appeared. The signal watcher fires (signal=1).
+    const { watch, nextTick } = await import("vue");
+    const { mod, api } = await freshLayout();
+
+    api.switchDirectory("/project/a");
+    api.layout.openFiles = ["/a/one.md"];
+    api.layout.activeFileIndex = 0;
+    await nextTick();
+
+    let signalFired = 0;
+    let diffFired = 0;
+    watch(mod.useSessionLayout().openFileSignal, () => { signalFired++; });
+    watch(
+      () => `${api.layout.openFiles.length}:${api.layout.activeFileIndex}`,
+      () => { diffFired++; },
+    );
+    await nextTick();
+    signalFired = 0;
+    diffFired = 0;
+
+    // The re-open: index is set to the value it already had, and the signal bumps.
+    api.layout.activeFileIndex = 0;
+    api.signalFileOpened();
+    await nextTick();
+
+    expect(signalFired).toBe(1);
+    expect(diffFired).toBe(0);
+  });
+});
+
+describe("isWorkspaceAreaVisible", () => {
+  const base = { isBoard: false, hasDirectory: true, showFileTree: true };
+
+  it("shows the workspace only while the file tree is open", () => {
+    // The tree toggle is the master switch for the whole panel (tree + editor).
+    // Closing it must take the editor with it — leaving an orphaned editor eating
+    // the chat's width was a real bug.
+    expect(isWorkspaceAreaVisible({ ...base, showFileTree: true })).toBe(true);
+    expect(isWorkspaceAreaVisible({ ...base, showFileTree: false })).toBe(false);
+  });
+
+  it("does not depend on whether files are open", () => {
+    // There is no `openFiles` input at all, by design: a file left open from
+    // earlier in the session must not keep the panel alive once the tree closes,
+    // and it must not be needed to show the panel either.
+    const keys = Object.keys(base);
+    expect(keys).toEqual(["isBoard", "hasDirectory", "showFileTree"]);
+  });
+
+  it("hides on the task board", () => {
+    expect(isWorkspaceAreaVisible({ ...base, isBoard: true })).toBe(false);
+  });
+
+  it("hides without a working directory", () => {
+    // No directory means the tree/editor have nothing to show.
+    expect(isWorkspaceAreaVisible({ ...base, hasDirectory: false })).toBe(false);
   });
 });

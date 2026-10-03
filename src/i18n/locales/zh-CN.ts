@@ -266,6 +266,7 @@ const zhCN: Record<TranslationKey, string> = {
   "chat.copyMessage": "复制消息",
   "chat.cacheHit": "缓存命中",
   "chat.openInExplorer": "在文件资源管理器中打开",
+  "chat.openFile": "打开文件",
 
   // ── Session view ────────────────────────────────────────────────────────
   "session.newSession": "新建会话",
@@ -588,6 +589,14 @@ const zhCN: Record<TranslationKey, string> = {
   "editor.openWithDefault": "使用系统默认应用打开",
   "editor.loading": "加载中…",
   "editor.cannotPreview": "无法预览此文件类型。",
+  "editor.openExternal": "用系统应用打开",
+  "editor.openInSystemApp": "用系统默认应用打开此文件",
+  "editor.converting": "正在转换文档…",
+  "editor.noOfficeConverter": "未检测到 LibreOffice，无法在应用内预览此演示文稿。安装 LibreOffice 后即可内嵌预览，或先用系统应用打开。",
+  "editor.emptySheet": "此工作表为空。",
+  "editor.openFile": "打开",
+  "editor.revealInFinder": "在访达中显示",
+  "editor.copyPath": "复制路径",
   "terminal.close": "关闭",
   "terminal.newTerminal": "新建终端",
   "terminal.lightweightHint": "您的 shell 配置较重，终端将以轻量模式运行以降低 CPU 占用（不加载 rc 文件）。",

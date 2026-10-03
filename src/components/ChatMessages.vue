@@ -2,10 +2,11 @@
 import { ref, watch, nextTick, onBeforeUnmount, reactive, computed } from "vue";
 import {
   ChevronDown, ChevronUp, ChevronRight, Clock, Check, Copy,
-  MousePointerClick, FolderOpen,
+  MousePointerClick, FolderOpen, Search,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
-import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence } from "../composables/useMarkdown";
+import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence, linkifyPaths } from "../composables/useMarkdown";
+import { openFileInWorkspace, resolveAgainstBase } from "../composables/useFileOpener";
 import { useThemeStore } from "../stores/useThemeStore";
 import AgentIcon from "./AgentIcon.vue";
 import MessageContent from "./MessageContent.vue";
@@ -57,7 +58,16 @@ export interface Message {
 // pet popup hit. Defaulting to true matches the intent documented on the root
 // element ("only an explicit false renders the placeholder").
 const props = withDefaults(
-  defineProps<{ messages: Message[]; agentId?: string; active?: boolean }>(),
+  defineProps<{
+    messages: Message[];
+    agentId?: string;
+    active?: boolean;
+    /** The session's working directory. Used to turn a relative path the agent
+     *  mentions (`src/main.rs`) into a real one — without it, the backend would
+     *  resolve the path against RunJam's own process cwd and fail to find the
+     *  file. */
+    cwd?: string | null;
+  }>(),
   { active: true },
 );
 const emit = defineEmits<{ (e: "contentUpdated"): void }>();
@@ -668,9 +678,54 @@ function extractPathFromString(input: string): string | null {
   return null;
 }
 
+/** Open a produced file in the right-hand workspace panel, with the viewer that
+ *  matches its type — so a generated .html/.docx/.pptx is readable in-session
+ *  instead of only being locatable in Finder. */
+function openInWorkspace(path: string) {
+  try {
+    openFileInWorkspace(path, props.cwd);
+  } catch (e) {
+    console.error("Failed to open file in workspace:", e);
+  }
+}
+
+/**
+ * Thinking text as HTML with file paths made clickable.
+ *
+ * Thinking is where the agent most often names the files it is about to write
+ * ("I'll create /Users/me/out/report.html"), so a path here must be openable just
+ * like one in the message body. `linkifyPaths` escapes the text itself, so
+ * `v-html` is safe.
+ *
+ * Cached per source string: thinking streams token by token and this template
+ * re-evaluates on every tick, so re-running the regex over the whole (growing)
+ * text each frame would be wasted work — the same reason `renderCached` exists
+ * for message content.
+ */
+const thinkingHtmlCache = new Map<string, string>();
+const THINKING_HTML_CACHE_MAX = 100;
+
+function thinkingHtml(src: string): string {
+  if (!src) return "";
+  let html = thinkingHtmlCache.get(src);
+  if (html === undefined) {
+    html = linkifyPaths(src);
+    thinkingHtmlCache.set(src, html);
+    if (thinkingHtmlCache.size > THINKING_HTML_CACHE_MAX) {
+      const oldest = thinkingHtmlCache.keys().next().value;
+      if (oldest !== undefined) thinkingHtmlCache.delete(oldest);
+    }
+  }
+  return html;
+}
+
 function openInExplorer(path: string) {
-  // Resolve relative paths relative to the current working directory
-  invoke("open_in_finder", { path }).catch((e: Error) => console.error("Failed to open path:", e));
+  // Anchor a relative path to the session's cwd first, for the same reason
+  // `openInWorkspace` does: the backend resolves against RunJam's own process
+  // directory, not the session's.
+  invoke("open_in_finder", { path: resolveAgainstBase(path, props.cwd) }).catch((e: Error) =>
+    console.error("Failed to open path:", e),
+  );
 }
 
 function thinkingLabel(msg: Message, idx: number): string {
@@ -957,6 +1012,16 @@ watch(chatEl, (el) => {
 
 // ═══ Code-block copy via event delegation ═══
 function handleContentClick(e: MouseEvent) {
+  // A file path in the message text (see `linkifyPaths`) opens in the workspace
+  // panel. Checked first: it is a click on message prose, while the copy button
+  // below is always inside a code block.
+  const pathLink = (e.target as HTMLElement).closest("[data-open-file]") as HTMLElement | null;
+  if (pathLink) {
+    const path = pathLink.getAttribute("data-open-file");
+    if (path) openInWorkspace(path);
+    return;
+  }
+
   const btn = (e.target as HTMLElement).closest("[data-copy]") as HTMLElement | null;
   if (!btn) return;
 
@@ -1113,18 +1178,16 @@ function truncateLabel(label: string, maxLen = 32): string {
                     if (el) thinkingRefs[item.oi] = el as HTMLElement;
                   }
                 "
-                class="px-1 py-0.5 text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
-              >
-                {{ displayMap[item.oi]?.thinking || item.msg.thinking }}
-                <span
-                  v-if="
-                    (displayMap[item.oi]?.thinking?.length || 0) <
-                    (item.msg.thinking?.length || 0)
-                  "
-                  class="animate-pulse text-gray-300"
-                  >▌</span
-                >
-              </div>
+                class="thinking-text px-1 py-0.5 text-[11px] text-gray-400 font-mono whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
+                @click="handleContentClick"
+              ><span v-html="thinkingHtml(displayMap[item.oi]?.thinking || item.msg.thinking || '')" /><span
+                v-if="
+                  (displayMap[item.oi]?.thinking?.length || 0) <
+                  (item.msg.thinking?.length || 0)
+                "
+                class="animate-pulse text-gray-300"
+                >▌</span
+              ></div>
             </div>
 
             <!-- Tool calls for this message -->
@@ -1180,7 +1243,24 @@ function truncateLabel(label: string, maxLen = 32): string {
                     class="text-[11px] text-gray-400 ml-auto"
                     >{{ elapsed(now - tc.startTime) }}</span
                   >
-                  <!-- File explorer button for completed file operations -->
+                  <!-- Open the file a tool call produced, in the workspace panel.
+                       Previously this only revealed the file in Finder, which meant
+                       a generated .html/.docx/.pptx could not actually be looked at
+                       from inside the session. -->
+                  <button
+                    v-if="
+                      tc.status === 'completed' &&
+                      isFileOperation(tc) &&
+                      extractFilePath(tc)
+                    "
+                    @click.stop="openInWorkspace(extractFilePath(tc)!)"
+                    class="ml-1 p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
+                    :title="$t('chat.openFile')"
+                  >
+                    <FolderOpen :size="11" />
+                  </button>
+                  <!-- Reveal stays available for the "I want it in Finder, not
+                       here" case — a second, distinct affordance. -->
                   <button
                     v-if="
                       tc.status === 'completed' &&
@@ -1191,7 +1271,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                     class="ml-1 p-1 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600 transition-colors"
                     :title="$t('chat.openInExplorer')"
                   >
-                    <FolderOpen :size="11" />
+                    <Search :size="11" />
                   </button>
                 </button>
                 <!-- Tool call details (only when expanded) -->

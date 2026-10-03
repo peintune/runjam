@@ -55,7 +55,198 @@ renderer.code = function (obj: { text: string; lang?: string; escaped?: boolean 
   </div>`;
 };
 
+// Plain-text runs are linkified (see `linkifyPaths` below), so a file path the
+// agent reports is clickable. Assigned BEFORE `marked.use` registers the
+// renderer: marked stores what it is handed, and mutating it afterwards is not
+// guaranteed to take effect.
+renderer.text = function (token: { text: string } | string) {
+  const text = typeof token === "string" ? token : token.text;
+  return linkifyPaths(text);
+};
+
+// Inline `<code>` runs are handled too: the agent overwhelmingly writes a path in
+// backticks (`src/components/Foo.vue`), and those were the majority case that
+// previously stayed inert. The content is rendered through the same linkifier, so
+// a code span holding a path becomes a link while `npm install` stays plain code.
+//
+// A fenced/code BLOCK never reaches here — marked routes it to `renderer.code` —
+// so a path inside a code block keeps its exact text, which is what you want when
+// reading source.
+renderer.codespan = function (token: { text: string } | string) {
+  const text = typeof token === "string" ? token : token.text;
+  const linked = linkifyPaths(text);
+  // Only replace the code styling when a link was actually produced; otherwise
+  // keep looking like code (the whole point of a code span).
+  if (linked.includes("data-open-file")) {
+    return linked;
+  }
+  return `<code>${escapeText(text)}</code>`;
+};
+
 marked.use({ renderer });
+
+// ── Turn file paths in message text into open-action links ──
+//
+// A session constantly produces files ("wrote /Users/me/out/report.html") and,
+// before this, that path was inert text: the only way to see the file was to find
+// it in the tree by hand. Now a path RunJam can open is rendered clickable.
+//
+// Hooked on `renderer.text` and `renderer.codespan` — marked calls those ONLY for
+// inline runs, never for a code block or an existing `[link](…)`. That is what
+// keeps the transform safe: real markup is left exactly as the author wrote it.
+//
+// Detection is deliberately biased toward RECALL: the point is to make a produced
+// file reachable, and missing the path is the failure the user actually reported.
+// A false positive is bounded — the run must still name a known file extension —
+// so bare words like "and" or "the" can never become links.
+const OPENABLE_PATH_RE =
+  /(?<![\w./~-])((?:~\/|\.\.?\/|\/|[A-Za-z]:\\)?[\w@+-][\w./@+-]*\.[A-Za-z][\w]{0,7})/g;
+
+/** Extensions that make a path clickable in message text. Wider than "has a
+ *  viewer": a source file opens in the editor, which is a viewer. */
+const OPENABLE_EXTENSIONS = new Set([
+  "html", "htm", "md", "markdown", "mdx",
+  "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico",
+  "pdf", "docx", "xlsx", "xls", "csv", "pptx", "ppt", "odt", "odp", "ods",
+  "json", "jsonl", "txt", "log", "yaml", "yml", "toml", "ini", "conf", "env",
+  "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "go", "java", "kt",
+  "c", "cc", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "scala", "lua",
+  "css", "scss", "sass", "less", "vue", "svelte", "astro",
+  "sh", "bash", "zsh", "fish", "ps1", "sql", "graphql", "proto",
+  "xml", "lock", "gradle", "makefile", "dockerfile",
+]);
+
+/** HTML-escape, since renderer output is inserted verbatim. */
+function escapeText(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Whether a path run should become a link.
+ *
+ * Requires a real file extension from the allowlist. That single constraint is
+ * what keeps the wider pattern honest: it excludes prose and bare identifiers,
+ * and a path to a format RunJam cannot open anywhere (a `.dylib`, say) — there is
+ * nothing useful to do with those, so they stay text.
+ */
+function looksOpenablePath(path: string): boolean {
+  const name = path.split(/[/\\]/).pop() || "";
+  // A trailing line/column reference (file.ts:42) is stripped before the check.
+  const bareName = name.replace(/:\d+(-\d+)?$/, "");
+  const dot = bareName.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return OPENABLE_EXTENSIONS.has(bareName.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * A small inline icon marking the run as a file, chosen by extension so the kind
+ * of file is visible at a glance (code vs. document vs. spreadsheet), the same way
+ * the file tree does it.
+ *
+ * These are inline SVG paths rather than the `lucide-vue-next` components the
+ * file tree uses: this module produces HTML strings for `v-html`, so it cannot
+ * mount Vue components. The shapes are the Lucide outlines for the matching
+ * icons, and `PATH_ICON_TONE` mirrors the tree's colour coding.
+ */
+const ICON_SVG = {
+  code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
+  text: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  json: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1"/><path d="M14 18a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1 1 1 0 0 1-1-1v-1a1 1 0 0 0-1-1"/>',
+  sheet: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M8 13h2"/><path d="M14 13h2"/><path d="M8 17h2"/><path d="M14 17h2"/>',
+  doc: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>',
+  deck: '<path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  pdf: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15v-3h1.5a1.5 1.5 0 0 1 0 3H9"/><path d="M14 15v-3h2"/>',
+  archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+} as const;
+
+type IconKind = keyof typeof ICON_SVG;
+
+/** Extension → icon kind, mirroring the file tree's `FILE_ICON_MAP`. */
+function iconKindFor(ext: string): IconKind {
+  const e = ext.toLowerCase();
+  if (["json", "jsonl"].includes(e)) return "json";
+  if (["xlsx", "xls", "ods", "csv"].includes(e)) return "sheet";
+  if (["docx", "doc", "odt", "rtf"].includes(e)) return "doc";
+  if (["pptx", "ppt", "odp"].includes(e)) return "deck";
+  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif"].includes(e)) return "image";
+  if (e === "pdf") return "pdf";
+  if (["zip", "tar", "gz", "bz2", "xz", "7z", "rar"].includes(e)) return "archive";
+  if (["md", "markdown", "mdx", "txt", "log", "rtf", "ini", "conf", "env"].includes(e)) return "text";
+  // Everything else in the allowlist is source code / config.
+  return "code";
+}
+
+/** Per-kind tint, matching the colours the file tree gives the same types. */
+const ICON_TONE: Record<IconKind, string> = {
+  code: "#3b82f6",
+  text: "#6b7280",
+  json: "#eab308",
+  sheet: "#16a34a",
+  doc: "#2563eb",
+  deck: "#ea580c",
+  image: "#a855f7",
+  pdf: "#dc2626",
+  archive: "#a16207",
+  file: "#6b7280",
+};
+
+/**
+ * Build the icon markup for a path.
+ *
+ * The kind is derived from the full path (a trailing `:42` is already stripped by
+ * the caller). Falls back to a generic file glyph, so a link is always visually
+ * marked as a file even for an extension not in the maps above.
+ */
+function fileIconSvg(path: string): string {
+  const name = path.split(/[/\\]/).pop() || "";
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1) : "";
+  const kind = ext ? iconKindFor(ext) : "file";
+  return (
+    `<svg class="path-link-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" ` +
+    `stroke="${ICON_TONE[kind]}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ` +
+    `aria-hidden="true">${ICON_SVG[kind]}</svg>`
+  );
+}
+
+/**
+ * Wrap openable paths in `<a class="path-link" data-open-file>`, escaping
+ * everything else.
+ *
+ * The attribute (not an inline handler) is deliberate: DOMPurify strips
+ * `onclick`, and `data-open-file` is whitelisted, so the click is handled by
+ * delegation on the message container — the same pattern the copy button uses.
+ * The icon makes the link identifiable at a glance rather than relying on the
+ * reader noticing a colour change.
+ */
+export function linkifyPaths(text: string): string {
+  let out = "";
+  let last = 0;
+  OPENABLE_PATH_RE.lastIndex = 0;
+  for (const m of text.matchAll(OPENABLE_PATH_RE)) {
+    const raw = m[1];
+    const start = m.index ?? 0;
+    // Trailing sentence punctuation is not part of the filename ("see /a/b.md."
+    // must link /a/b.md). A `:42` line reference is already excluded by the
+    // pattern itself, so it is left outside the link as text.
+    const path = raw.replace(/[.,;:)\]]+$/, "");
+    if (!path || !looksOpenablePath(path)) continue;
+    out += escapeText(text.slice(last, start));
+    out +=
+      `<a class="path-link" data-open-file="${escapeText(path)}" title="${escapeText(path)}">` +
+      fileIconSvg(path) +
+      `<span class="path-link-text">${escapeText(path)}</span></a>`;
+    last = start + path.length;
+  }
+  out += escapeText(text.slice(last));
+  return out;
+}
 
 // ── DOMPurify config ──
 const PURIFY_CONFIG: Record<string, unknown> = {
@@ -73,7 +264,7 @@ const PURIFY_CONFIG: Record<string, unknown> = {
     "href", "target", "rel", "title", "alt", "src", "class", "id", "style",
     "width", "height", "viewBox", "fill", "stroke", "stroke-width",
     "stroke-linecap", "stroke-linejoin", "d", "rx", "ry", "x", "y",
-    "xmlns", "data-copy", "data-mermaid", "data-lang",
+    "xmlns", "data-copy", "data-mermaid", "data-lang", "data-open-file", "aria-hidden",
   ],
 };
 

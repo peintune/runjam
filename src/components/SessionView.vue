@@ -2687,7 +2687,7 @@ watch(messages, (msgs) => {
       <div class="flex-1 relative min-h-0">
         <div ref="messageContainer" class="h-full overflow-y-auto chat-scrollbar-hidden" @scroll="onChatScroll">
           <div class="max-w-4xl mx-auto px-6 pt-5 pb-40">
-            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" @content-updated="onContentUpdated" />
+            <ChatMessages ref="chatMessagesRef" :messages="messages" :agent-id="selectedAgentId" :active="isActiveView" :cwd="activeSessionCwd" @content-updated="onContentUpdated" />
           </div>
         </div>
 

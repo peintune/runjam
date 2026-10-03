@@ -453,6 +453,73 @@
   background: #afb8c1;
 }
 
+/* ═══════════════════════════════════════════
+   Path links — a file path the agent mentions
+   ═══════════════════════════════════════════ */
+/* A path in message text or thinking, made clickable. Styled as a chip with a
+   file icon so it is identifiable at a glance: a bare colour change is easy to
+   miss in a wall of text, and the complaint was precisely that file references
+   were not recognisable. */
+/* `a.path-link` (specificity 0-1-1), not `.path-link` (0-1-0): the message body
+   is wrapped in Tailwind Typography, whose `prose-a:*` modifiers target
+   `:where(a)` and land at the same 0-1-0 — a tie decided by source order, which
+   is fragile. The extra `a` makes this rule win outright, and `font-weight` /
+   `text-decoration` are stated explicitly so prose's italic/underline defaults
+   cannot leak through. */
+a.path-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+  font-weight: 400;
+  color: #4f46e5;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  text-decoration: none;
+  cursor: pointer;
+  vertical-align: baseline;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+a.path-link:hover {
+  background: rgba(99, 102, 241, 0.16);
+  border-color: rgba(99, 102, 241, 0.35);
+  text-decoration: none;
+}
+
+/* A path can be long: clip it, keeping the tail (the filename, which is what
+   identifies it) visible. */
+.path-link-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.path-link-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.dark a.path-link {
+  color: #a5b4fc;
+  background: rgba(129, 140, 248, 0.12);
+  border-color: rgba(129, 140, 248, 0.25);
+}
+.dark a.path-link:hover {
+  background: rgba(129, 140, 248, 0.2);
+  border-color: rgba(129, 140, 248, 0.4);
+}
+
+/* Thinking renders small and muted; the chip must not dominate it. */
+.thinking-text a.path-link {
+  padding: 0 3px;
+  font-size: 0.95em;
+}
+
 /* Dark variant scrollbar */
 .hljs-theme-dark pre::-webkit-scrollbar-thumb,
 .cb-wrap.hljs-theme-dark pre::-webkit-scrollbar-thumb {

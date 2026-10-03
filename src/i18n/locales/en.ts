@@ -266,6 +266,7 @@ const en = {
   "chat.copyMessage": "Copy message",
   "chat.cacheHit": "Cache hit",
   "chat.openInExplorer": "Open in file explorer",
+  "chat.openFile": "Open file",
 
   // ── Session view ────────────────────────────────────────────────────────
   "session.newSession": "New Session",
@@ -588,6 +589,14 @@ const en = {
   "editor.openWithDefault": "Open with system default app",
   "editor.loading": "Loading...",
   "editor.cannotPreview": "Cannot preview this file type.",
+  "editor.openExternal": "Open externally",
+  "editor.openInSystemApp": "Open this file with the system default app",
+  "editor.converting": "Converting document…",
+  "editor.noOfficeConverter": "LibreOffice was not found, so this presentation cannot be previewed in-app. Install LibreOffice for an embedded preview, or open it with the system app.",
+  "editor.emptySheet": "This sheet is empty.",
+  "editor.openFile": "Open",
+  "editor.revealInFinder": "Reveal in Finder",
+  "editor.copyPath": "Copy path",
   "terminal.close": "Close",
   "terminal.newTerminal": "New Terminal",
   "terminal.lightweightHint": "Your shell config is heavy, so the terminal runs in lightweight mode to reduce CPU usage (rc files are not loaded).",
