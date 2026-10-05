@@ -30,22 +30,40 @@ const altSources = computed(() => {
   return items;
 });
 
+/**
+ * The website's download page.
+ *
+ * Used as the guaranteed fallback when the automatic update fails. On Windows the
+ * updater downloads from GitHub, which is intermittently unreachable from
+ * mainland China — and when that happens the backend metadata that carries the
+ * mirror links may itself be unavailable (same network), leaving the user with an
+ * error and no way forward. This link always works, so it is shown on failure
+ * regardless of what the backend returned.
+ *
+ * `www.` is deliberate: the bare domain 308-redirects to it.
+ */
+const OFFICIAL_DOWNLOAD_URL = "https://www.runjam.app/download";
+
 const installing = ref(false);
 const error = ref("");
+/** True once an automatic download/install attempt failed, so the UI can point
+ *  at the website instead of just reporting the error. */
+const installFailed = ref(false);
 
 async function onPrimaryAction() {
   if (props.result.action === "install") {
     installing.value = true;
     error.value = "";
+    installFailed.value = false;
     try {
       await installUpdate();
       // On success the app restarts itself; nothing more to do here.
     } catch (e) {
-      // Windows 上自动下载走 GitHub，国内常常失败；若已列出手动下载地址，
-      // 提示用户改用下面的源（含国内镜像）。
-      error.value = altSources.value.length > 0
-        ? `${String(e)} · ${t("update.installFailedUseManual")}`
-        : String(e);
+      // Windows downloads the update from GitHub, which often fails on mainland
+      // networks. Report the error AND surface the website, which is the only
+      // route that does not depend on GitHub or the metadata API.
+      error.value = String(e);
+      installFailed.value = true;
       installing.value = false;
     }
   } else if (props.result.downloadUrl) {
@@ -54,12 +72,25 @@ async function onPrimaryAction() {
     } catch {
       error.value = t("update.openDownloadFailed");
     }
+  } else {
+    // Nothing to open: the backend reported an update but no download URL (its
+    // metadata request can fail on the same network that broke the check). Going
+    // silent here would look like a dead button, so fall back to the website.
+    await openOfficialDownload();
   }
 }
 
 async function openAltSource(url: string) {
   try {
     await openUrl(url);
+  } catch {
+    error.value = t("update.openDownloadFailed");
+  }
+}
+
+async function openOfficialDownload() {
+  try {
+    await openUrl(OFFICIAL_DOWNLOAD_URL);
   } catch {
     error.value = t("update.openDownloadFailed");
   }
@@ -88,7 +119,9 @@ async function openAltSource(url: string) {
       />
       <!-- 备用下载源（GitHub / 国内镜像），手动选择 -->
       <div v-if="altSources.length > 0" class="mt-4 rounded-xl border border-gray-100 bg-gray-50/60 p-3">
-        <p class="text-[12px] font-medium text-gray-500 mb-2">{{ $t("update.downloadSource") }}</p>
+        <p class="text-[12px] font-medium text-gray-500 mb-2">
+          {{ installFailed ? $t("update.officialDownloadHint") : $t("update.downloadSource") }}
+        </p>
         <div class="space-y-1.5">
           <button
             v-for="src in altSources"
@@ -105,7 +138,27 @@ async function openAltSource(url: string) {
           </button>
         </div>
       </div>
-      <p v-if="error" class="mt-3 text-[12px] text-red-500">{{ error }}</p>
+      <p v-if="error" class="mt-3 text-[12px] text-red-500 break-words">{{ error }}</p>
+
+      <!-- 自动更新失败时的兜底：官网下载页。
+           这条路径不依赖 GitHub，也不依赖返回下载地址的元数据接口（两者在
+           国内网络下可能同时不可用），所以无论后端给了什么都要显示出来 ——
+           否则用户只看到一行报错，无路可走。 -->
+      <div
+        v-if="installFailed || error"
+        class="mt-3 rounded-xl border border-amber-200 bg-amber-50/70 p-3"
+      >
+        <p class="text-[12px] leading-relaxed text-amber-800">
+          {{ $t("update.installFailedUseManual") }}
+        </p>
+        <button
+          class="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-[13px] font-medium text-white bg-blue-600 hover:bg-blue-700 active:scale-[0.99] transition-all duration-150 cursor-pointer"
+          @click="openOfficialDownload"
+        >
+          <ExternalLink :size="14" />
+          {{ $t("update.goOfficialDownload") }}
+        </button>
+      </div>
       <div class="mt-6 flex items-center justify-end gap-3">
         <button
           class="rounded-md px-4 py-2 text-[13px] font-medium text-gray-500 hover:text-gray-700 transition-colors"
