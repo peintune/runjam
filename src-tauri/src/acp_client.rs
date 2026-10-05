@@ -375,6 +375,39 @@ pub(crate) fn find_bundled_claude_acp() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Resolve the path we hand to `CLAUDE_CODE_EXECUTABLE` to a real executable.
+///
+/// On Windows the ACP agent passes this path to Node's `child_process.spawn`,
+/// which refuses to launch a `.cmd`/`.bat` without a shell (the CVE-2024-27980
+/// mitigation) and throws `EINVAL`. Because the agent reports that as an ACP
+/// error, every `session/new` then fails with `spawn EINVAL`. npm's
+/// `claude.cmd` shim is only a wrapper around the native binary at
+/// `node_modules/@anthropic-ai/claude-code/bin/claude.exe`, so translate the
+/// shim to that binary. Returns `None` when a shim cannot be translated, so the
+/// caller can fall through to the bundled SDK binary instead of handing Node a
+/// path it will refuse.
+fn resolve_native_claude_executable(path: String) -> Option<String> {
+    if !cfg!(target_os = "windows") {
+        return Some(path);
+    }
+    let p = std::path::Path::new(&path);
+    let is_shim = p
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+        .unwrap_or(false);
+    if !is_shim {
+        return Some(path);
+    }
+    let native = p.parent()?.join("node_modules").join("@anthropic-ai").join("claude-code").join("bin").join("claude.exe");
+    if native.exists() {
+        rjlog!("[ACP] Resolved native claude.exe from shim: {:?}", native);
+        Some(native.to_string_lossy().to_string())
+    } else {
+        rjlog!("[ACP] Native claude.exe not found next to shim: {:?}", native);
+        None
+    }
+}
+
 /// Locate the pre-bundled Claude native binary from the platform-specific
 /// `@anthropic-ai/claude-agent-sdk-{os}-{arch}` package shipped in app
 /// resources. This is the binary that `claude-agent-acp` spawns under the
@@ -838,19 +871,38 @@ impl AcpClient {
         // Search both bundled and data-dir Node.js so the ACP agent can
         // find the CLI even when the two directories differ.
         if agent_type == "claude" {
+            // On Windows prefer a real `.exe`: Node's `child_process.spawn`
+            // cannot launch a `.cmd` shim without a shell and throws
+            // `spawn EINVAL` (see `resolve_native_claude_executable`).
             let claude_candidates: &[&str] = if cfg!(target_os = "windows") {
-                &["claude.cmd", "claude.exe"]
+                &["claude.exe", "claude.cmd"]
             } else {
                 &["claude"]
             };
-            let claude_bin = find_agent_binary(app, claude_candidates);
+            let claude_bin = find_agent_binary(app, claude_candidates)
+                .and_then(resolve_native_claude_executable);
             // Also check in the same directory as node_bin (used by the ACP
             // launcher) in case the binary was installed there.
             let claude_bin = claude_bin.or_else(|| {
                 let node_dir = std::path::Path::new(&cmd_path).parent()?;
                 for c in claude_candidates {
                     let p = node_dir.join(c);
-                    if p.exists() { return Some(p.to_string_lossy().to_string()); }
+                    if p.exists() {
+                        return resolve_native_claude_executable(p.to_string_lossy().to_string());
+                    }
+                }
+                None
+            });
+            // Also check the system npm global prefix (`%APPDATA%\npm` on
+            // Windows) — the detector registers agents installed there, but
+            // it is not covered by `find_agent_binary`.
+            let claude_bin = claude_bin.or_else(|| {
+                let prefix = std::path::Path::new(&std::env::var("APPDATA").ok()?).join("npm");
+                for c in claude_candidates {
+                    let p = prefix.join(c);
+                    if p.exists() {
+                        return resolve_native_claude_executable(p.to_string_lossy().to_string());
+                    }
                 }
                 None
             });
@@ -2066,7 +2118,11 @@ impl AcpClient {
                 ["claude.exe", "claude.cmd"].iter()
                     .find_map(|c| {
                         let p = node_dir.join(c);
-                        if p.exists() { Some(p.to_string_lossy().to_string()) } else { None }
+                        if p.exists() {
+                            resolve_native_claude_executable(p.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
                     })
             } else {
                 let p = node_dir.join("claude");
