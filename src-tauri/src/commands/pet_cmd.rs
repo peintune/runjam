@@ -540,6 +540,10 @@ fn ensure_pet_chat(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     .shadow(true)
     .always_on_top(true)
     .skip_taskbar(true)
+    // A non-activating macOS panel can otherwise consume the first press just
+    // to become interactive, leaving the composer looking unresponsive. Let
+    // WebKit receive that press so its textarea can take focus immediately.
+    .accept_first_mouse(true)
     .visible(false);
 
     #[cfg(target_os = "macos")]

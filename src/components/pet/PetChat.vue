@@ -68,6 +68,8 @@ const chatEl = ref<HTMLDivElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const attachListOpen = ref(false);
 let unlistenOpened: UnlistenFn | null = null;
+let focusFrame: number | null = null;
+let focusTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Keep the newest message in view, but only when the user is already at the
@@ -105,11 +107,45 @@ async function openInMain() {
   await openInMainWindow();
 }
 
+/** Focus the composer without scrolling the transcript or changing its selection. */
+function focusComposer() {
+  inputEl.value?.focus({ preventScroll: true });
+}
+
+function cancelFocusRetries() {
+  if (focusFrame !== null) {
+    cancelAnimationFrame(focusFrame);
+    focusFrame = null;
+  }
+  if (focusTimer !== null) {
+    clearTimeout(focusTimer);
+    focusTimer = null;
+  }
+}
+
 /** The chat window is hidden (not destroyed) when dismissed, so the session
- *  keeps running. On re-open we refocus the input. */
+ *  keeps running. On re-open, retry focus after the native show transition has
+ *  settled — the first attempt can otherwise race WebView becoming key. */
 async function focusInput() {
   await nextTick();
-  inputEl.value?.focus();
+  cancelFocusRetries();
+  focusComposer();
+  focusFrame = requestAnimationFrame(() => {
+    focusFrame = null;
+    focusComposer();
+  });
+  focusTimer = setTimeout(() => {
+    focusTimer = null;
+    focusComposer();
+  }, 80);
+}
+
+/** A native first click can reach the webview before WebKit assigns focus to
+ *  the textarea. Focus explicitly for any press in the input area; controls
+ *  keep their native click behavior. */
+function onComposerPointerDown(e: PointerEvent) {
+  if ((e.target as HTMLElement | null)?.closest("button")) return;
+  focusComposer();
 }
 
 /** Enter sends; Shift+Enter inserts a newline. */
@@ -428,6 +464,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  cancelFocusRetries();
   if (unlistenOpened) {
     try { unlistenOpened(); } catch {}
     unlistenOpened = null;
@@ -535,67 +572,21 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- Composer: mirrors the main window's session composer — skills above the
-         input, and the file/permission/model/reasoning controls on the action
-         row below it. -->
+    <!-- Composer: roomy input plus one compact action row below it. -->
     <div class="flex-shrink-0 border-t border-gray-100 dark:border-[#26262f] p-2.5">
-      <!-- Skills (compact): the selected set as removable chips plus a picker. -->
-      <div class="flex items-center gap-1.5 mb-1.5 min-h-[24px]">
-        <div class="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 no-scrollbar">
-          <span
-            v-for="name in config.skills"
-            :key="name"
-            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] flex-shrink-0
-                   bg-gray-100 text-gray-700 dark:bg-[#26262f] dark:text-gray-500 cursor-pointer
-                   hover:bg-gray-200 dark:hover:bg-[#35353f] transition-colors"
-            @click="toggleSkill(name)"
-          >
-            {{ name }}<X :size="9" />
-          </span>
-        </div>
-        <div class="relative flex-shrink-0" data-pet-popover>
-          <button :class="CHIP" :title="t('pet.skills')" @click="toggleMenu('skills', $event)">
-            <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
-            <span class="truncate">
-              {{ t("pet.skills") }}<template v-if="config.skills.length"> · {{ config.skills.length }}</template>
-            </span>
-            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
-          </button>
-          <Teleport to="body">
-            <div v-if="openMenu === 'skills'" :class="MENU" :style="menuStyle" data-pet-popover>
-            <div class="p-1.5 grid grid-cols-2 gap-1">
-              <button
-                v-for="s in availableSkills"
-                :key="s.name"
-                class="px-2 py-1.5 rounded-md border text-left transition-all cursor-pointer"
-                :class="skillChipClass(s.name)"
-                :title="s.description"
-                @click="toggleSkill(s.name)"
-              >
-                <span class="block text-[11px] font-medium leading-tight truncate">{{ s.name }}</span>
-                <span class="block text-[9px] leading-snug line-clamp-2 opacity-70">{{ s.description }}</span>
-              </button>
-            </div>
-            <div v-if="availableSkills.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
-              {{ t("pet.skills") }} —
-            </div>
-            </div>
-          </Teleport>
-        </div>
-      </div>
-
       <!-- Input box -->
       <div
         class="flex items-end gap-2 rounded-xl border border-gray-200 dark:border-[#2c2c36]
                bg-gray-50 dark:bg-[#131318] px-2.5 py-2 focus-within:border-indigo-300"
+        @pointerdown="onComposerPointerDown"
       >
         <textarea
           ref="inputEl"
           v-model="input"
-          rows="1"
+          rows="3"
           :placeholder="busy ? t('pet.answering') : t('pet.askSomething')"
           class="flex-1 bg-transparent border-none outline-none resize-none text-[12px] text-gray-800
-                 placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed max-h-28 no-scrollbar"
+                 placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed min-h-16 max-h-28 no-scrollbar"
           @keydown="onKeydown"
         />
         <button
@@ -620,7 +611,7 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Action row: file + project folder + permission + model + reasoning, packed
+      <!-- Action row: file + Skills + project folder + permission + model + reasoning, packed
            on ONE line. No `flex-1` spacer here: spreading them to the two ends
            made the attachments look like a separate row from the option chips. -->
       <div class="flex items-center gap-1.5 mt-1.5 flex-nowrap overflow-hidden">
@@ -639,6 +630,38 @@ onBeforeUnmount(() => {
           :title="t('pet.attachments')"
           @click="toggleAttachList($event)"
         >{{ attachedFiles.length }}</button>
+
+        <!-- Skills stays next to attachments so all extra prompt context starts
+             in one predictable place on the compact control row. -->
+        <div class="relative flex-shrink-0" data-pet-popover>
+          <button :class="CHIP" :title="t('pet.skills')" @click="toggleMenu('skills', $event)">
+            <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
+            <span class="truncate">
+              {{ t("pet.skills") }}<template v-if="config.skills.length"> · {{ config.skills.length }}</template>
+            </span>
+            <ChevronDown :size="10" class="flex-shrink-0 opacity-60" />
+          </button>
+          <Teleport to="body">
+            <div v-if="openMenu === 'skills'" :class="MENU" :style="menuStyle" data-pet-popover>
+              <div class="p-1.5 grid grid-cols-2 gap-1">
+                <button
+                  v-for="s in availableSkills"
+                  :key="s.name"
+                  class="px-2 py-1.5 rounded-md border text-left transition-all cursor-pointer"
+                  :class="skillChipClass(s.name)"
+                  :title="s.description"
+                  @click="toggleSkill(s.name)"
+                >
+                  <span class="block text-[11px] font-medium leading-tight truncate">{{ s.name }}</span>
+                  <span class="block text-[9px] leading-snug line-clamp-2 opacity-70">{{ s.description }}</span>
+                </button>
+              </div>
+              <div v-if="availableSkills.length === 0" class="px-2 py-2 text-[10px] text-gray-500">
+                {{ t("pet.skills") }} —
+              </div>
+            </div>
+          </Teleport>
+        </div>
 
         <div class="relative min-w-0" data-pet-popover>
           <button
