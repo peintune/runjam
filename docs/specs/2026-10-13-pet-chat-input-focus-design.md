@@ -3,8 +3,9 @@
 ## Goal
 
 Make the desktop-pet chat composer reliably accept the first click and receive
-keyboard focus whenever the chat window is opened, without changing session or
-window-placement behavior.
+keyboard focus whenever the chat window is opened. Improve the compact composer
+layout by grouping Skills with the bottom controls and making the input area
+comfortably multi-line, without changing session or window-placement behavior.
 
 ## Problem
 
@@ -27,7 +28,14 @@ which can race the native show/focus transition.
 3. On a pointer-down inside the composer, explicitly focus the textarea unless
    the pointer was on the send/stop button. This handles any remaining dropped
    browser-level focus event.
-4. Keep existing keyboard handling, sending, toolbar popovers, and native
+4. Move the Skills picker from its dedicated row above the textarea into the
+   bottom action row, alongside attachments, project folder, permission, model,
+   and reasoning controls. Preserve its existing popup behavior and selected
+   count. The action row remains a single horizontal, clipped/scrollable control
+   strip rather than creating another composer row.
+5. Increase the textarea's resting height to approximately three lines (about
+   64px) while retaining its existing maximum height and Enter-to-send behavior.
+6. Keep existing keyboard handling, sending, toolbar popovers, and native
    window activation policy unchanged.
 
 ## Verification
@@ -39,10 +47,10 @@ which can race the native show/focus transition.
 - Manually verify on macOS: with the popup closed and RunJam unfocused, click
   the pet icon once, then click/type in the composer; repeat after hiding and
   reopening it. Confirm send and toolbar controls retain their existing
-  behavior.
+  behavior, and that Skills remains reachable from the bottom row.
 
 ## Scope and non-goals
 
-This change only addresses focus and first-click delivery in the pet chat. It
-does not redesign the pet panel, change its always-on-top/full-screen behavior,
-or modify agent/session lifecycle handling.
+This change only addresses focus and first-click delivery plus the pet chat
+composer layout. It does not redesign the pet panel, change its
+always-on-top/full-screen behavior, or modify agent/session lifecycle handling.
