@@ -29,10 +29,11 @@ which can race the native show/focus transition.
    the pointer was on the send/stop button. This handles any remaining dropped
    browser-level focus event.
 4. Move the Skills picker from its dedicated row above the textarea into the
-   bottom action row, alongside attachments, project folder, permission, model,
-   and reasoning controls. Preserve its existing popup behavior and selected
-   count. The action row remains a single horizontal, clipped/scrollable control
-   strip rather than creating another composer row.
+   bottom action row, immediately after the attachment button and its optional
+   attachment-count badge. The remaining order is project folder, permission,
+   model, and reasoning. Preserve the Skills popup behavior and selected count.
+   The action row remains a single horizontal, clipped/scrollable control strip
+   rather than creating another composer row.
 5. Increase the textarea's resting height to approximately three lines (about
    64px) while retaining its existing maximum height and Enter-to-send behavior.
 6. Keep existing keyboard handling, sending, toolbar popovers, and native
