@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export function getAgentConfigMode(agentId: string): Promise<"native" | "managed"> {
+  return invoke("get_agent_config_mode", { agentId });
+}
+export function setAgentConfigMode(agentId: string, mode: "native" | "managed"): Promise<void> {
+  return invoke("set_agent_config_mode", { agentId, mode });
+}
+
 export type ProtocolType = "anthropic" | "openai_chat" | "openai_responses" | "gemini";
 
 export interface LlamaModel {

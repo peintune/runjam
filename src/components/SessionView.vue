@@ -5,9 +5,10 @@ import { useRouter } from "vue-router";
 import { useWorkspaceStore, type Session } from "../stores/useWorkspaceStore";
 import { useMessageStore } from "../stores/useMessageStore";
 import { useAgentStore } from "../stores/useAgentStore";
-import { getModels, getLastAgent, setLastAgent, getAgentModels, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
+import { getModels, getLastAgent, setLastAgent, getAgentModels, getAgentConfigMode, setAgentModel, type ModelEntry, getProviderByName } from "../api/models";
+import { withNativeChoice, chooseContextTransfer, supportsNativeConfig, resolveDefaultPermission } from "../composables/agentLaunch";
 import { getProviderLogo } from "../utils/providerIcons";
-import { sendInput, startSession as apiStartSession, stopSession as tauriStopSession, sessionAlive, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo } from "../api/sessions";
+import { sendInput, startSession as apiStartSession, stopSession as tauriStopSession, sessionAlive, getSessionRuntime, NATIVE_MODEL_ID, listSkills, listSessionSkills, deploySessionSkill, removeSessionSkill, type SkillInfo, type SessionRuntime } from "../api/sessions";
 import { saveConversationMessage, getConversationMessages, saveSession, updateSessionModel } from "../api/search";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { recordEvent } from "../lib/diag";
@@ -32,8 +33,10 @@ import { t, currentLocale, type TranslationKey } from "../i18n";
 
 interface InteractionOption { key: string; label: string; is_default: boolean; }
 interface AcpPayload {
+  run_id?: string;
+  runtime?: SessionRuntime;
   session_id: string; turn_id: string; msg_id: string;
-  type: "start" | "thinking" | "text" | "tool_call" | "tool_result" | "interaction" | "permission_request" | "finish" | "error";
+  type: "runtime" | "start" | "thinking" | "text" | "tool_call" | "tool_result" | "interaction" | "permission_request" | "finish" | "error";
   content?: string; status?: string; duration?: string;
   stop_reason?: string; message?: string;
   prompt?: string; options?: InteractionOption[];
@@ -235,6 +238,8 @@ function agentDisplayName(agent: { id: string; display_name: string }): string {
 
 const modelList = ref<ModelEntry[]>(agentStore.models.length > 0 ? agentStore.models : []);
 const selectedModel = ref("");
+const nativeMode = computed(() => supportsNativeConfig(selectedAgentId.value) && selectedModel.value === NATIVE_MODEL_ID);
+const activeRuntime = computed(() => store.activeSession?.runtime ?? null);
 const assignedModels = ref<ModelEntry[]>([]);
 
 // 记录每个会话的 agent 进程实际启动时使用的模型。切换模型后，运行中的
@@ -508,9 +513,10 @@ const showPermissionDropdown = ref(false);
 // 新建会话 → 创建会话会销毁重建本组件，组件内状态会复位（新会话页开启的
 // reasoning 进会话页后丢失）。store 是模块级单例，跨实例共享。
 const noThinking = computed({
-  get: () => store.noThinking,
+  get: () => store.activeSession?.reasoningEnabled ?? (store.activeSession?.runtime ? !store.activeSession.runtime.reasoning_disabled : store.noThinking),
   set: (v: boolean) => {
-    store.noThinking = v;
+    if (store.activeSession) store.activeSession.reasoningEnabled = v;
+    else store.noThinking = v;
   },
 });
 
@@ -569,18 +575,12 @@ watch(inputText, (newVal) => {
   store.activeDraftChars = newVal.length;
 });
 
-const defaultPermissionModes: Record<string, string> = {
-  "claude-code": "approve_for_me",
-  "codex-cli": "approve_for_me",
-  "gemini-cli": "approve_for_me",
-};
-
-async function loadPermissionMode(agentId: string): Promise<string> {
+async function loadPermissionMode(agentId: string, native = false): Promise<string> {
   try {
     const saved = await invoke<string>("get_agent_permission_mode", { agentId });
-    if (saved) return saved;
+    return resolveDefaultPermission(saved, native);
   } catch {}
-  return defaultPermissionModes[agentId] || "ask_approval";
+  return resolveDefaultPermission("", native);
 }
 
 async function savePermissionMode(agentId: string, mode: string) {
@@ -604,17 +604,21 @@ async function saveSessionModel(agentId: string, modelId: string) {
 }
 
 watch(selectedAgentId, async (newAgentId) => {
-  selectedPermissionMode.value = await loadPermissionMode(newAgentId);
+  const saved = await loadPermissionMode(newAgentId, nativeMode.value);
+  if (selectedAgentId.value !== newAgentId) return;
+  selectedPermissionMode.value = store.activeSession?.runtime?.permission_mode
+    ?? saved;
 }, { immediate: true });
 
 watch(selectedPermissionMode, (newMode) => {
-  savePermissionMode(selectedAgentId.value, newMode);
+  if (!store.activeSession || (selectedAgentId.value !== "codex-cli" && !activeRuntime.value)) savePermissionMode(selectedAgentId.value, newMode);
   // Live-propagate the new mode to EVERY running session of this agent's ACP
   // client so it takes effect immediately — previously the mode was only
   // persisted and only applied on session restart, so switching out of Plan
   // Mode mid-conversation did nothing (and other sessions of the same agent
   // kept the stale snapshot too).
   for (const sess of store.sessions) {
+    if (selectedAgentId.value === "codex-cli" || sess.runtime) continue; // Planned sessions apply permissions on their next launch.
     if (sess.cli === selectedAgentId.value && (sess.status === 'running' || sess.status === 'idle')) {
       invoke("set_session_permission_mode", { id: sess.id, mode: newMode }).catch(() => {});
     }
@@ -622,6 +626,7 @@ watch(selectedPermissionMode, (newMode) => {
 });
 
 const permissionModeOptions = [
+  { id: "inherit" },
   { id: "read_only" },
   { id: "ask_approval" },
   { id: "approve_for_me" },
@@ -637,6 +642,7 @@ const permissionLabels: Record<string, Record<string, string>> = {
 };
 
 const permissionDescriptions: Record<string, TranslationKey> = {
+  inherit: "models.inheritPermissions",
   read_only: "perm.readOnly",
   ask_approval: "perm.askApproval",
   approve_for_me: "perm.approveForMe",
@@ -644,14 +650,15 @@ const permissionDescriptions: Record<string, TranslationKey> = {
 };
 
 const permissionModeLabel = computed(() => {
+  if (selectedPermissionMode.value === "inherit") return t("models.inheritPermissions");
   const raw = permissionLabels[selectedAgentId.value]?.[selectedPermissionMode.value] || selectedPermissionMode.value;
   return t(raw as TranslationKey);
 });
 
 const permissionDisplayLabels = computed(() => {
-  return permissionModeOptions.map(o => ({
+  return permissionModeOptions.filter(o => o.id !== "inherit" || supportsNativeConfig(selectedAgentId.value)).map(o => ({
     ...o,
-    label: t((permissionLabels[selectedAgentId.value]?.[o.id] || o.id) as TranslationKey),
+    label: o.id === "inherit" ? t("models.inheritPermissions") : t((permissionLabels[selectedAgentId.value]?.[o.id] || o.id) as TranslationKey),
     description: t(permissionDescriptions[o.id]),
   }));
 });
@@ -1422,6 +1429,12 @@ function handleAcpEvent(sessionId: string, p: AcpPayload) {
   // buffered lines can still arrive in the window between Stop and the process
   // actually dying.
   const sess = store.sessions.find(s => s.id === sessionId);
+  if (sess && p.type === "runtime") {
+    sess.runtime = p.runtime;
+    sess.acpSessionId = p.runtime?.acp_session_id ?? "";
+    return;
+  }
+  if (p.run_id && sess?.runtime && p.run_id !== sess.runtime.run_id) return;
   if (!sess || sess.status === 'stopped') {
     // 事件会被丢弃 → 还在等待的 retry 定时器永远等不到"活动"，必须在此时清掉，
     // 否则它会在超时后给一个已经停止的会话追加 "Error: Timed out ..."。
@@ -1988,7 +2001,7 @@ onMounted(() => {
     }).catch(()=>{});
   }
   if (modelList.value.length === 0) {
-    getModels().then(list => { if(list) modelList.value = list; }).catch(()=>{});
+    void loadModels();
   }
   loadAgentModels();
   checkServerRunning();
@@ -2021,7 +2034,13 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', closeDropdowns);
 });
 
-async function loadModels() { try{modelList.value=await getModels();}catch{modelList.value=[];} }
+async function loadModels() {
+  const agent = selectedAgentId.value;
+  try {
+    const models = await withNativeChoice(agent, await getModels());
+    if (selectedAgentId.value === agent) modelList.value = models;
+  } catch { if (selectedAgentId.value === agent) modelList.value = []; }
+}
 async function loadAgentModels() {
   try { assignedModels.value = await getAgentModels(selectedAgentId.value); } catch { assignedModels.value = []; }
 }
@@ -2032,6 +2051,10 @@ watch(() => store.activeSession, async (session) => {
     selectedAgentId.value = session.cli;
     if (session.model) {
       selectedModel.value = session.model;
+    }
+    if (supportsNativeConfig(session.cli)) {
+      session.runtime = await getSessionRuntime(session.id).catch(() => null);
+      if (session.runtime) selectedPermissionMode.value = session.runtime.permission_mode;
     }
   } else {
     // Auto-focus textarea when returning to the new session page
@@ -2045,16 +2068,25 @@ watch(selectedAgentId, async (id) => {
   try{await setLastAgent(id);}catch{} 
   await loadModels(); 
   await loadAgentModels();
+  if (id !== selectedAgentId.value) return;
   // If the active session carries its own model, honor it over the per-agent
   // default — otherwise opening an old session would silently fall back to the
   // last globally-selected model (e.g. a local model) and break it.
   const activeModel = store.activeSession?.model;
   if (activeModel && modelList.value.some(m => m.id === activeModel)) {
     selectedModel.value = activeModel;
+    if (activeModel === NATIVE_MODEL_ID) selectedPermissionMode.value = store.activeSession?.runtime?.permission_mode ?? "inherit";
     return;
   }
   const savedModel = await loadSessionModel(id);
-  if (savedModel && modelList.value.some(m => m.id === savedModel)) {
+  if (supportsNativeConfig(id) && await getAgentConfigMode(id) === "native") {
+    const permission = await loadPermissionMode(id, true);
+    if (id !== selectedAgentId.value) return;
+    selectedPermissionMode.value = permission;
+    selectedModel.value = NATIVE_MODEL_ID;
+    return;
+  }
+  if (savedModel && savedModel !== NATIVE_MODEL_ID && modelList.value.some(m => m.id === savedModel)) {
     selectedModel.value = savedModel;
   } else if (assignedModels.value.length > 0) {
     selectedModel.value = assignedModels.value[0].id;
@@ -2293,7 +2325,8 @@ async function handleSend() {
       // Process is truly gone — start a fresh one. freshAgentProcess makes the
       // send flow below inject the recent conversation as context.
       try {
-        await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+        const info = await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, s.id, s.model || undefined, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value), { reasoningDisabled: !noThinking.value });
+        s.runtime = info.runtime;
       } catch (err) {
         console.error("Failed to restart session:", err);
         // Show error in chat instead of calling sendInput (which would fail with "No client for session")
@@ -2340,7 +2373,8 @@ async function handleSend() {
       store.activeSession.status = 'running';
       store.sessions = [...store.sessions];
     }
-    invoke("set_reasoning_disabled", { disabled: !noThinking.value }).catch(() => {});
+    await invoke("set_reasoning_disabled", { disabled: !noThinking.value,
+      sessionId: store.activeSession.cli === "codex-cli" ? sessionId : null });
     // The agent's on-disk model config is shared per-agent (e.g. ~/.claude/
     // settings.json), not per-session. Re-apply THIS session's own model before
     // sending so switching models in another session doesn't leak into this one.
@@ -2348,7 +2382,7 @@ async function handleSend() {
     if (sessionModel) {
       // 先把模型写入 agent 配置文件（重启后的新进程会读到最新值），
       // 必须等待写入完成再重启进程
-      await setAgentModel(store.activeSession.cli, sessionModel).catch(() => {});
+      if (store.activeSession.cli !== "codex-cli") await setAgentModel(store.activeSession.cli, sessionModel);
       // 若进程启动时用的模型与本次不同，运行中的进程仍使用启动时的旧模型
       //（进程环境变量在启动时固化，如 gemini 的 GEMINI_MODEL），必须重启
       // 进程才能让新模型生效。重启会把 freshAgentProcess 置为 true，下面的
@@ -2358,6 +2392,20 @@ async function handleSend() {
         await ensureAgentProcessUsesModel(sessionId, sessionModel);
       } catch (err) {
         console.error("ensureAgentProcessUsesModel failed:", err);
+        isProcessing.value = false;
+        const state = getSessionState(sessionId);
+        state.isProcessing = false;
+        clearRetry(state);
+        state.messages.push({ role: "agent", content: `Configuration switch failed: ${err}`, isProcessing: false });
+        syncMessagesToView(state);
+        showWarning(String(err));
+        const session = store.activeSession;
+        if (session?.runtime) {
+          session.model = session.runtime.model_id;
+          selectedModel.value = session.runtime.model_id;
+          updateSessionModel(session.id, session.model).catch(() => {});
+        }
+        return;
       }
     }
     // 上下文注入：仅当 Agent 进程是刚启动的（freshAgentProcess）才需要把历史
@@ -2366,7 +2414,7 @@ async function handleSend() {
     // 用户消息已在上面入列，这里先排除最后一条（当前消息），避免它被重复计入
     // 历史（"Previous conversation: ...user: 1... --- New message: 1"）。
     let history: string[] | undefined = undefined;
-    if (store.activeSession?.freshAgentProcess) {
+    if (store.activeSession?.freshAgentProcess && store.activeSession.carryHistory !== false) {
       const sessionMsgs = msgStore.getMessages(sessionId);
       const prevMsgs = sessionMsgs.length > 0 ? sessionMsgs.slice(0, -1) : sessionMsgs;
       if (prevMsgs.length > 0) {
@@ -2435,15 +2483,15 @@ async function handleSend() {
 async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: string) {
   const s = store.activeSession;
   if (!s || !sessionModel) return;
-  const used = lastUsedModel.get(sessionId);
+  const used = s.runtime?.model_id ?? lastUsedModel.get(sessionId);
   // 仅在“明确知道”进程用的是不同模型时才重启。lastUsedModel 是内存 Map，
   // webview 刷新（dev 下 agent 文件落盘会触发 vite 整页重载）后被清空——
   // 此时 used 为 undefined。若照旧重启，会杀掉仍健康、且内存里带着完整会话
   // 上下文的进程，下一次消息就落进一个空上下文的新会话（“I only received…”）。
   // 无记录时假定运行中的进程用的就是会话持久化的模型（它本来就是用它启动的）。
-  if (used !== undefined && used !== sessionModel && s.status !== 'stopped' && s.status !== 'error') {
+  if (used !== undefined && (used !== sessionModel || (s.runtime && s.runtime.permission_mode !== selectedPermissionMode.value)) && s.status !== 'stopped' && s.status !== 'error') {
     console.log(`[MODEL-CHANGE] ${sessionId}: ${used ?? '(none)'} -> ${sessionModel}, restarting agent process`);
-    try { await tauriStopSession(sessionId); } catch {}
+    if (s.cli !== "codex-cli" && sessionModel !== NATIVE_MODEL_ID) { try { await tauriStopSession(sessionId); } catch {} }
     // tauriStopSession 直接杀进程，不产生 finish 事件：若被杀时消息还在
     // 处理中，其 isProcessing 会残留 true（hasLiveActivity 永远为 true，
     // ChatMessages 持续重渲染/滚动）。重启前清干净。
@@ -2454,7 +2502,8 @@ async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: stri
       }
       syncMessagesToView(st);
     }
-    await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, sessionId, sessionModel, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value));
+    const info = await apiStartSession(s.cli, s.cliDisplayName, s.directory || dirPath.value || undefined, sessionId, sessionModel, selectedMode.value, selectedPermissionMode.value, Array.from(selectedSkills.value), { reasoningDisabled: !noThinking.value });
+    s.runtime = info.runtime;
     s.status = 'running';
     s.freshAgentProcess = true;
     store.sessions = [...store.sessions];
@@ -2462,12 +2511,21 @@ async function ensureAgentProcessUsesModel(sessionId: string, sessionModel: stri
   lastUsedModel.set(sessionId, sessionModel);
 }
 
-function handleModelSelect(model: ModelEntry) {
+async function handleModelSelect(model: ModelEntry) {
+  if (store.activeSession && model.id !== selectedModel.value && store.activeSession.cli === "codex-cli") {
+    const session = store.activeSession;
+    try { session.carryHistory = await chooseContextTransfer(); }
+    catch (e) { showWarning(String(e)); return; }
+    if (store.activeSession?.id !== session.id) return;
+  }
   selectedModel.value = model.id;
+  if (supportsNativeConfig(selectedAgentId.value)) {
+    if (model.id !== NATIVE_MODEL_ID && selectedPermissionMode.value === "inherit") selectedPermissionMode.value = "ask_approval";
+  }
   showModelDropdown.value = false;
 
   track("model_changed", { model: model.id });
-  saveSessionModel(selectedAgentId.value, model.id);
+  if (!store.activeSession || (selectedAgentId.value !== "codex-cli" && !activeRuntime.value)) saveSessionModel(selectedAgentId.value, model.id);
   // Remember the model per-session (persisted to DB) so this selection only
   // affects the current session, not every session of the same agent.
   if (store.activeSession) {
@@ -2475,7 +2533,7 @@ function handleModelSelect(model: ModelEntry) {
     updateSessionModel(store.activeSession.id, model.id).catch(() => {});
   }
   // Immediately update agent config so the agent uses the right model name
-  setAgentModel(selectedAgentId.value, model.id).catch(() => {});
+  if (selectedAgentId.value !== "codex-cli") setAgentModel(selectedAgentId.value, model.id).catch(() => {});
 }
 
 // Clicking anywhere in the input box container (except buttons / interactive
@@ -2490,6 +2548,7 @@ function focusInputOnContainerClick(e: MouseEvent) {
 }
 
 async function toggleSkill(name: string) {
+  if (nativeMode.value) { showWarning(t("models.nativeExtensions")); return; }
   const session = store.activeSession;
   const cwd = session ? activeSessionCwd.value : null;
   console.log("[SKILL-TOGGLE]", { name, sessionId: session?.id, cwd, cli: session?.cli, sessionDir: session?.directory });
@@ -2766,7 +2825,7 @@ watch(messages, (msgs) => {
             <div class="skills-selector flex items-center gap-1.5 px-3 pt-2.5 pb-1.5 min-h-[34px]">
               <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">
                 <span
-                  v-for="name in selectedSkillNames" :key="name"
+                  v-for="name in (nativeMode ? [] : selectedSkillNames)" :key="name"
                   @click="toggleSkill(name)"
                   class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] bg-gray-100 text-gray-700 cursor-pointer hover:bg-gray-200 transition-colors flex-shrink-0"
                 >
@@ -2776,7 +2835,7 @@ watch(messages, (msgs) => {
               </div>
               <button
                 @click.stop="showSkillsPopover = !showSkillsPopover"
-                :disabled="availableSkills.length === 0"
+                :disabled="availableSkills.length === 0 || nativeMode"
                 :class="[
                   'inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors cursor-pointer flex-shrink-0',
                   availableSkills.length > 0
@@ -2785,7 +2844,7 @@ watch(messages, (msgs) => {
                       : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                     : 'text-gray-200 cursor-not-allowed',
                 ]"
-                :title="$t('session.skills')"
+                :title="$t(nativeMode ? 'models.nativeExtensions' : 'session.skills')"
               >
                 <Wand2 :size="13" />
               </button>
@@ -2793,7 +2852,7 @@ watch(messages, (msgs) => {
 
             <!-- Skills popover: card grid, stays open for multi-select -->
             <div
-              v-if="showSkillsPopover && availableSkills.length > 0"
+              v-if="!nativeMode && showSkillsPopover && availableSkills.length > 0"
               class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
             >
               <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
@@ -2909,8 +2968,19 @@ watch(messages, (msgs) => {
                     <ChevronDown :size="10" :class="props.compact ? 'hidden' : ''" />
                   </button>
                   <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
+                    <div v-if="supportsNativeConfig(selectedAgentId)" class="border-b border-gray-100 pb-1">
+                      <button v-for="model in modelList.filter(m => m.id === NATIVE_MODEL_ID)" :key="model.id"
+                        class="w-full px-3 py-2 text-left text-[12px] hover:bg-gray-50"
+                        :class="selectedModel === model.id ? 'text-indigo-700 bg-indigo-50' : 'text-gray-700'"
+                        @click="handleModelSelect(model)">
+                        {{ $t('models.nativeMode') }} · {{ model.name }}
+                      </button>
+                      <p v-if="activeRuntime" class="px-3 text-[10px] text-gray-500" :title="activeRuntime.config_root">
+                        {{ $t('models.requestedModel') }}: {{ activeRuntime.requested_model }}
+                      </p>
+                    </div>
                     <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.commercialModels") }}</div>
-                    <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
+                    <div v-for="model in modelList.filter(m => m.provider !== 'llama' && m.id !== NATIVE_MODEL_ID)" :key="model.id"
                       @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                       <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
@@ -2941,7 +3011,7 @@ watch(messages, (msgs) => {
                   </div>
                 </div>
 
-                <button @click="noThinking = !noThinking" :disabled="isProcessing" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" :title="$t('session.toggleReasoning')">
+                <button @click="noThinking = !noThinking" :disabled="isProcessing || nativeMode" class="p-1.5 rounded-lg transition-colors duration-150 mr-2 flex-shrink-0" :class="[noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer', isProcessing && 'opacity-50 cursor-not-allowed']" :title="$t(nativeMode ? 'models.nativeExtensions' : 'session.toggleReasoning')">
                   <Sparkles :size="14" />
                 </button>
 
@@ -3099,7 +3169,7 @@ watch(messages, (msgs) => {
             <div class="flex items-center gap-1.5 overflow-x-auto flex-1 min-w-0" style="scrollbar-width: none; -ms-overflow-style: none;">
               <!-- hide webkit scrollbar via inline class -->
               <span
-                v-for="name in selectedSkillNames" :key="name"
+                v-for="name in (nativeMode ? [] : selectedSkillNames)" :key="name"
                 @click="toggleSkill(name)"
                 class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] bg-gray-100 text-gray-700 cursor-pointer hover:bg-gray-200 transition-colors flex-shrink-0"
               >
@@ -3109,7 +3179,7 @@ watch(messages, (msgs) => {
             </div>
             <button
               @click.stop="showSkillsPopover = !showSkillsPopover"
-              :disabled="availableSkills.length === 0"
+              :disabled="availableSkills.length === 0 || nativeMode"
               :class="[
                 'inline-flex items-center justify-center w-6 h-6 rounded-md transition-colors cursor-pointer flex-shrink-0',
                 availableSkills.length > 0
@@ -3118,7 +3188,7 @@ watch(messages, (msgs) => {
                     : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                   : 'text-gray-200 cursor-not-allowed',
               ]"
-              :title="$t('session.skills')"
+              :title="$t(nativeMode ? 'models.nativeExtensions' : 'session.skills')"
             >
               <Wand2 :size="13" />
             </button>
@@ -3126,7 +3196,7 @@ watch(messages, (msgs) => {
 
           <!-- Skills popover: card grid, stays open for multi-select -->
           <div
-            v-if="showSkillsPopover && availableSkills.length > 0"
+            v-if="!nativeMode && showSkillsPopover && availableSkills.length > 0"
             class="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl border border-gray-100 shadow-lg z-50 overflow-hidden"
           >
             <div class="flex items-center justify-between px-3 py-2 border-b border-gray-50">
@@ -3242,8 +3312,19 @@ watch(messages, (msgs) => {
                   <ChevronDown :size="10" />
                 </button>
                 <div v-if="showModelDropdown" class="absolute bottom-full right-0 mb-1 w-64 bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden z-50 max-h-72 overflow-y-auto">
+                    <div v-if="supportsNativeConfig(selectedAgentId)" class="border-b border-gray-100 pb-1">
+                      <button v-for="model in modelList.filter(m => m.id === NATIVE_MODEL_ID)" :key="model.id"
+                        class="w-full px-3 py-2 text-left text-[12px] hover:bg-gray-50"
+                        :class="selectedModel === model.id ? 'text-indigo-700 bg-indigo-50' : 'text-gray-700'"
+                        @click="handleModelSelect(model)">
+                        {{ $t('models.nativeMode') }} · {{ model.name }}
+                      </button>
+                      <p v-if="activeRuntime" class="px-3 text-[10px] text-gray-500" :title="activeRuntime.config_root">
+                        {{ $t('models.requestedModel') }}: {{ activeRuntime.requested_model }}
+                      </p>
+                    </div>
                     <div class="px-3 py-1.5 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{{ $t("session.commercialModels") }}</div>
-                    <div v-for="model in modelList.filter(m => m.provider !== 'llama')" :key="model.id"
+                    <div v-for="model in modelList.filter(m => m.provider !== 'llama' && m.id !== NATIVE_MODEL_ID)" :key="model.id"
                       @click="handleModelSelect(model)"
                       :class="['flex items-center gap-2 px-3 py-2 text-left cursor-pointer transition-colors', selectedModel === model.id ? 'bg-gray-100 text-gray-900 font-medium' : 'text-gray-700 hover:bg-gray-50']">
                       <img :src="getProviderLogo(getProviderByName(model.provider_name)?.id || 'custom')" :alt="model.provider_name" class="w-4 h-4 object-contain" />
@@ -3284,7 +3365,7 @@ watch(messages, (msgs) => {
               </div>
 
               <!-- No thinking toggle -->
-              <button @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" :title="$t('session.toggleReasoning')">
+              <button :disabled="nativeMode" @click="noThinking = !noThinking" class="p-1.5 rounded-lg transition-colors duration-150 flex-shrink-0 mr-2" :class="noThinking ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 cursor-pointer' : 'bg-gray-100 text-gray-400 hover:bg-gray-200 cursor-pointer'" :title="$t(nativeMode ? 'models.nativeExtensions' : 'session.toggleReasoning')">
                 <Sparkles :size="14" />
               </button>
               <!-- Send button -->

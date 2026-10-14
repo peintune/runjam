@@ -13,7 +13,11 @@ mod acp_client;
 mod proxy;
 mod node_util;
 mod agent_isolation;
+mod agent_launch;
+mod codex_adapter;
+mod pet_window;
 mod agent_permissions;
+mod first_launch;
 mod skill;
 pub mod log_util;
 mod util;
@@ -69,9 +73,16 @@ pub fn run() {
     // Migrate database from the legacy platform app-data dir if present.
     migrate_legacy_db(&app_dir);
 
+    // Capture BEFORE search::init_db opens/creates the file. An upgrade or a
+    // migrated database is not a first launch, even without our new marker.
+    let new_install = !app_dir.join("runjam.db").exists();
     search::init_db();
     let db = Database::new(&app_dir).expect("Failed to create database");
     db::migrations::run_migrations(&db.conn.lock().unwrap());
+    let native_paths: Vec<_> = first_launch::AGENTS.into_iter().filter_map(|id|
+        models_config::native_config_path(id).map(|path| (id, path))).collect();
+    first_launch::initialize(&db.conn.lock().unwrap(), new_install, &native_paths)
+        .expect("Failed to initialize first-launch defaults");
 
     // Ensure default session working directory exists
     std::fs::create_dir_all(app_dir.join("session")).ok();
@@ -101,6 +112,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Mutex::new(SessionManager::new()))
         .manage(Mutex::new(AppState::load()))
+        .manage(Mutex::new(pet_window::PetChatState::default()))
         .manage(Mutex::new(db))
         .manage(proxy_state)
         .manage(Mutex::new(TerminalState::new()))
@@ -135,6 +147,8 @@ pub fn run() {
             commands::models_cmd::remove_model_from_agent,
             commands::models_cmd::read_agent_config_models,
             commands::models_cmd::get_native_models,
+            commands::models_cmd::get_agent_config_mode,
+            commands::models_cmd::set_agent_config_mode,
             commands::models_cmd::get_all_native_models,
             commands::models_cmd::snapshot_agent_config,
             commands::models_cmd::restore_native_config,
@@ -168,6 +182,7 @@ pub fn run() {
             commands::session_cmd::start_session,
             commands::session_cmd::stop_session,
             commands::session_cmd::session_alive,
+            commands::session_cmd::get_session_runtime,
             commands::session_cmd::send_input,
             commands::session_cmd::respond_interaction,
             commands::session_cmd::set_session_permission_mode,
@@ -228,6 +243,9 @@ pub fn run() {
             commands::pet_cmd::open_pet_chat,
             commands::pet_cmd::toggle_pet_chat,
             commands::pet_cmd::close_pet_chat,
+            commands::pet_cmd::get_pet_chat_pinned,
+            commands::pet_cmd::set_pet_chat_pinned,
+            commands::pet_cmd::suspend_pet_chat_autohide,
             commands::pet_cmd::focus_main_window,
             commands::pet_cmd::set_pet_enabled,
             commands::pet_cmd::pet_enabled,
@@ -252,6 +270,7 @@ pub fn run() {
             commands::telemetry_cmd::mark_announcement_read,
         ])
         .on_window_event(|window, event| {
+            commands::pet_cmd::handle_pet_focus(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Only the MAIN window owns these app-wide resources. Pet windows
                 // (pet-icon / pet-chat) close independently.

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 
 /** Minimal localStorage stub — the composable's session persistence is pure
  *  w.r.t. `window` otherwise, and vitest runs these tests in a node env. */
@@ -28,6 +29,136 @@ async function freshPetChat() {
   const mod = await import("./usePetChat");
   return mod;
 }
+
+describe("pet concurrent startup", () => {
+  beforeEach(() => {
+    globalThis.localStorage = makeLocalStorage();
+    setActivePinia(createPinia());
+  });
+
+  async function setup(stored = true, agent = "codex-cli", defaultMode = "native") {
+    const start = vi.fn();
+    const sendInput = vi.fn(async () => {});
+    vi.doMock("../api/sessions", () => ({
+      NATIVE_MODEL_ID: "__runjam_native__", startSession: start, sendInput,
+      sessionAlive: vi.fn(async () => false), stopSession: vi.fn(async () => {}),
+      getSessionRuntime: vi.fn(async () => null), listSkills: vi.fn(async () => []),
+    }));
+    vi.doMock("../api/models", () => ({
+      getLastAgent: vi.fn(async () => agent), setLastAgent: vi.fn(async () => {}),
+      getModels: vi.fn(async () => []), getAgentConfigMode: vi.fn(async () => defaultMode),
+      getSessionModel: vi.fn(async () => "managed"), getAgentModels: vi.fn(async () => [{id: "managed", name: "managed"}]),
+      getAgentPermissionMode: vi.fn(async () => "full_access"),
+      setSessionModel: vi.fn(async () => {}), setAgentPermissionMode: vi.fn(async () => {}),
+    }));
+    vi.doMock("./agentLaunch", () => ({
+      supportsNativeConfig: (agent: string) => ["claude-code", "gemini-cli", "codex-cli"].includes(agent),
+      resolveDefaultPermission: (saved: string, native: boolean) => saved || (native ? "inherit" : "approve_for_me"),
+      withNativeChoice: vi.fn(async () => [{id: "__runjam_native__", name: "CLI default"}, {id: "managed", name: "managed"}]),
+    }));
+    vi.doMock("../api/search", () => ({
+      saveSession: vi.fn(async () => {}), updateSessionModel: vi.fn(async () => {}),
+      saveConversationMessage: vi.fn(async () => {}), touchSession: vi.fn(async () => {}),
+    }));
+    vi.doMock("../stores/useLlamaStore", () => ({useLlamaStore: () => ({runningPort: 0, runningModel: null})}));
+    const mod = await freshPetChat();
+    const chat = mod.usePetChat();
+    chat.config.value = {...mod.defaultPetConfig(), agentId: agent, modelId: "__runjam_native__", permissionMode: "inherit"};
+    chat.availableAgents.value = [{id: agent, display_name: agent, installed: true, enabled: true}] as never;
+    if (stored) localStorage.setItem("runjam.pet.session", JSON.stringify({id: "existing", agentId: "codex-cli", model: "__runjam_native__", configKey: mod.petConfigKey(chat.config.value), lastActiveAt: Date.now()}));
+    return {chat, start, sendInput};
+  }
+
+  it.each([true, false])("shares pending startup instead of starting twice (stored=%s)", async stored => {
+    const {chat, start} = await setup(stored);
+    const finishes: Array<(info: {id: string}) => void> = [];
+    start.mockImplementation(() => new Promise(resolve => {finishes.push(resolve);}));
+    const first = chat.ensureSession();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    const second = chat.ensureSession();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    for (const finish of finishes) finish({id: "existing"});
+    expect(await Promise.all([first, second])).toEqual([true, true]);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks duplicate sends while startup is pending", async () => {
+    const {chat, start, sendInput} = await setup();
+    const finishes: Array<(info: {id: string}) => void> = [];
+    start.mockImplementation(() => new Promise(resolve => {finishes.push(resolve);}));
+    chat.input.value = "hello";
+    const first = chat.send();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    const second = chat.send();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    for (const finish of finishes) finish({id: "existing"});
+    await Promise.all([first, second]);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(sendInput).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries after a failed startup instead of retaining a rejected flight", async () => {
+    const {chat, start} = await setup();
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      start.mockRejectedValueOnce(new Error("initialization failed"));
+      expect(await chat.ensureSession()).toBe(false);
+      expect(chat.starting.value).toBe(false);
+      start.mockResolvedValueOnce({id: "existing"});
+      expect(await chat.ensureSession()).toBe(true);
+      expect(start).toHaveBeenCalledTimes(2);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("applies a selection changed during startup sequentially, without overlapping candidates", async () => {
+    const {chat, start} = await setup();
+    let finish!: (info: {id: string}) => void;
+    start.mockImplementationOnce(() => new Promise(resolve => {finish = resolve;}));
+    start.mockResolvedValueOnce({id: "existing"});
+    const pending = chat.ensureSession();
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    chat.config.value.directory = "/different-project";
+    const shared = chat.ensureSession();
+    expect(start).toHaveBeenCalledTimes(1);
+    finish({id: "existing"});
+    expect(await Promise.all([pending, shared])).toEqual([true, true]);
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start.mock.calls[1][2]).toBe("/different-project");
+  });
+
+  it("restores native choices when switching back to the running agent before sending", async () => {
+    const {chat, start} = await setup(false);
+    start.mockResolvedValue({id: "existing"});
+    await chat.ensureSession();
+    await chat.applyConfig({agentId: "claude-code"});
+    expect(chat.availableModels.value.map(m => m.id)).toEqual(["__runjam_native__", "managed"]);
+    await chat.applyConfig({agentId: "codex-cli"});
+    expect(chat.availableModels.value.map(m => m.id)).toEqual(["__runjam_native__", "managed"]);
+  });
+  it.each(["claude-code", "gemini-cli", "codex-cli"])("uses saved full access for an initially empty native %s pet config", async agent => {
+    const {chat, start} = await setup(false, agent);
+    chat.config.value.modelId = "";
+    chat.config.value.permissionMode = "";
+    start.mockResolvedValue({id: "new-pet"});
+    expect(await chat.ensureSession()).toBe(true);
+    expect(start.mock.calls[0][4]).toBe("__runjam_native__");
+    expect(start.mock.calls[0][6]).toBe("full_access");
+    expect(chat.config.value.permissionMode).toBe("full_access");
+  });
+  it("does not select native just because it is listed first when switching to a managed-default agent", async () => {
+    const {chat} = await setup(false, "codex-cli", "managed");
+    await chat.applyConfig({agentId: "claude-code"});
+    expect(chat.config.value.modelId).toBe("managed");
+  });
+  it("preserves an explicit pet permission choice when switching to native", async () => {
+    const {chat} = await setup(false, "claude-code");
+    chat.config.value.permissionMode = "read_only";
+    await chat.applyConfig({modelId: "__runjam_native__"});
+    expect(chat.config.value.permissionMode).toBe("read_only");
+  });
+});
 
 describe("isPetSessionFresh", () => {
   beforeEach(() => {

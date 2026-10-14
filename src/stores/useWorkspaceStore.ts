@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
-import { startSession as tauriStartSession, stopSession as tauriStopSession } from "../api/sessions";
+import { startSession as tauriStartSession, stopSession as tauriStopSession, type SessionRuntime } from "../api/sessions";
 import { useMessageStore } from "./useMessageStore";
 import { saveSession, getSessions, updateSessionTitle, updateSessionModel, deleteSession, archiveSession as apiArchiveSession, unarchiveSession as apiUnarchiveSession, deleteArchivedSessions, touchSession as apiTouchSession, type SessionRecord } from "../api/search";
 
@@ -10,6 +10,9 @@ export interface Directory {
 }
 
 export interface Session {
+  runtime?: SessionRuntime | null;
+  carryHistory?: boolean;
+  reasoningEnabled?: boolean;
   id: string;
   cli: string;
   cliDisplayName: string;
@@ -204,10 +207,12 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     }
 
     try {
-      const info = await tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode, skills);
+      const info = await tauriStartSession(cli, cliDisplayName, dirPath, sessionId, model, mode, permissionMode, skills, { reasoningDisabled: !noThinking.value });
       console.log("[STORE] createSession info.directory =", info.directory, "for session", sessionId);
       const s = sessions.value.find(s => s.id === sessionId);
       if (s) {
+        s.runtime = info.runtime;
+        if (info.runtime?.acp_session_id) s.acpSessionId = info.runtime.acp_session_id;
         s.status = info.status as Session["status"];
         s.pid = info.pid;
         s.createdAt = info.created_at;

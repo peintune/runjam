@@ -21,7 +21,15 @@ pub fn get_proxy_url(state: tauri::State<'_, Arc<Mutex<ProxyState>>>) -> String 
 pub fn set_reasoning_disabled(
     state: tauri::State<'_, Arc<Mutex<ProxyState>>>,
     disabled: bool,
+    session_id: Option<String>,
+    manager: tauri::State<'_, Mutex<crate::session::runner::SessionManager>>,
 ) {
+    if let Some(id) = session_id {
+        if let Some(info) = manager.lock().ok().and_then(|m| m.runtime_info(&id)) {
+            if let Some(route) = state.lock().unwrap().session_routes.get_mut(&info.run_id) { route.reasoning_disabled = disabled; }
+        }
+        return;
+    }
     state.lock().unwrap().reasoning_disabled = disabled;
 }
 

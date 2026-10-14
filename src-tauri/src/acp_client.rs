@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
@@ -309,6 +309,46 @@ fn find_agent_binary(app: &AppHandle, candidates: &[&str]) -> Option<String> {
     None
 }
 
+/// Prefer the user's installed CLI. The ACP package's bundled CLI must not
+/// silently substitute a different version for RunJam's "native" mode.
+fn resolve_local_codex(app: &AppHandle) -> Result<String, String> {
+    let candidates: &[&str] = if cfg!(target_os = "windows") { &["codex.cmd", "codex.exe"] } else { &["codex"] };
+    for candidate in candidates {
+        let mut lookup = hidden_command(if cfg!(target_os = "windows") { "where" } else { "which" });
+        lookup.arg(candidate);
+        if !cfg!(target_os = "windows") {
+            lookup.env("PATH", crate::agent::detector::get_enhanced_path());
+        }
+        if let Ok(output) = lookup.output() {
+            if output.status.success() {
+                if let Some(path) = String::from_utf8_lossy(&output.stdout).lines().map(str::trim)
+                    .find(|p| std::path::Path::new(p).is_file()) {
+                    return Ok(path.to_string());
+                }
+            }
+        }
+    }
+    find_agent_binary(app, candidates)
+        .ok_or_else(|| "Codex CLI not found. Install or update @openai/codex before starting Codex.".into())
+}
+
+fn configure_codex_adapter(
+    app: &AppHandle, cmd: &mut std::process::Command, node_path: &str,
+    runtime: Option<&crate::agent_launch::RuntimeInfo>, permission: &str,
+) -> Result<(), String> {
+    let codex_path = resolve_local_codex(app)?;
+    crate::codex_adapter::configure_command(cmd, std::path::Path::new(&codex_path), runtime, permission)?;
+    let base_path = if cfg!(target_os = "windows") { std::env::var("PATH").unwrap_or_default() }
+        else { crate::agent::detector::get_enhanced_path() };
+    let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&base_path).collect();
+    if let Some(dir) = std::path::Path::new(node_path).parent().filter(|p| !p.as_os_str().is_empty()) {
+        paths.insert(0, dir.to_path_buf());
+    }
+    cmd.env("PATH", std::env::join_paths(paths).map_err(|e| format!("Invalid Codex PATH: {e}"))?);
+    rjlog!("[ACP] App Server adapter {} using local CLI: {}", crate::codex_adapter::PACKAGE, codex_path);
+    Ok(())
+}
+
 /// Locate the pre-bundled claude-agent-acp entry point (dist/index.js) shipped
 /// in the app resources. Returns None when running from a source tree without
 /// the pre-install step or in a non-bundled dev build.
@@ -515,51 +555,32 @@ fn resolve_agent_paths(
             ))
         }
         "codex" | "codex-cli" => {
-            let os_arch = get_codex_platform();
-            let pkg_name = format!("@zed-industries/codex-acp-{}", os_arch);
-            let install_dir = acp_dir.join("codex-acp");
-            std::fs::create_dir_all(&install_dir).ok();
-
-            let pkg_dir = install_dir.join("node_modules").join("@zed-industries").join(format!("codex-acp-{}", os_arch));
-            // npm's bin key is "codex-acp-win32-x64" (etc.), not "codex-acp".
-            // The .cmd wrapper lives in node_modules/.bin/, not pkg/bin/.
-            let bin_entry_name = format!("codex-acp-{}", os_arch);
-            let cmd_path = install_dir.join("node_modules").join(".bin").join(format!("{}.cmd", bin_entry_name));
-            let exe_path = pkg_dir.join("bin").join(format!("{}.exe", bin_entry_name));
-
-            let binary_path = if cfg!(target_os = "windows") {
-                // Prefer .cmd wrapper — the standalone .exe statically links
-                // ConPTY APIs (ResizePseudoConsole) missing on older Windows.
-                if cmd_path.exists() { cmd_path.clone() } else { exe_path.clone() }
-            } else {
-                pkg_dir.join("bin").join("codex-acp")
-            };
-
-            if !binary_path.exists() {
-                // codex-acp is never bundled, so installing it always needs npm.
+            // Separate from the archived Rust adapter; preserve the old install
+            // without ever selecting it as a fallback after migration.
+            let install_dir = acp_dir.join("codex-acp-app-server");
+            std::fs::create_dir_all(&install_dir).map_err(|e| e.to_string())?;
+            let entry = crate::codex_adapter::entry_point(&install_dir);
+            static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _install = INSTALL_LOCK.lock().map_err(|e| e.to_string())?;
+            if !entry.exists() {
                 let npm_runner = node_util::resolve_npm_runner(app)
                     .ok_or_else(|| "npm not found. Please install Node.js or rebuild the application.".to_string())?;
-                rjlog!("[ACP] Installing {}...", pkg_name);
+                rjlog!("[ACP] Installing {}...", crate::codex_adapter::PACKAGE);
                 let output = npm_runner
                     .command()
-                    .args(["install", "--no-save", &pkg_name])
+                    .args(["install", "--no-save", "--ignore-scripts", "--no-audit", "--no-fund", crate::codex_adapter::PACKAGE])
                     .current_dir(&install_dir)
                     .output()
-                    .map_err(|e| format!("Failed to install {}: {}", pkg_name, e))?;
+                    .map_err(|e| format!("Failed to install Codex ACP adapter: {e}"))?;
                 if !output.status.success() {
-                    return Err(format!(
-                        "Failed to install {}: {}",
-                        pkg_name,
-                        String::from_utf8_lossy(&output.stderr)
-                    ));
+                    return Err(format!("Failed to install Codex ACP adapter: {}", String::from_utf8_lossy(&output.stderr)));
                 }
-                rjlog!("[ACP] Installed {}", pkg_name);
+                if !entry.is_file() { return Err("Codex ACP installation completed without its entry point".into()); }
             }
-
             Ok((
-                binary_path.to_string_lossy().to_string(),
-                vec![],
-                pkg_dir.to_string_lossy().to_string(),
+                node_bin.to_string_lossy().to_string(),
+                vec![entry.to_string_lossy().to_string()],
+                install_dir.to_string_lossy().to_string(),
             ))
         }
         "gemini" | "gemini-cli" => {
@@ -714,7 +735,27 @@ fn search_gemini_in_common_locations(bin_candidates: &[&str]) -> String {
     String::new()
 }
 
+struct ClientEmitter {
+    app: AppHandle,
+    enabled: Arc<AtomicBool>,
+    run_id: Option<String>,
+}
+impl std::ops::Deref for ClientEmitter {
+    type Target = AppHandle;
+    fn deref(&self) -> &AppHandle { &self.app }
+}
+impl ClientEmitter {
+    fn emit(&self, name: &str, message: &AcpMessage) -> tauri::Result<()> {
+        if !self.enabled.load(Ordering::SeqCst) { return Ok(()); }
+        let mut message = message.clone();
+        message.run_id = self.run_id.clone();
+        self.app.emit(name, message)
+    }
+}
+
 pub struct AcpClient {
+    pub(crate) launch_plan: Option<crate::agent_launch::AgentLaunchPlan>,
+    events_enabled: Arc<AtomicBool>,
     process: Child,
     stdin_writer: Arc<Mutex<std::process::ChildStdin>>,
     request_id: Arc<Mutex<u64>>,
@@ -756,6 +797,7 @@ impl AcpClient {
         model: Option<&str>,
         mode: &str,
         permission_mode: &str,
+        launch_plan: Option<crate::agent_launch::AgentLaunchPlan>,
     ) -> Result<Self, String> {
         rjlog!("[ACP DEBUG] Starting ACP client for session: {}, agent: {}, directory: {:?}, model: {:?}, mode: {}, permission_mode: {}", session_id, agent_type, directory, model, mode, permission_mode);
 
@@ -782,7 +824,8 @@ impl AcpClient {
         // Read here (not in `new_session`) because the app handle is only in
         // scope on this path. Failing to read must never block the session — an
         // empty list just means "no MCP servers", the previous behaviour.
-        let mcp_servers = crate::commands::mcp_cmd::acp_servers_from_app(app);
+        let native = launch_plan.as_ref().map(|p| p.info.config_mode == crate::agent_launch::ConfigMode::Native).unwrap_or(false);
+        let mcp_servers = if native { Vec::new() } else { crate::commands::mcp_cmd::acp_servers_from_app(app) };
 
         let mut cmd = hidden_command(&cmd_path);
         for arg in args {
@@ -793,12 +836,14 @@ impl AcpClient {
         // so a freshly installed CLI does not greet ordinary work (curl, writing
         // a file) with "add Bash(curl:*) to settings.json". Merge-only: anything
         // the user already set is left untouched (see `agent_permissions`).
-        if let Err(e) = crate::agent_permissions::ensure_default_permissions(agent_type) {
-            rjlog!("[PERMS] Could not seed default permissions for {}: {}", agent_type, e);
+        if !native {
+            if let Err(e) = crate::agent_permissions::ensure_default_permissions(agent_type) {
+                rjlog!("[PERMS] Could not seed default permissions for {}: {}", agent_type, e);
+            }
         }
 
-        // Point the agent at RunJam's OWN config directory so it never reads or
-        // writes the user's (`~/.claude`, `~/.codex`, `~/.gemini`).
+        // Managed launches use RunJam's own directory. Explicit native launches
+        // read the current CLI config/login without copying or rewriting it.
         //
         // This fixes a real incident: RunJam used to write its proxy and model
         // settings straight into those files, overwriting the user's own
@@ -810,35 +855,15 @@ impl AcpClient {
         //
         // Set for EVERY agent, before the per-agent branches below, so no path can
         // accidentally reach a user file.
-        if let Some((var, dir)) = crate::agent_isolation::isolated_config_env(agent_type) {
+        if let Some(plan) = &launch_plan {
+            crate::agent_launch::apply_config_environment(&mut cmd, agent_type, plan)?;
+        } else if let Some((var, dir)) = crate::agent_isolation::isolated_config_env(agent_type) {
             rjlog!("[ACP] Isolating {} config: {}={}", agent_type, var, dir);
             cmd.env(var, dir);
         }
 
-        if agent_type == "codex" {
-            // codex-acp 默认的 codex 沙箱是 read-only 且禁网（web_search / curl
-            // 会因无法解析 DNS 而全部失败，exit code 6），而 RunJam 的权限档位
-            // 之前完全没有传给 codex（UI 切档位对它不生效）。这里按
-            // permission_mode 映射成 -c 覆盖：-c 优先级高于 config.toml，所以
-            // UI 里选的档位真实生效，且不会在配置文件里留下第二份会失效的真相。
-            // 注意：network_access 不是顶层键，它位于 [sandbox_workspace_write]
-            // 表下，必须用点表示法 sandbox_workspace_write.network_access 覆盖；
-            // 写成顶层的 network_access=true 会被 codex 忽略，网络仍保持关闭。
-            let (approval_policy, sandbox_mode) =
-                crate::agent_permissions::codex_permission_overrides(permission_mode);
-            if sandbox_mode == "workspace-write" {
-                cmd.arg("-c").arg(r#"sandbox_workspace_write.network_access=true"#);
-            }
-            cmd.arg("-c")
-                .arg(format!(r#"sandbox_mode="{}""#, sandbox_mode));
-            cmd.arg("-c")
-                .arg(format!(r#"approval_policy="{}""#, approval_policy));
-            rjlog!(
-                "[ACP] codex permission overrides: permission_mode={} approval_policy={} sandbox_mode={}",
-                permission_mode,
-                approval_policy,
-                sandbox_mode
-            );
+        if agent_type == "codex" || agent_type == "codex-cli" {
+            configure_codex_adapter(app, &mut cmd, &cmd_path, launch_plan.as_ref().map(|p| &p.info), permission_mode)?;
         }
 
         if agent_type == "gemini" || agent_type == "gemini-cli" {
@@ -846,13 +871,10 @@ impl AcpClient {
             // picker did nothing for it. The launch flag is the only channel
             // that can express `yolo`: gemini's settings schema accepts only
             // default/auto_edit/plan for `general.defaultApprovalMode`.
-            let approval_mode = crate::agent_permissions::gemini_approval_mode(permission_mode);
-            cmd.arg(format!("--approval-mode={}", approval_mode));
-            rjlog!(
-                "[ACP] gemini approval override: permission_mode={} --approval-mode={}",
-                permission_mode,
-                approval_mode
-            );
+            if let Some(arg) = crate::agent_permissions::gemini_launch_approval_arg(permission_mode) {
+                rjlog!("[ACP] gemini approval override: permission_mode={} {}", permission_mode, arg);
+                cmd.arg(arg);
+            }
         }
         cmd.stdout(Stdio::piped())
             .stdin(Stdio::piped())
@@ -959,20 +981,8 @@ impl AcpClient {
             }
         }
 
-        if agent_type == "codex" {
-            // The codex-acp .cmd wrapper needs node on PATH (the wrapper
-            // falls back to `node` on PATH when node.exe isn't in .bin/).
-            let node_dir = std::path::Path::new(&cmd_path).parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-            if !node_dir.as_os_str().is_empty() {
-                let node_dir_str = node_dir.to_string_lossy();
-                let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
-                let current_path = std::env::var("PATH").unwrap_or_default();
-                cmd.env("PATH", format!("{}{}{}", node_dir_str, sep, current_path));
-            }
-
-            // Read API key and base_url from model_providers.custom (native codex config)
+        if agent_type == "codex" && launch_plan.is_none() {
+            // Legacy connection-test path only. Real sessions use resolved launch plans.
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_default();
@@ -1059,7 +1069,7 @@ impl AcpClient {
             if let Ok(sys_base) = std::env::var("CODEX_API_BASE") {
                 rjlog!("[CODEX ENV] System CODEX_API_BASE = {} (fallback)", sys_base);
             }
-        } else if agent_type == "gemini" {
+        } else if agent_type == "gemini" && !native {
 
             // Pass API keys from gemini settings.json
             let home = std::env::var("HOME")
@@ -1120,14 +1130,17 @@ impl AcpClient {
 
         let responses = Arc::new(Mutex::new(HashMap::new()));
         let responses_clone = responses.clone();
-        let app_clone2 = app.clone();
+        let events_enabled = Arc::new(AtomicBool::new(launch_plan.is_none()));
+        let app_clone2 = ClientEmitter { app: app.clone(), enabled: events_enabled.clone(),
+            run_id: launch_plan.as_ref().map(|p| p.info.run_id.clone()) };
         let session_id_clone = session_id.to_string();
         // Shared so the running session's permission mode can be changed live
         // (see set_permission_mode) without restarting the agent process.
         let permission_mode_shared = Arc::new(Mutex::new(permission_mode.to_string()));
         let permission_mode_clone = permission_mode_shared.clone();
         let agent_type_clone = agent_type.to_string();
-        let model_clone = model.map(|s| s.to_string()).unwrap_or_else(|| "unknown".to_string());
+        let model_clone = launch_plan.as_ref().map(|p| p.info.requested_model.clone())
+            .or_else(|| model.map(|s| s.to_string())).unwrap_or_else(|| "unknown".to_string());
         
         // Track cumulative token usage to calculate deltas
         let last_used = Arc::new(AtomicU64::new(0));
@@ -1769,6 +1782,8 @@ impl AcpClient {
         });
 
         let mut client = Self {
+            launch_plan,
+            events_enabled,
             process,
             stdin_writer,
             request_id: Arc::new(Mutex::new(1)),
@@ -1795,6 +1810,7 @@ impl AcpClient {
     /// answer future permission requests.
     pub fn set_permission_mode(&mut self, mode: &str) {
         *self.permission_mode.lock().unwrap() = mode.to_string();
+        if let Some(plan) = &mut self.launch_plan { plan.info.permission_mode = mode.to_string(); }
         rjlog!("[ACP DEBUG] Live permission mode updated to: {}", mode);
 
         // claude and gemini both expose a real session-level mode over ACP
@@ -1857,18 +1873,27 @@ impl AcpClient {
         
         // Notify frontend of the ACP session ID
         let acp_session_id = self.session_id.lock().unwrap().clone();
+        if let Some(plan) = &mut self.launch_plan { plan.info.acp_session_id = Some(acp_session_id.clone()); }
         rjlog!("[ACP DEBUG] Notifying frontend of ACP session ID: {}", acp_session_id);
         let event_name = format!("acp:{}", session_id);
-        let _ = app.emit(&event_name, &AcpMessage::new(
+        if self.events_enabled.load(Ordering::SeqCst) { let _ = app.emit(&event_name, &AcpMessage::new(
             session_id, "0", "0",
             AcpEvent::Text { content: format!("__ACP_SESSION_ID__{}", acp_session_id) }
-        ));
+        )); }
 
+        // Confirm the initial permission mode before exposing this candidate,
+        // so an unsupported/rejected mode cannot look like a successful launch.
         // Push the initial permission mode into the agent so it takes effect on
         // the very first turn — otherwise claude starts in its default mode and
         // asks for permission even when the user selected full_access/bypass.
         let initial_mode = self.permission_mode.lock().unwrap().clone();
-        self.set_permission_mode(&initial_mode);
+        if initial_mode != "inherit" {
+            if let Some(mode_id) = Self::permission_mode_to_acp_mode(&self.agent_type, &initial_mode) {
+                self.send_request("session/set_mode", serde_json::json!({
+                    "sessionId": acp_session_id, "modeId": mode_id,
+                })).map_err(|e| format!("Failed to apply permission mode {initial_mode}: {e}"))?;
+            }
+        }
 
         Ok(())
     }
@@ -1898,6 +1923,8 @@ impl AcpClient {
         writeln!(&mut stdin, "{}", json).map_err(|e| format!("Failed to write to stdin: {}", e))?;
         stdin.flush().map_err(|e| format!("Failed to flush stdin: {}", e))?;
 
+        drop(stdin);
+
         for _ in 0..600 {
             thread::sleep(std::time::Duration::from_millis(50));
             let mut responses = self.responses.lock().unwrap();
@@ -1907,6 +1934,8 @@ impl AcpClient {
                 }
                 return Ok(val.get("result").cloned().unwrap_or(serde_json::json!({})));
             }
+            drop(responses);
+            if !self.is_alive() { return Err("ACP process exited while waiting for response".into()); }
         }
 
         Err("Timeout waiting for response".to_string())
@@ -2072,6 +2101,7 @@ impl AcpClient {
     /// which is why clicking Stop used to leave the agent running and emitting
     /// events — the process kept generating after the client was dropped.
     pub fn stop(&mut self) {
+        self.events_enabled.store(false, Ordering::SeqCst);
         let pid = self.process.id();
         rjlog!("[ACP DEBUG] Stopping session, terminating process tree pid={}", pid);
         terminate_process_tree(pid);
@@ -2084,6 +2114,8 @@ impl AcpClient {
     pub fn pid(&self) -> u32 {
         self.process.id()
     }
+
+    pub fn activate(&self) { self.events_enabled.store(true, Ordering::SeqCst); }
 
     /// Whether the agent process is still running. The session manager's client
     /// map isn't cleaned up when a process exits on its own (only stop() removes
@@ -2160,6 +2192,7 @@ impl AcpClient {
         }
 
         if agent_id == "codex-cli" || agent_id == "codex" {
+            configure_codex_adapter(app, &mut cmd, &cmd_path, None, "inherit")?;
             if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
                 cmd.env("OPENAI_API_KEY", api_key);
             }
@@ -2239,6 +2272,8 @@ impl AcpClient {
             session_id: Arc::new(Mutex::new(_session_id.to_string())),
             responses,
             pending_prompts: Arc::new(Mutex::new(HashSet::new())),
+            launch_plan: None,
+            events_enabled: Arc::new(AtomicBool::new(true)),
             cwd: package_dir.clone(),
             // Test connection: cwd is the agent's install dir, not a project.
             project_scoped: false,

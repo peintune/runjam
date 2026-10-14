@@ -37,7 +37,74 @@ use convert::openai::proxy_openai_direct;
 use convert::responses::proxy_responses_to_openai;
 use passthrough::{forward_anthropic_passthrough, forward_gemini_passthrough, forward_responses_passthrough};
 
+#[derive(Clone)]
+pub struct SessionProxyRoute {
+    pub model: ModelEntry,
+    pub token: String,
+    pub reasoning_disabled: bool,
+}
+
+#[cfg(test)]
+mod session_route_tests {
+    use super::*;
+
+    fn fixture() -> Arc<Mutex<ProxyState>> {
+        let mut state = ProxyState::new();
+        let model: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id":"model-a", "name":"same-name", "alias":"", "provider":"custom",
+            "provider_name":"Test", "provider_icon":"", "api_base":"https://example.test/v1",
+            "api_key":"test-upstream-key", "protocol":"openai_chat", "context_window":0,
+            "support_reasoning":true, "tags":[]
+        })).unwrap();
+        for (id, token) in [("a", "token-a"), ("b", "token-b")] {
+            state.session_routes.insert(id.into(), SessionProxyRoute {
+                model: model.clone(), token: token.into(), reasoning_disabled: id == "a",
+            });
+        }
+        Arc::new(Mutex::new(state))
+    }
+
+    fn probe(state: Arc<Mutex<ProxyState>>, path: &str, token: &str, body: Option<&str>) -> u16 {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let worker = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let path = request.url().to_string();
+            let method = request.method().as_str().to_string();
+            match handle_request(&path, &method, &mut request, &state) {
+                ProxyResponse::Sync(status, body) => request.respond(Response::from_string(body).with_status_code(status)).unwrap(),
+                _ => panic!("Route-validation probes must not start inference"),
+            }
+        });
+        let url = format!("http://{address}{path}");
+        let result = if let Some(body) = body {
+            ureq::post(&url).set("Authorization", &format!("Bearer {token}")).send_string(body)
+        } else { ureq::get(&url).set("Authorization", &format!("Bearer {token}")).call() };
+        let status = match result {
+            Ok(response) => response.status(),
+            Err(ureq::Error::Status(status, _)) => status,
+            Err(e) => panic!("Local proxy test failed: {e}"),
+        };
+        worker.join().unwrap();
+        status
+    }
+
+    #[test]
+    fn a_run_cannot_use_another_runs_credentials() {
+        assert_eq!(probe(fixture(), "/rj/a/v1/models", "token-a", None), 200);
+        assert_eq!(probe(fixture(), "/rj/b/v1/models", "token-a", None), 401);
+        assert_eq!(probe(fixture(), "/rj/a/v1/models", "", None), 401);
+    }
+
+    #[test]
+    fn unknown_run_and_wrong_model_never_fall_back_to_a_global_model() {
+        assert_eq!(probe(fixture(), "/rj/missing/v1/responses", "token-a", Some("{}")), 404);
+        assert_eq!(probe(fixture(), "/rj/a/v1/responses", "token-a", Some(r#"{"model":"other-model","input":"hello"}"#)), 400);
+    }
+}
+
 pub struct ProxyState {
+    pub session_routes: HashMap<String, SessionProxyRoute>,
     pub port: u16,
     pub running: bool,
     pub models: Vec<ModelEntry>,
@@ -53,6 +120,7 @@ pub struct ProxyState {
 impl ProxyState {
     pub fn new() -> Self {
         Self {
+            session_routes: HashMap::new(),
             port: 0,
             running: false,
             models: vec![],
@@ -179,7 +247,19 @@ pub fn start_proxy(state: Arc<Mutex<ProxyState>>) -> Result<u16, String> {
 fn handle_request(
     path: &str, method: &str, request: &mut tiny_http::Request, state: &Arc<Mutex<ProxyState>>,
 ) -> ProxyResponse {
-    rjlog!("[PROXY] >>> {} {} (from {}:{})", method, path, request.remote_addr().map(|a| a.to_string()).unwrap_or_default(), request.remote_addr().map(|a| a.port()).unwrap_or(0));
+    let route = if let Some(rest) = path.strip_prefix("/rj/") {
+        let Some((id, _)) = rest.split_once('/') else { return ProxyResponse::Sync(StatusCode(404), "Unknown run".into()); };
+        let ps = state.lock().unwrap();
+        let Some(route) = ps.session_routes.get(id).cloned() else { return ProxyResponse::Sync(StatusCode(404), "Unknown run".into()); };
+        let expected = format!("Bearer {}", route.token);
+        if !request.headers().iter().any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected) {
+            return ProxyResponse::Sync(StatusCode(401), "Invalid run credentials".into());
+        }
+        Some(route)
+    } else { None };
+    let routed_path = if path.starts_with("/rj/") { path.splitn(4, '/').nth(3).map(|p| format!("/{p}")) } else { None };
+    let path = routed_path.as_deref().unwrap_or(path);
+    rjlog!("[PROXY] >>> {} {}", method, path);
     if method != "POST" {
         if path == "/v1/models" || path == "/v1beta/models" {
             return ProxyResponse::Sync(StatusCode(200), r#"{"object":"list","data":[]}"#.to_string());
@@ -234,7 +314,7 @@ fn handle_request(
     let can_use_cache = req_for_cache.as_ref().map(|r| {
         let is_stream = r["stream"].as_bool().unwrap_or(false);
         let has_tools = r["tools"].as_array().map(|t| !t.is_empty()).unwrap_or(false);
-        !is_stream && !has_tools
+        !is_stream && !has_tools && route.is_none()
     }).unwrap_or(false);
 
     if can_use_cache {
@@ -250,7 +330,7 @@ fn handle_request(
     }
 
     // Load models from config file (updated when models are saved)
-    let models = ModelConfig::load().models;
+    let models = route.as_ref().map(|r| vec![r.model.clone()]).unwrap_or_else(|| ModelConfig::load().models);
     
     rjlogd!("[PROXY] Using {} models from config file", models.len());
     for m in &models {
@@ -268,14 +348,16 @@ fn handle_request(
     } else {
         ""
     };
-    let preferred_ids: Option<Vec<String>> = if agent.is_empty() {
+    let preferred_ids: Option<Vec<String>> = if let Some(r) = &route {
+        Some(vec![r.model.id.clone()])
+    } else if agent.is_empty() {
         None
     } else {
         state.lock().unwrap().agent_models.get(agent).cloned()
     };
     let preferred_ref = preferred_ids.as_deref();
     
-    let reasoning_disabled = state.lock().unwrap().reasoning_disabled;
+    let reasoning_disabled = route.as_ref().map(|r| r.reasoning_disabled).unwrap_or_else(|| state.lock().unwrap().reasoning_disabled);
 
     // ── 原生直连优先 ──────────────────────────────────────────────────
     // 入口协议与所配上游模型的协议一致时（Anthropic 入口 + Anthropic 兼容上游、
@@ -291,6 +373,11 @@ fn handle_request(
             .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()))
             .unwrap_or_default(),
     };
+    if let Some(route) = &route {
+        if !req_model.is_empty() && req_model != route.model.name && req_model != route.model.alias {
+            return ProxyResponse::Sync(StatusCode(400), "Requested model does not match this run".into());
+        }
+    }
     if !req_model.is_empty() {
         if let Some(m) = find_model(&models, &req_model, preferred_ref) {
             let is_anthropic_in = path == "/v1/messages" || path.ends_with("/v1/messages") || path.contains("/anthropic/v1/messages");
@@ -344,4 +431,3 @@ fn handle_request(
 
     response
 }
-

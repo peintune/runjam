@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   ArrowLeft, Download, Trash2, ExternalLink, Terminal,
   Loader2, ToggleLeft, ToggleRight, Save,
-  Database, Plus, CheckCircle2, XCircle, AlertCircle, RotateCcw, Archive,
+  Database, Plus, CheckCircle2, XCircle, AlertCircle, Archive,
 } from "lucide-vue-next";
 import AgentIcon from "../../components/AgentIcon.vue";
 import { useAgentStore } from "../../stores/useAgentStore";
@@ -16,9 +16,11 @@ import {
   testAgent,
   type AgentInfo, type AgentStatus,
 } from "../../api/agents";
-import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, getNativeModels, restoreNativeConfig, snapshotAgentConfig, getProviderById, getProviderByName, type NativeModel } from "../../api/models";
+import { getModels, getAgentModels, assignModelToAgent, removeModelFromAgent, getNativeModels, getProviderById, getProviderByName, type NativeModel } from "../../api/models";
 import { getProviderLogo } from "../../utils/providerIcons";
 import { t } from "../../i18n";
+import { getAgentConfigMode, setAgentConfigMode } from "../../api/models";
+import { supportsNativeConfig } from "../../composables/agentLaunch";
 
 const router = useRouter();
 const route = useRoute();
@@ -46,6 +48,16 @@ const agentModels = ref<Record<string, any[]>>({});
 const nativeModels = ref<Record<string, NativeModel[]>>({});
 const nativeRestoring = ref<Record<string, boolean>>({});
 const nativeMsg = ref<Record<string, string>>({});
+const configModes = ref<Record<string, "native" | "managed">>({});
+async function changeConfigMode(id: string, mode: "native" | "managed") {
+  nativeRestoring.value[id] = true;
+  nativeMsg.value[id] = "";
+  try {
+    await setAgentConfigMode(id, mode);
+    configModes.value[id] = mode;
+  } catch (e) { nativeMsg.value[id] = String(e); }
+  finally { nativeRestoring.value[id] = false; }
+}
 const addingModel = ref<Record<string, boolean>>({});
 const selectedModelId = ref<Record<string, string>>({});
 
@@ -163,40 +175,9 @@ async function loadAgent() {
 async function loadNativeModels(agentIdStr: string) {
   try {
     nativeModels.value[agentIdStr] = await getNativeModels(agentIdStr);
+    if (supportsNativeConfig(agentIdStr)) configModes.value[agentIdStr] = await getAgentConfigMode(agentIdStr);
   } catch (e) {
     nativeModels.value[agentIdStr] = [];
-  }
-}
-
-async function restoreToNative(agentIdStr: string) {
-  nativeRestoring.value[agentIdStr] = true;
-  nativeMsg.value[agentIdStr] = "";
-  try {
-    await restoreNativeConfig(agentIdStr);
-    nativeMsg.value[agentIdStr] = t("models.nativeRestored");
-    // 还原后该 agent 不再被 runjam 接管，重新加载三方状态
-    await Promise.all([loadAgentModels(agentIdStr), loadNativeModels(agentIdStr), loadConfig(agentIdStr)]);
-  } catch (e) {
-    nativeMsg.value[agentIdStr] = `${t("models.nativeRestoreFailed")}: ${e}`;
-  }
-  nativeRestoring.value[agentIdStr] = false;
-}
-
-async function saveNativeSnapshot(agentIdStr: string) {
-  try {
-    await snapshotAgentConfig(agentIdStr);
-    nativeMsg.value[agentIdStr] = t("models.nativeSnapshotted");
-    await loadNativeModels(agentIdStr);
-  } catch (e) {
-    // 后端用固定标识表达拒绝原因，这里映射成可读文案
-    const reason = String(e);
-    if (reason.includes("snapshot_exists")) {
-      nativeMsg.value[agentIdStr] = t("models.nativeSnapshotExists");
-    } else if (reason.includes("config_already_overridden")) {
-      nativeMsg.value[agentIdStr] = t("models.nativeSnapshotRefused");
-    } else {
-      nativeMsg.value[agentIdStr] = `${t("models.nativeRestoreFailed")}: ${e}`;
-    }
   }
 }
 
@@ -547,10 +528,23 @@ async function saveConfig(id: string) {
               class="text-[11px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200"
             >{{ $t("models.nativeOverridden") }}</span>
           </div>
-          <p class="text-[12px] text-gray-400 mt-1.5">{{ $t("models.nativeHint") }}</p>
+          <p class="text-[12px] text-gray-400 mt-1.5">{{ $t('models.codexNativeHint') }}</p>
         </div>
 
         <div class="p-5">
+          <div v-if="supportsNativeConfig(agent.id)" class="mb-4 space-y-2">
+            <div class="flex gap-2" role="group" :aria-label="$t('models.codexModeHint')">
+              <button v-for="mode in (['native', 'managed'] as const)" :key="mode"
+                :disabled="nativeRestoring[agent.id]" :aria-pressed="configModes[agent.id] === mode"
+                class="px-3 py-2 rounded-lg text-[12px] border transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-indigo-500"
+                :class="configModes[agent.id] === mode ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'border-gray-200 text-gray-600'"
+                @click="changeConfigMode(agent.id, mode)">
+                {{ $t(mode === 'native' ? 'models.nativeMode' : 'models.managedMode') }}
+              </button>
+            </div>
+            <p class="text-[12px] text-gray-500">{{ $t('models.codexModeHint') }}</p>
+            <p v-if="nativeMsg[agent.id]" class="text-[12px] text-gray-500" role="status">{{ nativeMsg[agent.id] }}</p>
+          </div>
           <!-- 未发现原生配置 -->
           <div v-if="(nativeModels[agent.id] || []).length === 0" class="text-[13px] text-gray-400">
             {{ $t("models.nativeNone") }}
@@ -595,34 +589,6 @@ async function saveConfig(id: string) {
               </div>
             </div>
 
-            <!-- 操作 -->
-            <p
-              v-if="(nativeModels[agent.id] || []).some(m => m.is_overridden) && !(nativeModels[agent.id] || []).some(m => m.has_snapshot)"
-              class="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
-            >{{ $t("models.nativeNoSnapshotWarn") }}</p>
-            <div class="flex items-center gap-3 pt-1">
-              <span v-if="nativeMsg[agent.id]" class="text-[12px] text-gray-500 flex-1 truncate">{{ nativeMsg[agent.id] }}</span>
-              <div class="flex items-center gap-2 ml-auto">
-                <button
-                  @click="saveNativeSnapshot(agent.id)"
-                  class="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 active:scale-[0.98] transition-all duration-150 cursor-pointer"
-                  :title="$t('models.nativeSnapshotHint')"
-                >
-                  <Archive :size="13" />
-                  {{ $t("models.nativeSnapshot") }}
-                </button>
-                <button
-                  @click="restoreToNative(agent.id)"
-                  :disabled="nativeRestoring[agent.id]"
-                  class="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[12px] font-semibold bg-amber-500 text-white hover:bg-amber-600 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed transition-all duration-150 cursor-pointer shadow-sm"
-                  :title="$t('models.nativeRestoreHint')"
-                >
-                  <Loader2 v-if="nativeRestoring[agent.id]" :size="13" class="animate-spin" />
-                  <RotateCcw v-else :size="13" />
-                  {{ nativeRestoring[agent.id] ? $t("models.nativeRestoring") : $t("models.nativeRestore") }}
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       </div>

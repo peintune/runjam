@@ -1,11 +1,11 @@
 //! Desktop pet: a small always-on-top launcher icon in the bottom-right corner
 //! of the screen, plus a lightweight Q&A popup it opens.
 //!
-//! Both are *top-level* windows (not child webviews like app-tabs) because the
-//! pet must float above every other application, not just above the RunJam UI.
+//! Both are top-level windows, independent of the main RunJam UI. The launcher
+//! always floats; the chat is transient unless the user enables keep-on-top.
 //!
 //! Window roles:
-//! - `pet-icon` — 56x56 transparent, circular icon. Never focused, never in the
+//! - `pet-icon` — 60x60 transparent launcher. No initial focus, never in the
 //!   taskbar, always on top. Clicking it toggles the chat popup; dragging it
 //!   moves it anywhere on screen.
 //! - `pet-chat` — 460x560 Q&A panel anchored just to the LEFT of the icon (so it
@@ -24,8 +24,8 @@ pub const PET_ICON_LABEL: &str = "pet-icon";
 pub const PET_CHAT_LABEL: &str = "pet-chat";
 
 /// Icon edge length in logical px. Kept a little larger than the visible logo
-/// (36px) so there is a transparent rim that the user can grab to drag it.
-const ICON_SIZE: f64 = 44.0;
+/// (44px) so there is a transparent rim that the user can grab to drag it.
+const ICON_SIZE: f64 = 60.0;
 /// Extra lift above the work area's bottom edge. The work area already clears a
 /// visible Dock, but it does NOT when the Dock is set to auto-hide — so nudge
 /// the icon up a little further to stay comfortably clear of it either way.
@@ -223,6 +223,18 @@ fn elevate_over_fullscreen(window: &tauri::WebviewWindow, force_reorder: bool) -
     // Belt and braces: a window that hides when the app is deactivated would
     // vanish the moment the user works in another (full-screen) application.
     window_ref.setHidesOnDeactivate(false);
+    if window.label() == PET_CHAT_LABEL {
+        // A hidden panel can retain keyboard focus while its pointer tracking
+        // is stale. Re-arm both input paths whenever it is configured/shown.
+        window_ref.setIgnoresMouseEvents(false);
+        window_ref.setAcceptsMouseMovedEvents(true);
+        if window_ref.class() == panel_class::get() {
+            // SAFETY: attach_panel_class installed our NSPanel subclass above.
+            let panel = unsafe { &*(ptr as *const objc2_app_kit::NSPanel) };
+            panel.setBecomesKeyOnlyIfNeeded(false);
+        }
+        window_ref.resetCursorRects();
+    }
 
     let mut behavior = window_ref.collectionBehavior();
 
@@ -460,6 +472,7 @@ pub fn reassert_pet_elevation(app: &AppHandle) {
 /// window is just re-positioned (e.g. after a monitor change).
 pub fn ensure_pet_icon(app: &AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(PET_ICON_LABEL) {
+        existing.set_size(tauri::LogicalSize::new(ICON_SIZE, ICON_SIZE)).map_err(|e| e.to_string())?;
         let _ = existing.set_position(corner_position(app, ICON_SIZE, ICON_SIZE, ICON_MARGIN));
         // Re-assert the cross-application space behaviour (idempotent) so a
         // re-created/toggled icon is not left with only tao's defaults.
@@ -538,7 +551,7 @@ fn ensure_pet_chat(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     .decorations(false)
     .transparent(true)
     .shadow(true)
-    .always_on_top(true)
+    .always_on_top(false)
     .skip_taskbar(true)
     // A non-activating macOS panel can otherwise consume the first press just
     // to become interactive, leaving the composer looking unresponsive. Let
@@ -567,13 +580,117 @@ fn ensure_pet_chat(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 /// The window is only ever *hidden*, never destroyed, so hiding/showing is the
 /// fast path — mirrors `close_pet_chat`.
 fn show_pet_chat(app: &AppHandle) -> Result<(), String> {
-    let window = ensure_pet_chat(app)?;
+    // Create outside the main-thread transaction (WebView2 requires this).
+    ensure_pet_chat(app)?;
+    on_main(app, show_pet_chat_now)
+}
+
+fn show_pet_chat_now(app: &AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window(PET_CHAT_LABEL).ok_or("Pet chat window is unavailable")?;
+    let pinned = {
+        let state = app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>();
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        state.invalidate();
+        state.pinned
+    };
+    elevate_over_fullscreen_on_main(app, PET_CHAT_LABEL, false);
     let pos = left_of_icon_position(app);
-    let _ = window.set_position(pos);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("pet:opened", ());
+    window.set_position(pos).map_err(|e| e.to_string())?;
+    window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    {
+        // AppKit cursor rectangles must be refreshed after the show/position,
+        // not just while the panel is hidden.
+        let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut objc2_app_kit::NSWindow;
+        if !ptr.is_null() { unsafe { (&*ptr).resetCursorRects(); } }
+    }
+    window.emit("pet:opened", serde_json::json!({"pinned": pinned})).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Execute native window transitions together, before notifying the webview.
+fn on_main<T: Send + 'static>(app: &AppHandle, action: impl FnOnce(&AppHandle) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    #[cfg(target_os = "macos")]
+    if objc2::MainThreadMarker::new().is_some() { return action(app); }
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let handle = app.clone();
+    app.run_on_main_thread(move || { let _ = send.send(action(&handle)); }).map_err(|e| e.to_string())?;
+    receive.recv_timeout(std::time::Duration::from_secs(5)).map_err(|e| format!("Pet window transition failed: {e}"))?
+}
+
+fn hide_pet_chat_now(app: &AppHandle) -> Result<(), String> {
+    app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>().lock().map_err(|e| e.to_string())?.invalidate();
+    if let Some(window) = app.get_webview_window(PET_CHAT_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+        let _ = window.emit("pet:closed", ());
+    }
+    Ok(())
+}
+
+/// Ignore stale blur events from a previous show/pin/dialog transition.
+pub fn handle_pet_focus(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if window.label() != PET_CHAT_LABEL { return; }
+    let tauri::WindowEvent::Focused(focused) = event else { return; };
+    let app = window.app_handle().clone();
+    let generation = {
+        let state = app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>();
+        let Ok(mut state) = state.lock() else { return; };
+        let generation = state.invalidate();
+        if *focused || state.pinned || state.dialog_depth > 0 { return; }
+        generation
+    };
+    // Give native focus transfer / icon toggle a run-loop turn to settle.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(chat) = handle.get_webview_window(PET_CHAT_LABEL) else { return; };
+            let visible = chat.is_visible().unwrap_or(false);
+            let focused = chat.is_focused().unwrap_or(false);
+            let hide = handle.state::<std::sync::Mutex<crate::pet_window::PetChatState>>().lock()
+                .map(|state| state.should_hide(generation, visible, focused)).unwrap_or(false);
+            if hide { let _ = hide_pet_chat_now(&handle); }
+        });
+    });
+}
+
+#[tauri::command]
+pub fn get_pet_chat_pinned(app: AppHandle) -> Result<bool, String> {
+    Ok(app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>().lock().map_err(|e| e.to_string())?.pinned)
+}
+
+#[tauri::command]
+pub async fn set_pet_chat_pinned(app: AppHandle, pinned: bool) -> Result<bool, String> {
+    on_main(&app, move |app| {
+        let window = app.get_webview_window(PET_CHAT_LABEL).ok_or("Pet chat window is unavailable")?;
+        window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+        let state = app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>();
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        state.pinned = pinned;
+        state.invalidate();
+        Ok(pinned)
+    })
+}
+
+#[tauri::command]
+pub async fn suspend_pet_chat_autohide(app: AppHandle, suspended: bool) -> Result<(), String> {
+    on_main(&app, move |app| {
+        {
+            let state = app.state::<std::sync::Mutex<crate::pet_window::PetChatState>>();
+            let mut state = state.lock().map_err(|e| e.to_string())?;
+            if suspended { state.dialog_depth += 1; }
+            else { state.dialog_depth = state.dialog_depth.saturating_sub(1); }
+            state.invalidate();
+        }
+        if !suspended {
+            if let Some(window) = app.get_webview_window(PET_CHAT_LABEL) {
+                if window.is_visible().unwrap_or(false) { window.set_focus().map_err(|e| e.to_string())?; }
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Toggle the chat popup from the launcher icon: a second click on the icon
@@ -582,13 +699,12 @@ fn show_pet_chat(app: &AppHandle) -> Result<(), String> {
 /// "visible" is treated as "open it".
 #[tauri::command]
 pub async fn toggle_pet_chat(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(PET_CHAT_LABEL) {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
-            return Ok(());
-        }
-    }
-    show_pet_chat(&app)
+    ensure_pet_chat(&app)?;
+    on_main(&app, |app| {
+        if app.get_webview_window(PET_CHAT_LABEL).and_then(|w| w.is_visible().ok()).unwrap_or(false) {
+            hide_pet_chat_now(app)
+        } else { show_pet_chat_now(app) }
+    })
 }
 
 /// Show and focus the chat popup (explicit "open", e.g. from the main window).
@@ -601,10 +717,7 @@ pub async fn open_pet_chat(app: AppHandle) -> Result<(), String> {
 /// running so reopening within the idle window continues the same conversation.
 #[tauri::command]
 pub async fn close_pet_chat(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(PET_CHAT_LABEL) {
-        let _ = window.hide();
-    }
-    Ok(())
+    on_main(&app, hide_pet_chat_now)
 }
 
 /// Bring the main window to the front (un-minimise + focus).

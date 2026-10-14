@@ -4,6 +4,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum AcpEvent {
+    #[serde(rename = "runtime")]
+    Runtime { runtime: crate::agent_launch::RuntimeInfo },
     #[serde(rename = "start")] Start,
     #[serde(rename = "thinking")] Thinking {
         content: String,
@@ -63,6 +65,8 @@ pub struct PermissionOption {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AcpMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub session_id: String,
     pub msg_id: String,
     pub turn_id: String,
@@ -72,6 +76,6 @@ pub struct AcpMessage {
 
 impl AcpMessage {
     pub fn new(sid: &str, tid: &str, mid: &str, event: AcpEvent) -> Self {
-        Self { session_id: sid.into(), turn_id: tid.into(), msg_id: mid.into(), event }
+        Self { run_id: None, session_id: sid.into(), turn_id: tid.into(), msg_id: mid.into(), event }
     }
 }

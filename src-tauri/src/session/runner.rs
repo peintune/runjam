@@ -13,6 +13,7 @@ enum ClientType {
 }
 
 pub struct SessionManager {
+    pending: HashMap<String, (String, Option<u32>)>,
     active: HashMap<String, ()>,
     clients: Arc<Mutex<HashMap<String, ClientType>>>,
 }
@@ -20,9 +21,47 @@ pub struct SessionManager {
 impl SessionManager {
     pub fn new() -> Self { 
         Self { 
+            pending: HashMap::new(),
             active: HashMap::new(),
             clients: Arc::new(Mutex::new(HashMap::new())),
         } 
+    }
+
+    pub fn reserve_planned_start(&mut self, id: &str, run_id: &str) {
+        if let Some((_, Some(pid))) = self.pending.insert(id.into(), (run_id.into(), None)) {
+            terminate_process_tree(pid);
+        }
+    }
+
+    pub fn track_pending_pid(&mut self, id: &str, run_id: &str, pid: u32) -> Result<(), String> {
+        match self.pending.get_mut(id) {
+            Some((current, process)) if current == run_id => { *process = Some(pid); Ok(()) }
+            _ => Err("Agent start was cancelled or superseded".into()),
+        }
+    }
+
+    pub fn clear_pending(&mut self, id: &str, run_id: &str) {
+        if self.pending.get(id).map(|p| p.0.as_str()) == Some(run_id) { self.pending.remove(id); }
+    }
+
+    /// Commit a fully initialized candidate. Slow startup/handshake happens
+    /// outside the global manager lock so other chats remain usable.
+    pub fn attach_planned(&mut self, app: &AppHandle, id: String, cli: &str, display_name: &str, directory: &str, client: AcpClient) -> Result<Session, String> {
+        let runtime = client.launch_plan.as_ref().ok_or("Agent launch plan missing")?.runtime_info();
+        if self.pending.get(&id).map(|p| p.0.as_str()) != Some(runtime.run_id.as_str()) {
+            return Err("Agent start was cancelled or superseded".into());
+        }
+        self.pending.remove(&id);
+        let pid = client.pid();
+        let client = Arc::new(Mutex::new(client));
+        let old = self.clients.lock().unwrap().insert(id.clone(), ClientType::Acp(client.clone(), pid));
+        if let Some(ClientType::Acp(old, _)) = old { old.lock().unwrap_or_else(|e| e.into_inner()).stop(); }
+        let _ = app.emit(&format!("acp:{id}"), AcpMessage::new(&id, "runtime", "runtime", AcpEvent::Runtime { runtime: runtime.clone() }));
+        client.lock().unwrap().activate();
+        self.active.insert(id.clone(), ());
+        Ok(Session { id, cli: cli.into(), cli_display_name: display_name.into(),
+            directory: Some(directory.into()), pid: Some(pid), status: "running".into(),
+            created_at: Local::now().to_rfc3339(), runtime: Some(runtime) })
     }
 
     pub fn start(
@@ -50,12 +89,18 @@ impl SessionManager {
             _ => return Err(format!("Unknown CLI: {}", cli)),
         };
 
-        let acp_client = AcpClient::start(app, &id, agent_type, directory, model, mode, permission_mode)
+        let acp_client = AcpClient::start(app, &id, agent_type, directory, model, mode, permission_mode, None)
             .map_err(|e| format!("Failed to start ACP agent: {}", e))?;
+        let runtime = acp_client.launch_plan.as_ref().map(|p| p.info.clone());
 
         let acp_pid = acp_client.pid();
         let acp_client_arc = Arc::new(Mutex::new(acp_client));
-        self.clients.lock().unwrap().insert(id.clone(), ClientType::Acp(acp_client_arc.clone(), acp_pid));
+        let previous = self.clients.lock().unwrap().insert(id.clone(), ClientType::Acp(acp_client_arc.clone(), acp_pid));
+        if let Some(ClientType::Acp(old, _)) = previous { old.lock().map_err(|e| e.to_string())?.stop(); }
+        if let Some(info) = &runtime {
+            let _ = app.emit(&format!("acp:{}", id), &AcpMessage::new(&id, "runtime", "runtime", AcpEvent::Runtime { runtime: info.clone() }));
+        }
+        acp_client_arc.lock().unwrap().activate();
         self.active.insert(id.clone(), ());
         rjlog!("[SESSION DEBUG] session started, clients in map: {}", self.clients.lock().unwrap().len());
 
@@ -92,10 +137,18 @@ impl SessionManager {
         });
 
         Ok(Session {
+            runtime,
             id, cli: cli.to_string(), cli_display_name: cli_display_name.to_string(),
             directory: directory.map(|s| s.to_string()), pid: None,
             status: "running".to_string(), created_at: Local::now().to_rfc3339(),
         })
+    }
+
+    pub fn runtime_info(&self, id: &str) -> Option<crate::agent_launch::RuntimeInfo> {
+        let clients = self.clients.lock().ok()?;
+        match clients.get(id)? {
+            ClientType::Acp(client, _) => client.lock().ok()?.launch_plan.as_ref().map(|p| p.runtime_info()),
+        }
     }
 
     pub fn send_input(&self, app: &AppHandle, id: &str, text: &str, history: Option<&[String]>) -> Result<(), String> {
@@ -207,6 +260,7 @@ impl SessionManager {
     }
 
     pub fn stop(&mut self, id: &str) -> Result<(), String> {
+        if let Some((_, Some(pid))) = self.pending.remove(id) { terminate_process_tree(pid); }
         rjlog!("[SESSION DEBUG] stop called for session: {}", id);
         // Terminate the agent process tree BEFORE dropping the client — dropping
         // the Arc alone leaves the process running and the stdout reader thread
@@ -240,6 +294,23 @@ impl SessionManager {
 /// When there is nothing to prepend, the user's text is forwarded verbatim —
 /// this is the common case for a fresh session with no project selected, and
 /// wrapping it would only add noise.
+#[cfg(test)]
+mod pending_start_tests {
+    use super::*;
+    #[test]
+    fn stopping_or_superseding_a_pending_start_cannot_reactivate_it() {
+        let mut manager = SessionManager::new();
+        manager.reserve_planned_start("chat", "first");
+        manager.reserve_planned_start("chat", "second");
+        manager.clear_pending("chat", "first");
+        assert_eq!(manager.pending.get("chat").unwrap().0, "second");
+        manager.stop("chat").unwrap();
+        assert!(!manager.pending.contains_key("chat"));
+        assert!(manager.track_pending_pid("chat", "second", 0).is_err());
+    }
+}
+
+/// Build the context prefix for a turn without altering the user's text.
 pub(crate) fn build_prompt(
     project_context: Option<&str>,
     history: Option<&[String]>,

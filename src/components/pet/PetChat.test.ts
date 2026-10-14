@@ -15,7 +15,7 @@ vi.mock("../../composables/usePetChat", async () => {
       availableAgents: ref([]), availableModels: ref([]), availableSkills: ref([]), recentDirs: ref([]),
       loadOptions: vi.fn(), applyConfig: vi.fn(), toggleSkill: vi.fn(), toggleReasoning: vi.fn(),
       setDirectory: vi.fn(), refreshRecentDirs: vi.fn(), isUnavailableLocalModel: vi.fn(() => false),
-      refreshLocalServer: vi.fn(), openLocalModelsSettings: vi.fn(),
+      refreshLocalServer: vi.fn(), refreshModels: vi.fn(), openLocalModelsSettings: vi.fn(),
       attachedFiles: ref([]), attachFiles: vi.fn(), removeAttachedFile: vi.fn(),
     }),
   };
@@ -55,5 +55,11 @@ describe("PetChat composer", () => {
   it("starts with a three-line input area", async () => {
     const html = await render();
     expect(html).toContain('rows="3"');
+  });
+
+  it("has an accessible pin toggle which starts off", async () => {
+    const html = await render();
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain('title="Keep on top"');
   });
 });

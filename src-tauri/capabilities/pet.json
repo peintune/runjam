@@ -13,6 +13,7 @@
     "core:event:allow-emit",
     "core:event:default",
     "opener:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "dialog:allow-message"
   ]
 }

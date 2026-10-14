@@ -2,7 +2,7 @@
 /**
  * Desktop-pet Q&A popup — the minimal conversation surface opened by clicking
  * the floating pet icon. It is a separate top-level window anchored to the
- * right edge of the screen and floats above every application.
+ * icon and optionally stays above other applications when pinned.
  *
  * Layout: a drag handle + transcript, a *persistent* settings toolbar (agent /
  * model / folder / permission mode / skills / reasoning) that mirrors the main
@@ -20,13 +20,16 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Send, Plus, X, Loader2, Sparkles, ChevronDown, Wand2,
-  Folder, FolderOpen, ShieldCheck, Check, Maximize2, Paperclip, Brain, Square,
+  Folder, FolderOpen, ShieldCheck, Check, Maximize2, Paperclip, Brain, Square, Pin, PinOff,
 } from "lucide-vue-next";
 import AgentIcon from "../AgentIcon.vue";
 import ChatMessages from "../ChatMessages.vue";
 import { usePetChat } from "../../composables/usePetChat";
 import { formatFileSize } from "../../composables/useAttachments";
 import { t, type TranslationKey } from "../../i18n";
+import { NATIVE_MODEL_ID } from "../../api/sessions";
+import { withPetWindowDialog } from "../../composables/petWindowDialog";
+import { supportsNativeConfig } from "../../composables/agentLaunch";
 
 const {
   messages,
@@ -43,6 +46,7 @@ const {
   ensureSession,
   greet,
   dispose,
+  runtime,
   // Toolbar state (agent / model / folder / permission / skills / reasoning).
   config,
   availableAgents,
@@ -57,6 +61,7 @@ const {
   refreshRecentDirs,
   isUnavailableLocalModel,
   refreshLocalServer,
+  refreshModels,
   openLocalModelsSettings,
   // Attachments.
   attachedFiles,
@@ -67,7 +72,15 @@ const {
 const chatEl = ref<HTMLDivElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const attachListOpen = ref(false);
+const nativeMode = computed(() => supportsNativeConfig(config.value.agentId) && config.value.modelId === NATIVE_MODEL_ID);
 let unlistenOpened: UnlistenFn | null = null;
+let unlistenClosed: UnlistenFn | null = null;
+const pinned = ref(false);
+const pinBusy = ref(false);
+let pinRevision = 0;
+const windowError = ref("");
+let disposed = false;
+let focusGeneration = 0;
 let focusFrame: number | null = null;
 let focusTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -92,7 +105,20 @@ function onContentUpdated() {
 watch(messages, () => scrollToBottom(), { deep: true });
 
 async function close() {
+  cancelFocusRetries();
+  openMenu.value = "";
+  attachListOpen.value = false;
   await invoke("close_pet_chat").catch(() => {});
+}
+
+async function togglePinned() {
+  if (pinBusy.value) return;
+  pinRevision++;
+  pinBusy.value = true;
+  windowError.value = "";
+  try { pinned.value = await invoke<boolean>("set_pet_chat_pinned", {pinned: !pinned.value}); }
+  catch (error) { windowError.value = t("pet.pinFailed", {error: String(error)}); }
+  finally { pinBusy.value = false; }
 }
 
 /**
@@ -109,10 +135,12 @@ async function openInMain() {
 
 /** Focus the composer without scrolling the transcript or changing its selection. */
 function focusComposer() {
+  if (document.visibilityState === "hidden" || !document.hasFocus()) return;
   inputEl.value?.focus({ preventScroll: true });
 }
 
 function cancelFocusRetries() {
+  focusGeneration++;
   if (focusFrame !== null) {
     cancelAnimationFrame(focusFrame);
     focusFrame = null;
@@ -127,8 +155,11 @@ function cancelFocusRetries() {
  *  keeps running. On re-open, retry focus after the native show transition has
  *  settled — the first attempt can otherwise race WebView becoming key. */
 async function focusInput() {
-  await nextTick();
   cancelFocusRetries();
+  const generation = focusGeneration;
+  await nextTick();
+  if (disposed || generation !== focusGeneration || !await getCurrentWindow().isVisible().catch(() => false)) return;
+  if (generation !== focusGeneration) return;
   focusComposer();
   focusFrame = requestAnimationFrame(() => {
     focusFrame = null;
@@ -144,6 +175,7 @@ async function focusInput() {
  *  the textarea. Focus explicitly for any press in the input area; controls
  *  keep their native click behavior. */
 function onComposerPointerDown(e: PointerEvent) {
+  cancelFocusRetries();
   if ((e.target as HTMLElement | null)?.closest("button")) return;
   focusComposer();
 }
@@ -308,6 +340,7 @@ const PERMISSION_LABELS: Record<string, Record<string, string>> = {
 };
 
 const PERMISSION_DESCRIPTIONS: Record<string, TranslationKey> = {
+  inherit: "models.inheritPermissions",
   read_only: "perm.readOnly",
   ask_approval: "perm.askApproval",
   approve_for_me: "perm.approveForMe",
@@ -315,8 +348,8 @@ const PERMISSION_DESCRIPTIONS: Record<string, TranslationKey> = {
 };
 
 const permissionOptions = computed(() =>
-  (["read_only", "ask_approval", "approve_for_me", "full_access"] as const).map((id) => {
-    const raw = PERMISSION_LABELS[config.value.agentId]?.[id] || id;
+  ([...(supportsNativeConfig(config.value.agentId) ? ["inherit"] : []), "read_only", "ask_approval", "approve_for_me", "full_access"]).map((id) => {
+    const raw = id === "inherit" ? "models.inheritPermissions" : PERMISSION_LABELS[config.value.agentId]?.[id] || id;
     return { id, label: t(raw as TranslationKey), description: t(PERMISSION_DESCRIPTIONS[id]) };
   }),
 );
@@ -380,6 +413,7 @@ async function pickModel(id: string) {
 function openModelMenu(e?: MouseEvent) {
   toggleMenu("model", e);
   void refreshLocalServer();
+  void refreshModels();
 }
 
 async function pickPermission(id: string) {
@@ -395,7 +429,7 @@ async function pickDir(path: string) {
 /** Native folder picker — same `plugin-dialog` call the main window uses. */
 async function browseDir() {
   try {
-    const picked = await openDialog({ directory: true, multiple: false });
+    const picked = await withPetWindowDialog(() => openDialog({ directory: true, multiple: false }));
     if (typeof picked === "string" && picked) await pickDir(picked);
   } catch (err) {
     console.error("[pet] folder picker failed:", err);
@@ -445,29 +479,45 @@ const MENU =
   "text-gray-700";
 
 onMounted(async () => {
-  // Ensure a session exists (or a fresh one when the stored one went stale) so
-  // the header can show which agent/model is about to answer.
-  await ensureSession();
-  greet();
-  scrollToBottom();
-  await focusInput();
-  // Toolbar data (agents / models / skills / recent folders) loads in parallel
-  // with the session so the popup is interactive immediately.
-  void loadOptions();
-  // Re-focus + greet whenever the window is reopened by the icon.
-  unlistenOpened = await listen("pet:opened", () => {
-    scrollToBottom();
-    focusInput();
-  });
+  // Register window controls BEFORE the potentially slow ACP handshake. A
+  // reopen during initialization must still restore focus and close popovers.
   window.addEventListener("keydown", onEsc);
   document.addEventListener("click", onDocClick);
+  unlistenOpened = await listen<{pinned: boolean}>("pet:opened", event => {
+    pinRevision++;
+    pinned.value = event.payload?.pinned ?? false;
+    openMenu.value = "";
+    attachListOpen.value = false;
+    scrollToBottom();
+    void focusInput();
+    void refreshModels();
+  });
+  unlistenClosed = await listen("pet:closed", () => {
+    cancelFocusRetries();
+    openMenu.value = "";
+    attachListOpen.value = false;
+  });
+  if (disposed) { unlistenOpened(); unlistenClosed(); return; }
+  const revision = pinRevision;
+  void invoke<boolean>("get_pet_chat_pinned").then(value => {
+    if (revision === pinRevision) pinned.value = value;
+  }).catch(() => {});
+  void loadOptions();
+  void ensureSession().then(() => {if (!disposed) {greet(); void refreshModels();}});
+  scrollToBottom();
+  await focusInput();
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   cancelFocusRetries();
   if (unlistenOpened) {
     try { unlistenOpened(); } catch {}
     unlistenOpened = null;
+  }
+  if (unlistenClosed) {
+    try { unlistenClosed(); } catch {}
+    unlistenClosed = null;
   }
   window.removeEventListener("keydown", onEsc);
   document.removeEventListener("click", onDocClick);
@@ -485,6 +535,7 @@ onBeforeUnmount(() => {
   <div
     class="w-screen h-screen flex flex-col overflow-hidden rounded-2xl border border-gray-200 dark:border-[#2c2c36]
            bg-white dark:bg-[#1a1a21] text-gray-900"
+    @pointerdown.capture="cancelFocusRetries"
   >
     <!-- Header: drag handle + active agent + actions -->
     <div
@@ -510,6 +561,20 @@ onBeforeUnmount(() => {
           <AgentIcon :agent-id="a.id" :size="14" />
         </button>
       </div>
+
+      <button
+        type="button"
+        class="p-1.5 rounded-md transition-colors flex-shrink-0 disabled:opacity-50"
+        :class="pinned ? 'text-indigo-500 bg-indigo-50 dark:bg-indigo-500/10' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 dark:hover:bg-[#26262f]'"
+        :title="t(pinned ? 'pet.unpin' : 'pet.pin')"
+        :aria-label="t(pinned ? 'pet.unpin' : 'pet.pin')"
+        :aria-pressed="pinned"
+        :disabled="pinBusy"
+        @click="togglePinned"
+      >
+        <Pin v-if="!pinned" :size="14" />
+        <PinOff v-else :size="14" />
+      </button>
 
       <!-- Hand the conversation over to the main window, where the full
            transcript (tool calls, thinking, permission prompts) is visible. -->
@@ -538,6 +603,7 @@ onBeforeUnmount(() => {
         <X :size="14" />
       </button>
     </div>
+    <p v-if="windowError" class="px-3 py-1 text-[11px] text-red-500" role="alert">{{ windowError }}</p>
 
     <!-- Transcript: the main window's own message list renders the whole turn —
          markdown, code blocks, thinking, tool calls, permission prompts. The
@@ -584,6 +650,7 @@ onBeforeUnmount(() => {
           ref="inputEl"
           v-model="input"
           rows="3"
+          :aria-label="t('pet.askSomething')"
           :placeholder="busy ? t('pet.answering') : t('pet.askSomething')"
           class="flex-1 bg-transparent border-none outline-none resize-none text-[12px] text-gray-800
                  placeholder-gray-400 dark:placeholder-gray-600 leading-relaxed min-h-16 max-h-28 no-scrollbar"
@@ -634,7 +701,7 @@ onBeforeUnmount(() => {
         <!-- Skills stays next to attachments so all extra prompt context starts
              in one predictable place on the compact control row. -->
         <div class="relative flex-shrink-0" data-pet-popover>
-          <button :class="CHIP" :title="t('pet.skills')" @click="toggleMenu('skills', $event)">
+          <button :class="CHIP" :disabled="nativeMode" :title="t(nativeMode ? 'models.nativeExtensions' : 'pet.skills')" @click="toggleMenu('skills', $event)">
             <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
             <span class="truncate">
               {{ t("pet.skills") }}<template v-if="config.skills.length"> · {{ config.skills.length }}</template>
@@ -793,13 +860,19 @@ onBeforeUnmount(() => {
               ? 'bg-gray-200 dark:bg-[#26262f] text-gray-500'
               : 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10',
           ]"
-          :title="t('pet.reasoning')"
+          :title="t(nativeMode ? 'models.nativeExtensions' : 'pet.reasoning')"
+          :disabled="nativeMode"
           @click="toggleReasoning"
         >
           <Brain :size="11" class="flex-shrink-0" />
         </button>
       </div>
 
+      <p v-if="runtime" class="mt-1 text-[9px] text-gray-500 truncate" :title="runtime.config_root">
+        {{ t(runtime.config_mode === 'native' ? 'models.nativeMode' : 'models.managedMode') }} ·
+        {{ runtime.requested_model }}
+        <span v-if="runtime.config_mode === 'native'"> · {{ t('models.nativeAuth') }}</span>
+      </p>
       <!-- Staged attachments list. Teleported like the option menus so it is
            never clipped by the action row (`overflow-hidden`) and uses the same
            open-up/​open-down anchoring. -->
@@ -837,6 +910,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+button:not(:disabled) {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+button:focus-visible {
+  outline: 2px solid #818cf8;
+  outline-offset: 2px;
+}
 :global(html),
 :global(body),
 :global(#app) {

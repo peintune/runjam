@@ -38,18 +38,21 @@ import {
   stopSession,
   sessionAlive,
   setSessionPermissionMode,
+  NATIVE_MODEL_ID, getSessionRuntime, type SessionRuntime,
 } from "../api/sessions";
 import {
   getLastAgent,
   setLastAgent,
   getModels,
   getAgentModels,
+  getAgentConfigMode,
   getSessionModel,
   setSessionModel,
   getAgentPermissionMode,
   setAgentPermissionMode,
   type ModelEntry,
 } from "../api/models";
+import { withNativeChoice, chooseContextTransfer, supportsNativeConfig, resolveDefaultPermission } from "./agentLaunch";
 import { getAgentStatuses, type AgentInfo } from "../api/agents";
 import { listSkills, type SkillInfo } from "../api/sessions";
 import { setReasoningDisabled } from "../api/proxy";
@@ -367,7 +370,11 @@ export function usePetChat() {
   const modelId = ref("");
   const modelName = ref("");
   const sessionId = ref("");
+  const runtime = ref<SessionRuntime | null>(null);
+  let carryHistory = true;
   const starting = ref(false);
+  let sessionStartup: Promise<boolean> | null = null;
+  const preparingSend = ref(false);
 
   // ── Toolbar state (mirrors the main window's new-session page) ──────────
   /** Configuration the NEXT session will use. Editing anything here ends the
@@ -378,6 +385,7 @@ export function usePetChat() {
   const availableAgents = ref<AgentInfo[]>([]);
   /** Models assigned to the currently selected agent. */
   const availableModels = ref<ModelEntry[]>([]);
+  let modelLoadGeneration = 0;
   /** Built-in skill catalog. */
   const availableSkills = ref<SkillInfo[]>([]);
   /** Recent project directories (shared with the main window). */
@@ -414,7 +422,7 @@ export function usePetChat() {
   let processFresh = false;
 
   const hasMessages = computed(() => messages.value.length > 0);
-  const canSend = computed(() => input.value.trim().length > 0 && !sending.value);
+  const canSend = computed(() => input.value.trim().length > 0 && !sending.value && !preparingSend.value);
 
   /**
    * Independent snapshot of whether the composer must be locked.
@@ -455,15 +463,20 @@ export function usePetChat() {
    * `agent` is accepted but no longer filters: the main window shows the same
    * full list regardless of the selected agent, and the popup must match it.
    */
-  async function loadModelsFor(agent: string) {
-    void agent; // kept for call-site compatibility; see the note above
+  async function loadModelsFor(agent: string): Promise<boolean> {
+    const generation = ++modelLoadGeneration;
     try {
-      const list = await getModels();
+      const list = await withNativeChoice(agent, await getModels().catch(() => []));
+      if (generation !== modelLoadGeneration || agent !== config.value.agentId) return false;
       availableModels.value = withRunningLocalModel(list);
     } catch {
+      if (generation !== modelLoadGeneration || agent !== config.value.agentId) return false;
       availableModels.value = [];
     }
+    return true;
   }
+
+  async function refreshModels() { await loadModelsFor(config.value.agentId); }
 
   /**
    * Ensure the currently-running local model appears in the list.
@@ -581,17 +594,21 @@ export function usePetChat() {
 
     let models: ModelEntry[] = [];
     try {
-      models = await getModels();
+      models = await withNativeChoice(agent, await getModels());
     } catch {
       models = [];
     }
     if (config.value.modelId) {
       const picked = models.find((m) => m.id === config.value.modelId);
       if (picked) return picked;
+      throw new Error(`Selected model is unavailable: ${config.value.modelId}`);
+    }
+    if (supportsNativeConfig(agent) && await getAgentConfigMode(agent) === "native") {
+      return models.find(m => m.id === NATIVE_MODEL_ID) ?? null;
     }
     try {
       const saved = await getSessionModel(agent);
-      if (saved) {
+      if (saved && saved !== NATIVE_MODEL_ID) {
         const match = models.find((m) => m.id === saved);
         if (match) return match;
       }
@@ -618,7 +635,9 @@ export function usePetChat() {
     } catch {
       saved = "";
     }
-    return resolvePetPermissionMode(saved);
+    const native = supportsNativeConfig(agent) && (config.value.modelId === NATIVE_MODEL_ID
+      || (!config.value.modelId && await getAgentConfigMode(agent) === "native"));
+    return resolveDefaultPermission(saved, native);
   }
 
   /** Tear down the current session's agent process and forget it. */
@@ -650,6 +669,7 @@ export function usePetChat() {
    * renders all of it, so the popup has to accumulate the same structure the
    * main window does, or those sections would simply never appear. */
   async function attachListener(id: string) {
+    runtime.value = await getSessionRuntime(id).catch(() => null);
     if (unlisten) {
       try { unlisten(); } catch {}
       unlisten = null;
@@ -657,6 +677,8 @@ export function usePetChat() {
     unlisten = await listen<PetAcpPayload>(`acp:${id}`, (e) => {
       const p = e.payload;
       if (p.session_id !== id) return;
+      if (p.type === "runtime") { runtime.value = p.runtime ?? null; return; }
+      if (p.run_id && runtime.value && p.run_id !== runtime.value.run_id) return;
       lastActivityAt = Date.now();
       switch (p.type) {
         case "start": {
@@ -925,7 +947,25 @@ export function usePetChat() {
    *  active within the idle window, restarting its process if the toolbar
    *  selection changed — only start a NEW session once the conversation went
    *  stale. */
-  async function ensureSession(): Promise<boolean> {
+  function ensureSession(): Promise<boolean> {
+    if (sessionStartup) return sessionStartup;
+    starting.value = true;
+    sessionStartup = (async () => {
+      let ready = await ensureSessionOnce();
+      // A choice can change while startup is in flight. Apply it sequentially,
+      // rather than reporting the earlier process as having the newer config.
+      while (ready && loadStored()?.configKey !== petConfigKey(config.value)) {
+        ready = await ensureSessionOnce();
+      }
+      return ready;
+    })().finally(() => {
+      starting.value = false;
+      sessionStartup = null;
+    });
+    return sessionStartup;
+  }
+
+  async function ensureSessionOnce(): Promise<boolean> {
     const stored = loadStored();
     if (stored) {
       const fresh = isPetSessionFresh(stored.lastActiveAt, Date.now());
@@ -948,13 +988,13 @@ export function usePetChat() {
           // unattended default (`resolvePetPermissionMode`). The popup CAN render
           // permission prompts now, so an explicit `ask_approval` is honoured
           // rather than overridden.
-          setSessionPermissionMode(stored.id, config.value.permissionMode || "approve_for_me").catch(() => {});
+          if (stored.agentId !== "codex-cli") setSessionPermissionMode(stored.id, await resolvePermissionMode(stored.agentId)).catch(() => {});
           await attachListener(stored.id);
           // Same conversation, but the user changed agent/model/folder/skills:
           // swap the process in place. The transcript stays; only the agent
           // behind it is replaced.
           if (stored.configKey !== petConfigKey(config.value)) {
-            await restartSessionProcess(stored.id);
+            return restartSessionProcess(stored.id);
           }
           return true;
         }
@@ -963,7 +1003,7 @@ export function usePetChat() {
         // session (id, transcript, sidebar entry) and just bring a process back:
         // a brand-new session here is what littered the sidebar with duplicate
         // "🐾 宠物会话" rows, which the user asked us to stop doing.
-        if (await restartSessionProcess(stored.id)) return true;
+        return restartSessionProcess(stored.id);
       }
       // Stale (past the idle window) or unrestartable: retire it and start over.
       // A stale-but-still-alive session would otherwise leak its agent process
@@ -995,16 +1035,17 @@ export function usePetChat() {
       const permissionMode = await resolvePermissionMode(agent.id);
       const directory = config.value.directory || undefined;
       const skills = config.value.skills.length > 0 ? [...config.value.skills] : undefined;
+      const launchKey = petConfigKey({...config.value, agentId: agent.id, modelId: model?.id || "", permissionMode});
 
       // Reasoning is a process-wide proxy setting; apply it before the restart
       // so the very first answer already honours it.
-      setReasoningDisabled(config.value.noThinking).catch(() => {});
+      if (agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
 
       // Drop the old process first — otherwise the manager keeps the stale
       // client and the new configuration never actually reaches the agent.
-      await stopSession(id).catch(() => {});
+      if (agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) await stopSession(id).catch(() => {});
 
-      await apiStartSession(
+      const info = await apiStartSession(
         agent.id,
         agent.display_name,
         directory,
@@ -1013,8 +1054,10 @@ export function usePetChat() {
         undefined,
         permissionMode,
         skills,
+        { reasoningDisabled: config.value.noThinking },
       );
-
+      runtime.value = info.runtime ?? null;
+      sessionId.value = info.id;
       agentId.value = agent.id;
       agentName.value = agent.display_name;
       modelId.value = model?.id || "";
@@ -1030,7 +1073,7 @@ export function usePetChat() {
       // `ensureSession` does not restart us over and over for the same choice.
       const stored = loadStored();
       if (stored && stored.id === id) {
-        saveStored({ ...stored, configKey: petConfigKey(config.value), agentId: agent.id, model: model?.id || "" });
+        saveStored({ ...stored, configKey: launchKey, agentId: agent.id, model: model?.id || "" });
       }
       // The new process starts with no memory of the transcript; the next send
       // hands it the recent turns as context.
@@ -1039,6 +1082,7 @@ export function usePetChat() {
       return true;
     } catch (err) {
       console.error("[pet] failed to restart session process:", err);
+      if (runtime.value) { config.value.modelId = runtime.value.model_id; persistConfig(); }
       pushError(`切换配置失败：${err}`);
       return false;
     }
@@ -1046,8 +1090,6 @@ export function usePetChat() {
 
   /** Create the pet's dedicated session using the toolbar configuration. */
   async function createSession(): Promise<boolean> {
-    if (starting.value) return false;
-    starting.value = true;
     try {
       const agent = await resolveDefaultAgent();
       if (!agent) {
@@ -1058,11 +1100,12 @@ export function usePetChat() {
       const permissionMode = await resolvePermissionMode(agent.id);
       const directory = config.value.directory || undefined;
       const skills = config.value.skills.length > 0 ? [...config.value.skills] : undefined;
+      const launchKey = petConfigKey({...config.value, agentId: agent.id, modelId: model?.id || "", permissionMode});
 
       // Reasoning is a process-wide proxy setting (not per-session), matching
       // the main window's toggle. Apply it before the agent starts so the very
       // first response already honours it.
-      setReasoningDisabled(config.value.noThinking).catch(() => {});
+      if (agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
 
       const id = `pet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const title = `🐾 宠物会话`;
@@ -1096,7 +1139,9 @@ export function usePetChat() {
         undefined,
         permissionMode,
         skills,
+        { reasoningDisabled: config.value.noThinking },
       );
+      runtime.value = info.runtime ?? null;
       sessionId.value = info.id;
       agentId.value = agent.id;
       agentName.value = agent.display_name;
@@ -1118,7 +1163,7 @@ export function usePetChat() {
         lastActiveAt: now,
         agentId: agent.id,
         model: model?.id || "",
-        configKey: petConfigKey(config.value),
+        configKey: launchKey,
       });
       await attachListener(info.id);
       // Let the main window refresh its sidebar so the new session appears.
@@ -1128,8 +1173,6 @@ export function usePetChat() {
       console.error("[pet] failed to start session:", err);
       pushError(`宠物会话启动失败：${err}`);
       return false;
-    } finally {
-      starting.value = false;
     }
   }
 
@@ -1173,8 +1216,16 @@ export function usePetChat() {
   /** Send the current input as a question. */
   async function send() {
     const text = input.value.trim();
-    if (!text || sending.value) return;
+    if (!text || sending.value || preparingSend.value) return;
+    preparingSend.value = true;
+    try {
+      await sendReadyMessage(text);
+    } finally {
+      preparingSend.value = false;
+    }
+  }
 
+  async function sendReadyMessage(text: string) {
     const ok = await ensureSession();
     if (!ok || !sessionId.value) return;
 
@@ -1218,7 +1269,7 @@ export function usePetChat() {
     // after a restart. The just-pushed user message is excluded (the backend
     // appends the new prompt itself); only the PRIOR turns become context.
     let history: string[] | undefined;
-    if (processFresh) {
+    if (processFresh && carryHistory) {
       const prior = messages.value
         .slice(0, -1)
         .filter((m) => m.content)
@@ -1227,6 +1278,8 @@ export function usePetChat() {
       if (prior.length > 0) history = prior;
       processFresh = false;
     }
+    processFresh = false;
+    carryHistory = true;
 
     try {
       await sendInput(sessionId.value, sendText, history);
@@ -1245,7 +1298,7 @@ export function usePetChat() {
     input.value = "";
     attachedFiles.value = [];
     sending.value = false;
-    await createSession();
+    await ensureSession();
   }
 
   /**
@@ -1304,32 +1357,44 @@ export function usePetChat() {
    * `ensureSession`, which reuses the session we just made.
    */
   async function applyConfig(patch: Partial<PetConfig>) {
+    const previousAgent = config.value.agentId;
+    if (sessionId.value && config.value.agentId === "codex-cli" && patch.modelId && patch.modelId !== config.value.modelId) {
+      try { carryHistory = await chooseContextTransfer(); }
+      catch (e) { pushError(String(e)); return; }
+    }
     config.value = { ...config.value, ...patch };
+    if (supportsNativeConfig(config.value.agentId) && patch.modelId) {
+      if (patch.modelId !== NATIVE_MODEL_ID && config.value.permissionMode === "inherit") config.value.permissionMode = "ask_approval";
+    }
     persistConfig();
 
     // Persist the pick as the agent's default, mirroring the main window: the
     // new-session page reads `session_model_<agent>` / `agent_permission_<id>`,
     // so a choice made in the popup also becomes the default there.
     const patchedAgent = config.value.agentId;
-    if (patch.modelId !== undefined && patchedAgent && config.value.modelId) {
+    if (patch.modelId !== undefined && patchedAgent && config.value.modelId && (patchedAgent !== "codex-cli" || !sessionId.value)) {
       setSessionModel(patchedAgent, config.value.modelId).catch(() => {});
     }
-    if (patch.permissionMode !== undefined && patchedAgent && config.value.permissionMode) {
+    if (patch.permissionMode !== undefined && patchedAgent && config.value.permissionMode && (patchedAgent !== "codex-cli" || !sessionId.value)) {
       setAgentPermissionMode(patchedAgent, config.value.permissionMode).catch(() => {});
     }
 
     // Changing the agent invalidates the model list AND the permission-mode
     // default (both are per-agent). Drop a model that no longer belongs to the
     // new agent and let the mode re-resolve from that agent's own default.
-    if (patch.agentId !== undefined && patch.agentId !== agentId.value) {
+    if (patch.agentId !== undefined && patch.agentId !== previousAgent) {
       [config.value.modelId, config.value.permissionMode] = ["", ""];
       persistConfig();
-      await loadModelsFor(config.value.agentId);
+      const requestedAgent = config.value.agentId;
+      if (!await loadModelsFor(requestedAgent) || config.value.agentId !== requestedAgent) return;
       // Pre-fill a model so the toolbar shows what will actually run instead of
       // an empty selector. Skip models that cannot be used right now: the list
       // now includes local models, and pre-selecting one whose server is not
       // running would arm a model that fails on send.
-      const usable = availableModels.value.find((m) => !isUnavailableLocalModel(m));
+      const preferred = await resolveDefaultModel(requestedAgent);
+      if (config.value.agentId !== requestedAgent) return;
+      const usable = preferred && !isUnavailableLocalModel(preferred) ? preferred
+        : availableModels.value.find(m => m.id !== NATIVE_MODEL_ID && !isUnavailableLocalModel(m));
       if (usable) {
         config.value.modelId = usable.id;
         persistConfig();
@@ -1458,6 +1523,7 @@ export function usePetChat() {
     ensureSession,
     greet,
     dispose,
+    runtime,
     // Attachments (files staged for the next message).
     attachedFiles,
     attachFiles,
@@ -1478,6 +1544,7 @@ export function usePetChat() {
     // Local model availability (greyed out when its server is not running).
     isUnavailableLocalModel,
     refreshLocalServer,
+    refreshModels,
     idleTimeoutMs: PET_IDLE_TIMEOUT_MS,
     getLastActivityAt: () => lastActivityAt,
   };
@@ -1485,8 +1552,11 @@ export function usePetChat() {
 
 /** Shape of the broadcast `acp:<id>` payload (subset of SessionView's `AcpPayload`). */
 interface PetAcpPayload {
+  run_id?: string;
+  runtime?: SessionRuntime;
   session_id: string;
   type:
+    | "runtime"
     | "start"
     | "thinking"
     | "text"

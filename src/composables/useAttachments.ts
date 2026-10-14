@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { parseFile } from "../api/fs";
+import { withPetWindowDialog } from "./petWindowDialog";
 
 /** A file the user attached to the message they are composing. */
 export interface AttachedFile {
@@ -51,10 +52,10 @@ export function formatFileSize(bytes: number): string {
 export async function pickAttachedFiles(
   alreadyAttached: ReadonlySet<string>,
 ): Promise<AttachedFile[]> {
-  const selected = await openDialog({
+  const selected = await withPetWindowDialog(() => openDialog({
     multiple: true,
     filters: [{ name: "Supported Files", extensions: ATTACH_ACCEPTED_EXTS }],
-  });
+  }));
   if (!selected) return [];
   const list = Array.isArray(selected) ? selected : [selected];
 

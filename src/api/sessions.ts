@@ -1,6 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export const NATIVE_MODEL_ID = "__runjam_native__";
+export type ConfigMode = "native" | "managed";
+export interface SessionRuntime {
+  run_id: string;
+  model_id: string;
+  config_mode: ConfigMode;
+  config_root: string;
+  requested_model: string;
+  authentication: string;
+  permission_mode: string;
+  reasoning_disabled: boolean;
+  acp_session_id: string | null;
+}
+
 export interface SessionInfo {
+  runtime?: SessionRuntime | null;
   id: string;
   cli: string;
   cli_display_name: string;
@@ -58,6 +73,7 @@ export async function startSession(
   mode?: string,
   permissionMode?: string,
   skills?: string[],
+  options?: { configMode?: ConfigMode; reasoningDisabled?: boolean },
 ): Promise<SessionInfo> {
   return invoke<SessionInfo>("start_session", {
     cli,
@@ -68,7 +84,13 @@ export async function startSession(
     mode: mode ?? "assistant",
     permissionMode: permissionMode ?? null,
     skills: skills ?? null,
+    configMode: options?.configMode ?? (["claude-code", "gemini-cli", "codex-cli"].includes(cli) && model ? (model === NATIVE_MODEL_ID ? "native" : "managed") : null),
+    reasoningDisabled: options?.reasoningDisabled ?? false,
   });
+}
+
+export function getSessionRuntime(id: string): Promise<SessionRuntime | null> {
+  return invoke("get_session_runtime", { id });
 }
 
 export async function stopSession(id: string): Promise<void> {

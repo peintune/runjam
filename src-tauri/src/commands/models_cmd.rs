@@ -1,5 +1,4 @@
-use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, NativeModel, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, restore_agent_config, set_agent_model, detect_model_protocol, read_native_models, read_all_native_models, native_config_path, native_snapshot_path, try_native_snapshot};
-use crate::rjlog;
+use crate::models_config::{ModelEntry, ModelAlias, ModelConfig, NativeModel, sync_to_agent, backup_agent_config, read_models_from_agent_config, configure_agent_proxy, set_agent_model, detect_model_protocol, read_native_models, read_all_native_models, try_native_snapshot};
 use crate::db::connection::Database;
 use crate::proxy::ProxyState;
 use tauri::State;
@@ -238,9 +237,7 @@ pub fn remove_model_from_agent(agent_id: String, model_id: String, db: State<'_,
     }
     
     let models = get_agent_models_for_sync(&conn, &agent_id);
-    if models.is_empty() {
-        restore_agent_config(&agent_id).ok();
-    } else {
+    if !models.is_empty() {
         let default_models = get_default_models_for_sync(&conn, &agent_id);
         if !default_models.is_empty() {
             sync_to_agent(&agent_id, &default_models).map_err(|e| format!("Failed to sync to agent config: {}", e))?;
@@ -378,11 +375,19 @@ pub fn get_session_model(agent_id: String, db: State<'_, Mutex<Database>>) -> St
 pub fn set_session_model(agent_id: String, model_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
-    conn.execute(
+    save_session_model(&conn, &agent_id, &model_id)
+}
+
+fn save_session_model(conn: &rusqlite::Connection, agent_id: &str, model_id: &str) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)",
-        (&format!("session_model_{}", agent_id), &model_id),
+        (&format!("session_model_{}", agent_id), model_id),
     ).map_err(|e| format!("Failed to save session model: {}", e))?;
-    Ok(())
+    if crate::agent_launch::supports_native(agent_id) && !model_id.is_empty() {
+        save_config_mode(&tx, agent_id, if model_id == crate::agent_launch::NATIVE_MODEL_ID { "native" } else { "managed" })?;
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 // Helper for internal use without tauri State
@@ -403,10 +408,101 @@ pub fn read_agent_config_models(agent_id: String) -> Vec<ModelEntry> {
     read_models_from_agent_config(&agent_id)
 }
 
-/// 读取某个 CLI 的原生模型（只读展示用：值取自原生快照，快照不存在时取当前文件）。
+/// Read display metadata from the CLI's current config, never a stale snapshot.
 #[tauri::command]
 pub fn get_native_models(agent_id: String) -> Vec<NativeModel> {
     read_native_models(&agent_id)
+}
+
+pub fn config_mode_from_db(conn: &rusqlite::Connection, agent_id: &str) -> crate::agent_launch::ConfigMode {
+    use crate::agent_launch::ConfigMode;
+    let saved: Option<String> = conn.query_row("SELECT value FROM app_settings WHERE key=?1",
+        [format!("agent_config_mode_{agent_id}")], |r| r.get(0)).ok();
+    match saved.as_deref() {
+        Some("native") => ConfigMode::Native,
+        Some("managed") => ConfigMode::Managed,
+        _ => {
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_models WHERE agent_id=?1", [agent_id], |r| r.get(0)).unwrap_or(0);
+            // Preserve the pre-native launch path for existing Claude/Gemini
+            // installs. Fresh installs have explicit defaults seeded at startup.
+            if count > 0 || agent_id != "codex-cli" { ConfigMode::Managed } else { ConfigMode::Native }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_agent_config_mode(agent_id: String, db: State<'_, Mutex<Database>>) -> crate::agent_launch::ConfigMode {
+    let guard = db.lock().unwrap();
+    let conn = guard.conn.lock().unwrap();
+    config_mode_from_db(&conn, &agent_id)
+}
+
+#[tauri::command]
+pub fn set_agent_config_mode(agent_id: String, mode: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    let guard = db.lock().map_err(|e| e.to_string())?;
+    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+    save_config_mode(&conn, &agent_id, &mode)
+}
+
+fn save_config_mode(conn: &rusqlite::Connection, agent_id: &str, mode: &str) -> Result<(), String> {
+    if !crate::agent_launch::supports_native(agent_id) { return Err("Native switching is unsupported for this agent".into()); }
+    if mode != "native" && mode != "managed" { return Err("Invalid config mode".into()); }
+    conn.execute("INSERT OR REPLACE INTO app_settings (key,value,updated_at) VALUES (?1,?2,CURRENT_TIMESTAMP)",
+        (format!("agent_config_mode_{agent_id}"), mode)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod config_mode_tests {
+    use super::*;
+    #[test]
+    fn switching_modes_preserves_model_bindings_and_explicit_native_preference() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE agent_models(agent_id TEXT,model_id TEXT);
+            INSERT INTO agent_models VALUES('codex-cli','m1');").unwrap();
+        assert_eq!(config_mode_from_db(&conn, "codex-cli"), crate::agent_launch::ConfigMode::Managed);
+        save_config_mode(&conn, "codex-cli", "native").unwrap();
+        conn.execute("INSERT INTO agent_models VALUES('codex-cli','m2')", []).unwrap();
+        assert_eq!(config_mode_from_db(&conn, "codex-cli"), crate::agent_launch::ConfigMode::Native);
+        save_config_mode(&conn, "codex-cli", "managed").unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM agent_models", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert!(save_config_mode(&conn, "codex-cli", "unknown").is_err());
+    }
+    #[test]
+    fn all_three_agents_can_switch_native_without_losing_managed_bindings() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE agent_models(agent_id TEXT,model_id TEXT);").unwrap();
+        for agent in crate::first_launch::AGENTS {
+            conn.execute("INSERT INTO agent_models VALUES(?1,'saved-model')", [agent]).unwrap();
+            save_config_mode(&conn, agent, "native").unwrap();
+            assert_eq!(config_mode_from_db(&conn, agent), crate::agent_launch::ConfigMode::Native);
+            save_config_mode(&conn, agent, "managed").unwrap();
+        }
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM agent_models", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+    }
+    #[test]
+    fn existing_unconfigured_claude_and_gemini_keep_their_managed_launch_path() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE agent_models(agent_id TEXT,model_id TEXT);").unwrap();
+        for agent in ["claude-code", "gemini-cli"] {
+            assert_eq!(config_mode_from_db(&conn, agent), crate::agent_launch::ConfigMode::Managed);
+        }
+    }
+    #[test]
+    fn explicit_new_chat_model_choices_update_the_default_mode_without_losing_bindings() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE agent_models(agent_id TEXT,model_id TEXT);").unwrap();
+        for agent in crate::first_launch::AGENTS {
+            save_session_model(&conn, agent, crate::agent_launch::NATIVE_MODEL_ID).unwrap();
+            assert_eq!(config_mode_from_db(&conn, agent), crate::agent_launch::ConfigMode::Native);
+            save_session_model(&conn, agent, "managed-model").unwrap();
+            assert_eq!(config_mode_from_db(&conn, agent), crate::agent_launch::ConfigMode::Managed);
+        }
+    }
 }
 
 /// 汇总三个 CLI 的原生模型。
@@ -422,38 +518,16 @@ pub fn snapshot_agent_config(agent_id: String) -> Result<(), String> {
     try_native_snapshot(&agent_id)
 }
 
-/// 切回原生配置：整体还原该 CLI 的配置文件（优先原生快照，其次日期备份，
-/// 最后就地清除 runjam 字段），并解除 runjam 对该 agent 的模型接管 ——
-/// 否则下一次任何模型操作都会把它重新覆写回 runjam 管理的模型。
-///
-/// 还原后该 CLI 的 `model` 就是原生模型，重启即按原生配置运行。
+/// Compatibility command: select native launches without modifying CLI files
+/// or removing managed model bindings.
 #[tauri::command]
 pub fn restore_native_config(
     agent_id: String,
     db: State<'_, Mutex<Database>>,
-    proxy_state: State<'_, Arc<Mutex<ProxyState>>>,
+    _proxy_state: State<'_, Arc<Mutex<ProxyState>>>,
 ) -> Result<(), String> {
-    // 1) 还原配置文件
-    restore_agent_config(&agent_id)?;
-
-    // 2) 解除模型接管：清空该 agent 的模型绑定，避免 runjam 再次覆写
-    {
-        let db_guard = db.lock().map_err(|e| format!("DB lock error: {}", e))?;
-        let conn = db_guard.conn.lock().map_err(|e| format!("DB conn error: {}", e))?;
-        conn.execute("DELETE FROM agent_models WHERE agent_id = ?1", [&agent_id])
-            .map_err(|e| format!("Failed to release agent models: {}", e))?;
-        let all_models = get_all_models_from_db(&conn);
-        ModelConfig { models: all_models }.save();
-    }
-
-    // 3) 同步内存中的代理状态，避免残留映射让流量继续走 runjam 代理
-    {
-        let mut ps = proxy_state.lock().unwrap();
-        ps.agent_models.remove(&agent_id);
-        ps.models = ModelConfig::load().models;
-    }
-
-    Ok(())
+    // Native is a launch choice, not a destructive restore of a historical file.
+    set_agent_config_mode(agent_id, "native".into(), db)
 }
 
 #[tauri::command]
@@ -570,6 +644,7 @@ pub fn get_agent_permission_mode(agent_id: String, db: State<'_, Mutex<Database>
 /// Preserves the proxy URL (already set by configure_agent_proxy).
 #[tauri::command]
 pub fn set_agent_model_cmd(agent_id: String, model_id: String, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    if agent_id == "codex-cli" || model_id == crate::agent_launch::NATIVE_MODEL_ID { return Ok(()); }
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     let (model_name, api_key): (String, String) = conn.query_row(

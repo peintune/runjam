@@ -262,8 +262,7 @@ fn parse_gemini_native_config(settings: &serde_json::Value) -> Vec<ModelEntry> {
 
 /// 一个 CLI 的原生配置里描述出来的模型。
 ///
-/// 只读展示用：runjam 覆写 `~/.claude/settings.json` 等文件后，原生模型信息
-/// 只能从快照回读，因此这里把「值」和「来源」一起带给前端。
+/// Read-only metadata from the current CLI config, including its source path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NativeModel {
     /// 归属的 agent id（claude-code / codex-cli / gemini-cli）
@@ -323,9 +322,24 @@ pub fn try_native_snapshot(agent_id: &str) -> Result<(), String> {
 pub fn native_config_path(agent_id: &str) -> Option<PathBuf> {
     let home = get_home_dir();
     match agent_id {
-        "claude-code" => Some(home.join(".claude").join("settings.json")),
-        "codex-cli" => Some(home.join(".codex").join("config.toml")),
-        "gemini-cli" => Some(home.join(".gemini").join("settings.json")),
+        "claude-code" => Some(if std::env::var_os("RUNJAM_HOME").is_some() {
+            home.join(".claude").join("settings.json")
+        } else {
+            std::env::var_os("CLAUDE_CONFIG_DIR").filter(|p| !p.is_empty()).map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".claude")).join("settings.json")
+        }),
+        "codex-cli" => Some(if std::env::var_os("RUNJAM_HOME").is_some() {
+            home.join(".codex").join("config.toml")
+        } else {
+            std::env::var_os("CODEX_HOME").filter(|p| !p.is_empty()).map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".codex")).join("config.toml")
+        }),
+        "gemini-cli" => Some(if std::env::var_os("RUNJAM_HOME").is_some() {
+            home.join(".gemini").join("settings.json")
+        } else {
+            std::env::var_os("GEMINI_CLI_HOME").filter(|p| !p.is_empty()).map(PathBuf::from)
+                .unwrap_or(home).join(".gemini").join("settings.json")
+        }),
         _ => None,
     }
 }
@@ -346,6 +360,7 @@ pub fn native_snapshot_path(agent_id: &str) -> Option<PathBuf> {
 }
 
 /// 在覆写某 CLI 配置**之前**保存原生快照。幂等：已存在则不覆盖。
+#[cfg(test)]
 pub fn ensure_native_snapshot(agent_id: &str) {
     let cfg = match native_config_path(agent_id) {
         Some(p) => p,
@@ -452,11 +467,10 @@ fn list_date_backups(config_path: &std::path::Path) -> Vec<PathBuf> {
     backups
 }
 
-/// 原生来源候选（可信度降序）：
-/// 1. `.runjam-native` 快照 —— 保证 capture 在 runjam 首次覆写之前
-/// 2. 日期备份 `.backup-<date>` —— 新→旧（存量用户往往只有它）
-/// 3. 当前配置文件 —— 兜底，可能已被覆写
+/// Native launch modes read the current file, so display metadata must match
+/// it too. Historical snapshots are never substituted for live CLI config.
 fn native_source_candidates(agent_id: &str, cfg: &std::path::Path) -> Vec<PathBuf> {
+    if crate::agent_launch::supports_native(agent_id) { return if cfg.exists() { vec![cfg.to_path_buf()] } else { vec![] }; }
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(snap) = native_snapshot_path(agent_id) {
         if snap.exists() {
@@ -472,8 +486,7 @@ fn native_source_candidates(agent_id: &str, cfg: &std::path::Path) -> Vec<PathBu
 
 /// 读取某个 CLI 的原生模型（只读展示用）。
 ///
-/// 按 `native_source_candidates` 的顺序取**第一个能解析出模型**的来源。快照就绪
-/// 后它必然排在首位，行为确定；存量用户没有快照时自动退回日期备份。
+/// For native-capable agents the source is always the current config file.
 pub fn read_native_models(agent_id: &str) -> Vec<NativeModel> {
     let cfg = match native_config_path(agent_id) {
         Some(p) => p,
@@ -603,7 +616,7 @@ fn parse_codex_native_models(raw: &str) -> Vec<NativeModel> {
         agent_id: String::new(),
         agent_label: String::new(),
         protocol: protocol.as_str().to_string(),
-        is_current: true,
+        is_current: false,
         alias: current.to_string(),
         name: current.to_string(),
         api_base: base.to_string(),
@@ -696,6 +709,8 @@ impl ModelConfig {
 
 /// Write model config to an agent's config file.
 pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String> {
+    // Codex launch plans materialize a per-run config. Model bindings are DB state only.
+    if agent_id == "codex-cli" { return Ok(()); }
     // Write into RunJam's OWN isolated config dir — never the user's
     // `~/.claude` / `~/.codex` / `~/.gemini`. Those files belong to the user and
     // overwriting them destroyed real setups (see `agent_isolation`). Isolation is
@@ -902,9 +917,7 @@ pub fn sync_to_agent(agent_id: &str, models: &[ModelEntry]) -> Result<(), String
 
 /// Configure an agent to use the local proxy server.
 pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), String> {
-    // 覆写前先留存原生快照（与 sync_to_agent 共用同一份，幂等）
-    ensure_native_snapshot(agent_id);
-
+    if agent_id == "codex-cli" { return Ok(()); }
     match agent_id {
         "claude-code" => {
             let dir = crate::agent_isolation::isolated_config_dir("claude-code")
@@ -998,9 +1011,7 @@ pub fn configure_agent_proxy(agent_id: &str, proxy_url: &str) -> Result<(), Stri
 /// proxy URL and other settings. Called when the user selects a model
 /// in the chat dialog, so the agent sends the correct model name to the proxy.
 pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Result<(), String> {
-    // 覆写前先留存原生快照（幂等）
-    ensure_native_snapshot(agent_id);
-
+    if agent_id == "codex-cli" { return Ok(()); }
     match agent_id {
         "claude-code" => {
             let path = crate::agent_isolation::isolated_config_dir("claude-code")
@@ -1096,7 +1107,12 @@ pub fn set_agent_model(agent_id: &str, model_name: &str, api_key: &str) -> Resul
     Ok(())
 }
 
+// Historical recovery fixtures only. Live mode switches must never restore
+// or scrub native files; keeping this test-only prevents accidental reuse.
+#[cfg(test)]
 pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
+    // Native Codex is selected at launch; never restore a snapshot over the user's file.
+    if agent_id == "codex-cli" { return Ok(()); }
     let home = get_home_dir();
 
     let config_path = match agent_id {
@@ -1258,6 +1274,7 @@ pub fn restore_agent_config(agent_id: &str) -> Result<(), String> {
 ///
 /// This guard matters: an earlier version deleted the user's `auth.json`
 /// unconditionally, destroying a real Codex login.
+#[cfg(test)]
 fn cleanup_ancillary_files(agent_id: &str, home: &std::path::Path) {
     // Keys RunJam is known to have written, taken from its own model list.
     let runjam_keys: Vec<String> = ModelConfig::load()
@@ -1272,6 +1289,7 @@ fn cleanup_ancillary_files(agent_id: &str, home: &std::path::Path) {
 /// Testable core of [`cleanup_ancillary_files`]: the set of keys RunJam may have
 /// written is passed in, so a test does not have to seed the real model store
 /// (whose location is not redirectable).
+#[cfg(test)]
 fn cleanup_ancillary_files_with_keys(agent_id: &str, home: &std::path::Path, runjam_keys: &[String]) {
     if agent_id != "codex-cli" {
         return;
@@ -1296,6 +1314,7 @@ fn cleanup_ancillary_files_with_keys(agent_id: &str, home: &std::path::Path, run
 /// 备份里留着 runjam 的 `http://127.0.0.1:<PROXY_PORT>`）。直接恢复会让 CLI
 /// 指向一个只在本应用运行时才存在的代理端口，于是切回原生后反而起不来。
 /// 这里把确认属于 runjam 的端点字段擦掉，让 CLI 回退到自己的默认端点。
+#[cfg(test)]
 fn scrub_runjam_proxy_endpoint(agent_id: &str, config_path: &std::path::Path) {
     if !config_path.exists() {
         return;
@@ -1381,6 +1400,7 @@ fn scrub_runjam_proxy_endpoint(agent_id: &str, config_path: &std::path::Path) {
     }
 }
 
+#[cfg(test)]
 fn try_restore_from_backup(agent_id: &str, config_path: &std::path::Path) -> bool {
     let dir = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let file_stem = config_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -1430,14 +1450,8 @@ fn try_restore_from_backup(agent_id: &str, config_path: &std::path::Path) -> boo
 /// Creates a timestamped backup (e.g. config.toml.backup-2026-08-10).
 /// Never overwrites existing backups — each sync gets its own file.
 pub fn backup_agent_config(agent_id: &str) -> Result<(), String> {
-    let home = get_home_dir();
-
-    let config_path = match agent_id {
-        "claude-code" => home.join(".claude").join("settings.json"),
-        "codex-cli" => home.join(".codex").join("config.toml"),
-        "gemini-cli" => home.join(".gemini").join("settings.json"),
-        _ => return Ok(()),
-    };
+    if agent_id == "codex-cli" { return Ok(()); }
+    let Some(config_path) = crate::agent_isolation::isolated_config_file(agent_id) else { return Ok(()); };
 
     if config_path.exists() {
         let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -1642,7 +1656,7 @@ wire_api = "responses"
         let models = parse_codex_native_models(raw);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "gpt-6-astra");
-        assert!(models[0].is_current);
+        assert!(!models[0].is_current, "A file default is not runtime confirmation");
         assert_eq!(models[0].api_base, "https://llm-api.patsnap.info/v1");
         assert_eq!(models[0].protocol, "openai_responses");
     }
@@ -1877,8 +1891,7 @@ enabled = true
         //    "silently writes nowhere").
         let codex_iso = crate::agent_isolation::isolated_config_file("codex-cli").unwrap();
         let codex_written = read(codex_iso.clone());
-        assert!(codex_written.contains("gpt-6-luna"), "isolated codex config must have the model: {codex_written}");
-        assert!(codex_written.contains("127.0.0.1:59268"), "isolated codex config must have the base_url");
+        assert!(codex_written.is_empty(), "Codex model operations must not rewrite a shared config");
 
         let claude_iso = crate::agent_isolation::isolated_config_file("claude-code").unwrap();
         let claude_written = read(claude_iso.clone());
@@ -1957,7 +1970,7 @@ enabled = true
     }
 
     #[test]
-    fn test_e2e_read_native_models_prefers_snapshot_over_current() {
+    fn test_e2e_read_native_models_matches_current_cli_config_not_old_snapshot() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (home, _native) = setup_isolated_home("prefer");
         std::env::set_var("RUNJAM_HOME", &home);
@@ -1971,11 +1984,11 @@ enabled = true
 
         let models = read_native_models("claude-code");
         assert_eq!(models.len(), 1);
-        // 必须报出原生模型，而不是 runjam 覆写后的 gpt-6-luna
-        assert_eq!(models[0].name, "A/Ornith-1.5-9B-Q4_K_M.gguf");
+        // The selector must describe the config the CLI will actually read.
+        assert_eq!(models[0].name, "gpt-6-luna");
         assert!(models[0].is_overridden, "应识别出配置已被 runjam 改写");
         assert!(models[0].has_snapshot);
-        assert!(models[0].source_path.ends_with(".runjam-native"));
+        assert!(models[0].source_path.ends_with("settings.json"));
 
         std::env::remove_var("RUNJAM_HOME");
         std::fs::remove_dir_all(&home).ok();
@@ -2136,7 +2149,45 @@ enabled = true
     }
 
     #[test]
-    fn test_e2e_falls_back_to_date_backup_for_legacy_users() {
+    fn codex_mode_operations_leave_native_config_auth_and_old_snapshot_untouched() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (home, native) = setup_isolated_home("codex-mode-preservation");
+        std::env::set_var("RUNJAM_HOME", &home);
+        let snapshot = home.join(".codex/config.toml.runjam-native");
+        let auth = home.join(".codex/auth.json");
+        std::fs::write(&snapshot, "model = 'historical-model'\n").unwrap();
+        std::fs::write(&auth, "{\"tokens\":{\"access_token\":\"fake-test-token\"}}").unwrap();
+        let auth_before = read(auth.clone());
+        restore_agent_config("codex-cli").unwrap();
+        backup_agent_config("codex-cli").unwrap();
+        configure_agent_proxy("codex-cli", "http://127.0.0.1:59268").unwrap();
+        set_agent_model("codex-cli", "managed-model", "fake-test-key").unwrap();
+        assert_eq!(read(home.join(".codex/config.toml")), native["codex"]);
+        assert_eq!(read(auth), auth_before);
+        assert_eq!(read(snapshot), "model = 'historical-model'\n");
+        std::env::remove_var("RUNJAM_HOME");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn claude_and_gemini_managed_operations_do_not_create_native_snapshots_or_backups() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (home, native) = setup_isolated_home("managed-native-boundary");
+        std::env::set_var("RUNJAM_HOME", &home);
+        for (agent, short) in [("claude-code", "claude"), ("gemini-cli", "gemini")] {
+            backup_agent_config(agent).unwrap();
+            configure_agent_proxy(agent, "http://127.0.0.1:59268").unwrap();
+            set_agent_model(agent, "managed-model", "fake-test-key").unwrap();
+            let file = home.join(format!(".{short}/settings.json"));
+            assert_eq!(read(file.clone()), native[short]);
+            assert!(!native_snapshot_path(agent).unwrap().exists(), "managed changes must not snapshot native files");
+            assert!(list_date_backups(&file).is_empty(), "managed changes must not back up native files");
+        }
+        std::env::remove_var("RUNJAM_HOME");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn test_codex_native_reads_live_config_instead_of_legacy_backups() {
         // 存量用户：在快照功能上线前就已被覆写，只有 .backup-<date>
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (home, _native) = setup_isolated_home("legacy");
@@ -2154,12 +2205,11 @@ enabled = true
 
         let models = read_native_models("codex-cli");
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].name, "gpt-6-astra", "应退回日期备份里的原生模型");
+        assert_eq!(models[0].name, "gpt-6-luna", "必须读取本机当前配置而不是旧备份");
         assert!(!models[0].has_snapshot);
-        assert!(models[0].source_path.contains(".backup-"));
+        assert!(models[0].source_path.ends_with("config.toml"));
 
         std::env::remove_var("RUNJAM_HOME");
         std::fs::remove_dir_all(&home).ok();
     }
 }
-

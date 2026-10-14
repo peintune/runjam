@@ -22,7 +22,7 @@
 //!      (see `codex_permission_overrides`, `gemini_approval_mode`).
 //!
 //! codex is deliberately absent here: its approval policy and sandbox are passed
-//! as ACP launch arguments (`acp_client`), which outrank `config.toml`. Writing
+//! as App Server session overrides (`codex_adapter`). Writing
 //! them into the file too would create a second, silently-ignored source of
 //! truth.
 
@@ -207,12 +207,12 @@ fn write_json_object(path: &Path, value: &Map<String, Value>) -> Result<(), Stri
 }
 
 /// The (approval policy, sandbox mode) codex should run with for a RunJam
-/// permission mode. Passed as `-c` launch overrides, which take precedence over
-/// `config.toml`.
+/// permission mode. Passed as App Server session config overrides.
 pub fn codex_permission_overrides(permission_mode: &str) -> (&'static str, &'static str) {
     match permission_mode {
-        // Nothing may run without approval, and the workspace is not writable.
-        "read_only" => ("untrusted", "read-only"),
+        // Current Codex removed "untrusted". The read-only sandbox still
+        // prevents writes; RunJam denies every requested permission escalation.
+        "read_only" => ("on-request", "read-only"),
         // No approvals and no sandbox — the user asked for it explicitly.
         "full_access" => ("never", "danger-full-access"),
         // ask_approval / approve_for_me: codex may ask, and RunJam answers —
@@ -237,10 +237,20 @@ pub fn gemini_approval_mode(permission_mode: &str) -> &'static str {
     }
 }
 
+pub fn gemini_launch_approval_arg(permission_mode: &str) -> Option<String> {
+    if permission_mode == "inherit" { None }
+    else { Some(format!("--approval-mode={}", gemini_approval_mode(permission_mode))) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    #[test]
+    fn gemini_native_inheritance_does_not_add_a_permission_override() {
+        assert_eq!(gemini_launch_approval_arg("inherit"), None);
+        assert_eq!(gemini_launch_approval_arg("full_access"), Some("--approval-mode=yolo".to_string()));
+    }
 
     /// A settings file in a throwaway directory. Tests deliberately do NOT use
     /// `RUNJAM_HOME`: that variable is process-wide and `models_config`'s tests
@@ -407,7 +417,7 @@ mod tests {
     fn permission_modes_map_onto_each_cli_switch() {
         assert_eq!(
             codex_permission_overrides("read_only"),
-            ("untrusted", "read-only")
+            ("on-request", "read-only")
         );
         assert_eq!(
             codex_permission_overrides("ask_approval"),

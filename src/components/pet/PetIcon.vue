@@ -3,7 +3,7 @@
  * Desktop-pet launcher icon — the small circular badge that floats in the
  * bottom-right corner of the screen, above every other application.
  *
- * This window is intentionally *tiny* (56x56) and mostly transparent, so it
+ * This window is compact (60x60) and mostly transparent, so it
  * mounts its own minimal component instead of the full app shell (see
  * `main.ts` for the window-label routing). Clicking it toggles the Q&A popup;
  * dragging it repositions the window via the OS.
@@ -94,15 +94,15 @@ async function toggleChat() {
   >
     <button
       type="button"
-      class="w-9 h-9 rounded-xl overflow-hidden flex items-center justify-center cursor-pointer
+      class="w-11 h-11 rounded-2xl overflow-hidden flex items-center justify-center cursor-pointer
              shadow-lg transition-transform duration-150 hover:scale-110 active:scale-95
-             focus:outline-none"
+             focus-visible:outline-2 focus-visible:outline-indigo-500 focus-visible:outline-offset-2"
       title="RunJam"
       @mousedown="onMouseDown"
       @click="toggleChat"
     >
-      <Loader2 v-if="busy" :size="16" class="animate-spin text-indigo-500" />
-      <img v-else src="/runjam-logo.svg" alt="RunJam" class="w-9 h-9 block" draggable="false" />
+      <Loader2 v-if="busy" :size="28" class="animate-spin text-indigo-500" />
+      <img v-else src="/runjam-logo.svg" alt="RunJam" class="w-11 h-11 block" draggable="false" />
     </button>
   </div>
 </template>

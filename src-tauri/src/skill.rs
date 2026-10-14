@@ -193,8 +193,8 @@ fn agent_skills_subdir(agent_type: &str) -> Option<PathBuf> {
 /// - `agent_type`: "claude" | "codex" | "gemini"
 /// - `skill_names`: skill names to copy; empty = deploy nothing (user opted out)
 ///
-/// Existing skill directories are overwritten so updates take effect on the
-/// next session. This is called BEFORE the agent process starts.
+/// Only RunJam-owned skill directories may be replaced. User project skills
+/// with the same name are preserved.
 pub fn deploy_skills_to_session(
     app: &AppHandle,
     cwd: &str,
@@ -226,7 +226,11 @@ pub fn deploy_skills_to_session(
         let dest = dest_dir.join(&skill.name);
         // Remove old copy so updates take effect cleanly.
         if dest.exists() {
-            std::fs::remove_dir_all(&dest).ok();
+            if !dest.join(".runjam-owned").is_file() {
+                rjlog!("[SKILL] Preserving existing project skill '{}'", skill.name);
+                continue;
+            }
+            std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
         }
         // runjam-defaults carries per-session placeholders (the absolute
         // working directory) that must be rendered for this session; all
@@ -245,6 +249,7 @@ pub fn deploy_skills_to_session(
             );
             continue;
         }
+        std::fs::write(dest.join(".runjam-owned"), "RunJam deployed skill\n").map_err(|e| e.to_string())?;
         count += 1;
         rjlog!(
             "[SKILL] Deployed skill '{}' to {}",
@@ -312,7 +317,8 @@ pub fn deploy_single_skill(
 
     let dest = dest_dir.join(skill_name);
     if dest.exists() {
-        std::fs::remove_dir_all(&dest).ok();
+        if !dest.join(".runjam-owned").is_file() { return Err(format!("Project skill '{skill_name}' is not owned by RunJam")); }
+        std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     }
     let copied = if skill_name == RUNJAM_DEFAULTS_SKILL {
         deploy_skill_rendered(&skill.source_dir, &dest, cwd)
@@ -320,6 +326,7 @@ pub fn deploy_single_skill(
         copy_dir_recursive(&skill.source_dir, &dest)
     };
     copied.map_err(|e| format!("Failed to copy skill '{}': {}", skill_name, e))?;
+    std::fs::write(dest.join(".runjam-owned"), "RunJam deployed skill\n").map_err(|e| e.to_string())?;
 
     rjlog!(
         "[SKILL] Deployed single skill '{}' to {}",
@@ -335,11 +342,13 @@ pub fn remove_single_skill(
     agent_type: &str,
     skill_name: &str,
 ) -> Result<(), String> {
+    if !is_safe_skill_name(skill_name) { return Err("Invalid skill name".into()); }
     let Some(subdir) = agent_skills_subdir(agent_type) else {
         return Err(format!("Agent {} has no skills directory", agent_type));
     };
     let skill_dir = Path::new(cwd).join(&subdir).join(skill_name);
     if skill_dir.exists() {
+        if !skill_dir.join(".runjam-owned").is_file() { return Err(format!("Project skill '{skill_name}' is not owned by RunJam")); }
         std::fs::remove_dir_all(&skill_dir)
             .map_err(|e| format!("Failed to remove skill '{}': {}", skill_name, e))?;
         rjlog!("[SKILL] Removed skill '{}' from {}", skill_name, skill_dir.display());

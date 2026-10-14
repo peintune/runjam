@@ -30,6 +30,8 @@ pub async fn start_session(
     // directory (.claude/skills/, .codex/skills/, .gemini/skills/).
     // None / empty list = deploy nothing (user opted out of skills).
     skills: Option<Vec<String>>,
+    config_mode: Option<String>,
+    reasoning_disabled: Option<bool>,
 ) -> Result<Session, String> {
     let id = session_id.unwrap_or_else(|| format!(
         "{}-{}",
@@ -46,6 +48,39 @@ pub async fn start_session(
     // with ENOENT if the directory is missing.
     std::fs::create_dir_all(&dir).ok();
 
+    let mut launch_plan = if crate::agent_launch::supports_native(&cli) {
+        let default = {
+            let db = app.state::<Mutex<crate::db::connection::Database>>();
+            let guard = db.lock().map_err(|e| e.to_string())?;
+            let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+            crate::commands::models_cmd::config_mode_from_db(&conn, &cli)
+        };
+        // Legacy Claude/Gemini can run their managed CLI default without a
+        // selected RunJam model. Codex managed mode requires an exact model.
+        let selection = if cli != "codex-cli" && model.as_deref().unwrap_or("").is_empty() && config_mode.is_none() {
+            default
+        } else { crate::agent_launch::resolve_mode(config_mode.as_deref(), model.as_deref(), default)? };
+        if cli == "codex-cli" {
+            Some(crate::agent_launch::prepare_codex(&app, selection, model.as_deref(), reasoning_disabled.unwrap_or(false))?)
+        } else if selection == crate::agent_launch::ConfigMode::Native {
+            Some(crate::agent_launch::prepare_native(&cli, reasoning_disabled.unwrap_or(false))?)
+        } else { None }
+    } else { None };
+    let native = launch_plan.as_ref().map(|p| p.info.config_mode == crate::agent_launch::ConfigMode::Native).unwrap_or(false);
+    let saved_permission = {
+        let db = app.state::<Mutex<crate::db::connection::Database>>();
+        let guard = db.lock().map_err(|e| e.to_string())?;
+        let conn = guard.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row("SELECT value FROM app_settings WHERE key=?1", [format!("agent_permission_{cli}")], |r| r.get::<_, String>(0)).unwrap_or_default()
+    };
+    let permission = permission_mode.as_deref().filter(|p| !p.is_empty())
+        .or_else(|| if saved_permission.is_empty() { None } else { Some(saved_permission.as_str()) })
+        .unwrap_or(if native { "inherit" } else { "ask_approval" });
+    if let Some(plan) = &mut launch_plan { plan.info.permission_mode = permission.into(); }
+    if let Some(plan) = &launch_plan {
+        manager.lock().map_err(|e| e.to_string())?.reserve_planned_start(&id, &plan.info.run_id);
+    }
+
     // Deploy built-in skills into the session's per-agent skills directory.
     // This happens BEFORE the agent process starts so the agent picks them up
     // natively via its own skill discovery mechanism — no ACP protocol changes.
@@ -55,7 +90,7 @@ pub async fn start_session(
         "gemini-cli" => "gemini",
         _ => "",
     };
-    if !agent_type.is_empty() {
+    if !agent_type.is_empty() && !native {
         let mut skill_names = skills.unwrap_or_default();
         // Always inject the default constraints skill so every session has
         // guardrails: output path conventions, dependency checks, fallback
@@ -70,15 +105,11 @@ pub async fn start_session(
         }
     }
 
-    // 若本次启动指定了模型，先将该模型写入 agent 配置文件（~/.claude/settings.json、
-    // ~/.codex/config.toml、~/.gemini/settings.json）。agent 进程的模型在启动时从
-    // 配置文件/环境变量固化读取，AcpClient::start 不会把 model 参数直接注入进程，
-    // 因此若不在此处写入配置，新建会话时进程可能先于前端异步的 setAgentModel
-    // 完成而启动，仍使用配置里上一次的模型（例如 DeepSeek）——表现为"新建会话
-    // 选了本地模型，实际却走了 DeepSeek"；而在会话内切换模型时前端会 await
-    // setAgentModel 再重启进程，所以一直正常。此处写入保证任何路径下进程启动
-    // 时读取到的都是所选模型。
-    if let Some(model_id) = model.as_deref() {
+    // Managed Claude/Gemini model overrides go only to RunJam's isolated config.
+    // Apply them synchronously before spawn so a new chat cannot race the
+    // frontend's setAgentModel and start with the previous model. Native
+    // launches never enter this branch.
+    if let Some(model_id) = model.as_deref().filter(|_| cli != "codex-cli" && !native) {
         let db = app.state::<std::sync::Mutex<crate::db::connection::Database>>();
         let guard = db.lock().ok();
         if let Some(guard) = guard {
@@ -103,7 +134,24 @@ pub async fn start_session(
         }
     }
 
-    let session = {
+    let session = if let Some(plan) = launch_plan {
+        let run_id = plan.info.run_id.clone();
+        let prepared = (|| {
+            let mut client = crate::acp_client::AcpClient::start(&app, &id, agent_type, Some(&dir), model.as_deref(),
+                mode.as_deref().unwrap_or("assistant"), permission, Some(plan))?;
+            manager.lock().map_err(|e| e.to_string())?.track_pending_pid(&id, &run_id, client.pid())?;
+            client.initialize_session(&app, &id)?;
+            if !client.is_alive() { return Err(format!("{cli} exited during initialization")); }
+            Ok(client)
+        })();
+        match prepared {
+            Ok(client) => manager.lock().map_err(|e| e.to_string())?.attach_planned(&app, id.clone(), &cli, &cli_display_name, &dir, client)?,
+            Err(error) => {
+                manager.lock().map_err(|e| e.to_string())?.clear_pending(&id, &run_id);
+                return Err(error);
+            }
+        }
+    } else {
         let mut mgr = manager.lock().map_err(|e| e.to_string())?;
         mgr.start(
             &app,
@@ -113,7 +161,7 @@ pub async fn start_session(
             Some(&dir),
             model.as_deref(),
             mode.as_deref().unwrap_or("assistant"),
-            permission_mode.as_deref().unwrap_or("ask_approval"),
+            permission,
         )?
     }; // lock released here — before SQLite write
 
@@ -170,6 +218,11 @@ pub async fn session_alive(
 ) -> Result<bool, String> {
     let mgr = manager.lock().map_err(|e| e.to_string())?;
     Ok(mgr.has_client(&id))
+}
+
+#[tauri::command]
+pub fn get_session_runtime(manager: State<'_, Mutex<SessionManager>>, id: String) -> Option<crate::agent_launch::RuntimeInfo> {
+    manager.lock().ok()?.runtime_info(&id)
 }
 
 #[tauri::command]
