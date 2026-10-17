@@ -48,7 +48,7 @@ onUnmounted(()=>{clearInterval(poll);clearInterval(countdown);window.removeEvent
      <label for="platform-email">{{ $t('account.email') }}</label>
      <input id="platform-email" v-model="email" type="email" autocomplete="email" required :placeholder="$t('account.emailPlaceholder')" :disabled="store.busy" />
      <label for="platform-code">{{ $t('account.code') }}</label>
-     <div class="code-row"><input id="platform-code" ref="codeInput" v-model="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" minlength="6" maxlength="10" required :disabled="store.busy" placeholder="00000000"/>
+     <div class="code-row"><input id="platform-code" ref="codeInput" v-model="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" minlength="6" maxlength="10" required :disabled="store.busy" placeholder="000000"/>
       <button type="button" class="secondary-button" @click="sendCode" :disabled="sending||cooldown>0||store.busy">{{ cooldown?$t('account.sendAgain',{seconds:cooldown}):$t('account.sendCode') }}</button>
      </div>
      <p v-if="formError" role="alert" class="form-error">{{ formError }}</p><p v-else-if="sent" role="status" class="form-note">{{ $t('account.codeSent') }}</p>
