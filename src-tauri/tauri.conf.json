@@ -54,7 +54,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMzVBNEMzMzYwRjFCREIKUldUYkd3ODJ3NlExL0NqcmltWTFrU0RmTndyYXR4UDFBaCt4V0RQcXovZlZiT3Q2bVVnbk9tZ08K",
       "endpoints": [
-        "https://runjam.app/api/updates/latest"
+        "https://www.runjam.app/api/v1/runjam/updates/latest"
       ],
       "windows": {
         "installMode": "passive"

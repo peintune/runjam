@@ -217,7 +217,7 @@ pub async fn check_for_updates(
 ) -> Result<UpdateInfo, String> {
     let base = telemetry::api_base();
     let url = format!(
-        "{}/api/updates/latest?platform={}&arch={}&current={}",
+        "{}/api/v1/runjam/updates/latest?platform={}&arch={}&current={}",
         base,
         platform_name(),
         std::env::consts::ARCH,
@@ -280,6 +280,14 @@ pub fn platform_name() -> &'static str {
     }
 }
 
+// Accept both the shared API envelope and historical bare arrays.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AnnouncementResponse {
+    Envelope { announcements: Vec<crate::updates::Announcement> },
+    List(Vec<crate::updates::Announcement>),
+}
+
 /// Fetch unread announcements (server filters active + min_version by the
 /// current app version). Client filters locally-read ones.
 #[tauri::command]
@@ -289,16 +297,19 @@ pub async fn get_announcements(
 ) -> Result<Vec<crate::updates::Announcement>, String> {
     let base = telemetry::api_base();
     let version = app.package_info().version.to_string();
-    let url = format!("{}/api/announcements?current={}", base, version);
+    let url = format!("{}/api/v1/runjam/announcements?current={}", base, version);
     let agent = telemetry::build_agent(&app);
     let resp = agent
         .get(&url)
         .timeout(Duration::from_secs(10))
         .call()
         .map_err(|e| format!("announcements fetch failed: {}", e))?;
-    let items: Vec<crate::updates::Announcement> = resp
-        .into_json()
+    let response: AnnouncementResponse = resp.into_json()
         .map_err(|e| format!("bad announcements response: {}", e))?;
+    let items = match response {
+        AnnouncementResponse::Envelope { announcements } => announcements,
+        AnnouncementResponse::List(items) => items,
+    };
 
     let guard = db.lock().map_err(|e| e.to_string())?;
     let conn = guard.conn.lock().map_err(|e| e.to_string())?;

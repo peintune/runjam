@@ -90,7 +90,7 @@ pub fn set_enabled(conn: &Connection, enabled: bool) -> rusqlite::Result<()> {
     )?;
     // Opt-out also wipes anything queued but not yet sent.
     if !enabled {
-        conn.execute("DELETE FROM telemetry_queue", [])?;
+        conn.execute("DELETE FROM telemetry_queue WHERE kind <> 'feedback'", [])?;
     }
     Ok(())
 }
@@ -134,7 +134,9 @@ pub fn sanitize(text: &str) -> String {
     });
     s = re.replace_all(&s, "[REDACTED]").to_string();
     if s.len() > 8000 {
-        s.truncate(8000);
+        let mut end = 8000;
+        while !s.is_char_boundary(end) { end -= 1; }
+        s.truncate(end);
     }
     s
 }
@@ -157,12 +159,49 @@ fn sanitize_value(value: &serde_json::Value) -> serde_json::Value {
 
 // ── queue ───────────────────────────────────────────────────────────────
 
+fn diagnostic_payload(payload: &serde_json::Value) -> serde_json::Value {
+    let mut value = payload.clone();
+    let allowed = ["code", "status", "http_status", "duration_ms", "retry_count", "agent_type", "cli", "model", "stop_reason", "stopReason", "update_type", "platform", "arch"];
+    if let Some(errors) = value.get_mut("errors").and_then(|v| v.as_array_mut()) {
+        for item in errors {
+            let category = item.get("category").and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty() && v.len() <= 32 && v.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_:-".contains(&b)))
+                .unwrap_or("unknown").to_string();
+            let context: serde_json::Map<String, serde_json::Value> = item.get("context").and_then(|v| v.as_object())
+                .map(|map| map.iter().filter(|(key, v)| allowed.contains(&key.as_str()) &&
+                    (v.is_boolean() || v.is_number() || v.as_str().map(|s| !s.is_empty() && s.len() <= 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:/-".contains(&b))).unwrap_or(false)))
+                    .map(|(k,v)| (k.clone(), if let Some(text) = v.as_str() { serde_json::Value::String(sanitize(text)) } else { v.clone() })).collect())
+                .unwrap_or_default();
+            *item = serde_json::json!({"level":item.get("level"), "category":category,
+                "message":format!("客户端诊断：{}", category), "context":context, "created_at":item.get("created_at")});
+        }
+    }
+    value
+}
+
+fn queue_body(kind: &str, payload: &serde_json::Value) -> String {
+    let mut value = if kind == "errors" { diagnostic_payload(payload) } else { payload.clone() };
+    if let Some(object) = value.as_object_mut() {
+        let key = if kind == "feedback" { "request_id" } else { "batch_id" };
+        object.entry(key).or_insert_with(|| serde_json::Value::String(uuid::Uuid::new_v4().to_string()));
+    }
+    value.to_string()
+}
+
+fn report_route(base: &str, kind: &str) -> String {
+    if kind == "feedback" {
+        format!("{}/api/v1/runjam/feedback", base.trim_end_matches('/'))
+    } else {
+        format!("{}/api/v1/runjam/telemetry/{}", base.trim_end_matches('/'), kind)
+    }
+}
+
 fn enqueue_forced(db: &Database, kind: &str, payload: &serde_json::Value) {
     let conn = match db.conn.lock() {
         Ok(c) => c,
         Err(_) => return,
     };
-    let body = payload.to_string();
+    let body = queue_body(kind, payload);
     let _ = conn.execute(
         "INSERT INTO telemetry_queue (kind, payload, attempts, created_at) VALUES (?1, ?2, 0, CURRENT_TIMESTAMP)",
         rusqlite::params![kind, body],
@@ -346,10 +385,28 @@ pub fn flush_sync(app: &tauri::AppHandle) {
     let mut ok_ids: Vec<i64> = Vec::new();
     let mut fail_ids: Vec<i64> = Vec::new();
     for (id, kind, payload) in rows {
-        let url = match kind.as_str() {
-            "feedback" => format!("{}/api/feedback", base),
-            k => format!("{}/api/telemetry/{}", base, k),
-        };
+        // A user can opt out while a flush owns a snapshot of the queue.
+        // Recheck before each outgoing telemetry request; explicit feedback is
+        // independent of this setting and must not disappear with the queue.
+        if kind != "feedback" {
+            let enabled = app.state::<Mutex<Database>>().lock().ok()
+                .and_then(|db| db.conn.lock().ok().map(|conn| is_enabled(&conn)))
+                .unwrap_or(false);
+            if !enabled { ok_ids.push(id); continue; }
+        }
+        // Upgrade old queued diagnostics before they leave the machine too.
+        let payload = if kind == "errors" {
+            match serde_json::from_str::<serde_json::Value>(&payload) {
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        object.entry("batch_id").or_insert_with(|| serde_json::Value::String(format!("legacy-queue-{}", id)));
+                    }
+                    queue_body("errors", &value)
+                },
+                Err(_) => { ok_ids.push(id); continue; }
+            }
+        } else { payload };
+        let url = report_route(&base, &kind);
         if post_json_with(&agent, &url, &payload) {
             ok_ids.push(id);
         } else {
@@ -464,6 +521,46 @@ fn resolve_redirect(current: &str, location: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queued_diagnostics_drop_free_text_before_network() {
+        let input = serde_json::json!({"errors":[{"category":"session_turn_failed",
+            "message":"personal conversation", "stack":"private workspace source",
+            "context":{"raw":"unpublished protocol", "cli":"codex"}}]});
+        let body = queue_body("errors", &input);
+        assert!(!body.contains("personal"));
+        assert!(!body.contains("private"));
+        assert!(!body.contains("unpublished"));
+        assert!(body.contains("codex"));
+    }
+
+    #[test]
+    fn opt_out_preserves_explicit_feedback() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE telemetry_queue(kind TEXT,payload TEXT);
+            INSERT INTO telemetry_queue VALUES('events','{}'),('errors','{}'),('feedback','{}');").unwrap();
+        set_enabled(&conn, false).unwrap();
+        let remaining: String = conn.query_row("SELECT group_concat(kind) FROM telemetry_queue", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, "feedback");
+    }
+
+    #[test]
+    fn sanitizer_caps_chinese_on_a_utf8_boundary() {
+        let text = sanitize(&"汉".repeat(3000));
+        assert!(text.len() <= 8000);
+        assert!(text.ends_with('汉'));
+    }
+
+    #[test]
+    fn all_report_routes_are_product_scoped_and_retry_identity_is_stable() {
+        assert_eq!(report_route("https://www.runjam.app", "events"), "https://www.runjam.app/api/v1/runjam/telemetry/events");
+        assert_eq!(report_route("https://www.runjam.app", "feedback"), "https://www.runjam.app/api/v1/runjam/feedback");
+        let first = queue_body("events", &serde_json::json!({"events": []}));
+        let value: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert!(value["batch_id"].as_str().is_some());
+        assert_eq!(queue_body("events", &value), first);
+    }
 
     #[test]
     fn resolve_redirect_handles_absolute_and_root_relative() {
