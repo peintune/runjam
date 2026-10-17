@@ -25,6 +25,7 @@
  * `acp:<id>` events — which are broadcast to every window — are received here.
  */
 import { ref, computed } from "vue";
+import { startPetTiming, markPetTiming, type PetTiming } from "./petPerformance";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit, type UnlistenFn } from "@tauri-apps/api/event";
 // The popup renders its transcript with the main window's own message list, so
@@ -239,11 +240,13 @@ interface PetStoredSession {
   model: string;
   /** Fingerprint of the config currently applied to the RUNNING process. */
   configKey?: string;
+  qaTurns?: number;
 }
 
 /** Stable fingerprint of every knob that requires a *new* session to take
  *  effect (agent, model, directory, permission mode, skills, reasoning). */
 export function petConfigKey(c: PetConfig): string {
+  if (c.chatMode !== "agent") return JSON.stringify(["pet_qa_v1", c.agentId, c.modelId]);
   return JSON.stringify([
     c.agentId,
     c.modelId,
@@ -251,12 +254,14 @@ export function petConfigKey(c: PetConfig): string {
     c.permissionMode,
     [...c.skills].sort(),
     c.noThinking,
+    c.chatMode,
   ]);
 }
 
 /** Everything the user can configure from the popup's toolbar — mirrors the
  *  main window's new-session page. */
 export interface PetConfig {
+  chatMode: "qa" | "agent";
   agentId: string;
   modelId: string;
   directory: string;
@@ -267,6 +272,7 @@ export interface PetConfig {
 
 export function defaultPetConfig(): PetConfig {
   return {
+    chatMode: "qa",
     agentId: "",
     modelId: "",
     directory: "",
@@ -284,6 +290,7 @@ export function normalizePetConfig(raw: unknown): PetConfig {
   if (!raw || typeof raw !== "object") return base;
   const r = raw as Record<string, unknown>;
   return {
+    chatMode: r.chatMode === "agent" ? "agent" : "qa",
     agentId: typeof r.agentId === "string" ? r.agentId : "",
     modelId: typeof r.modelId === "string" ? r.modelId : "",
     directory: typeof r.directory === "string" ? r.directory : "",
@@ -291,6 +298,31 @@ export function normalizePetConfig(raw: unknown): PetConfig {
     skills: Array.isArray(r.skills) ? r.skills.filter((s): s is string => typeof s === "string") : [],
     noThinking: r.noThinking === true,
   };
+}
+
+export function petLaunchOptions(c: PetConfig) {
+  const qa = c.chatMode !== "agent";
+  return {
+    directory: qa ? undefined : c.directory || undefined,
+    skills: qa ? undefined : c.skills.length ? [...c.skills] : undefined,
+    purpose: qa ? "pet_qa" as const : undefined,
+    reasoningDisabled: qa || c.noThinking,
+  };
+}
+
+/** Keep two recent exchanges after a process restart; Q&A has an 8k-char cap. */
+export function petRecentHistory(messages: Pick<Message, "role" | "content">[], qa: boolean): string[] {
+  const prior = messages.filter(m => m.content).slice(-4).map(m => `${m.role}: ${m.content}`);
+  if (!qa) return prior;
+  let budget = 8000;
+  const bounded: string[] = [];
+  for (const entry of [...prior].reverse()) {
+    if (budget <= 0) break;
+    const text = entry.length <= budget ? entry : budget === 1 ? "…" : `…${entry.slice(-(budget - 1))}`;
+    bounded.unshift(text);
+    budget -= text.length;
+  }
+  return bounded;
 }
 
 /**
@@ -375,6 +407,11 @@ export function usePetChat() {
   const starting = ref(false);
   let sessionStartup: Promise<boolean> | null = null;
   const preparingSend = ref(false);
+  const turnTiming = ref<PetTiming | null>(null);
+
+  function markAnswerPainted() {
+    if (turnTiming.value) markPetTiming(turnTiming.value, "firstPaintMs");
+  }
 
   // ── Toolbar state (mirrors the main window's new-session page) ──────────
   /** Configuration the NEXT session will use. Editing anything here ends the
@@ -729,6 +766,7 @@ export function usePetChat() {
           // model output — showing it would leak `__ACP_SESSION_ID__xxxx` into
           // the transcript. The main window filters it the same way.
           if (isInternalStreamChunk(content)) break;
+          if (content && turnTiming.value) markPetTiming(turnTiming.value, "firstAnswerMs");
           // Thinking → text transition freezes the thought's timer.
           if (thinkingStartTime > 0) {
             thoughtDuration = formatDuration(Date.now() - thinkingStartTime);
@@ -748,6 +786,7 @@ export function usePetChat() {
           break;
         }
         case "tool_call": {
+          if (turnTiming.value) turnTiming.value.toolCalls++;
           // Text phase ended → next text belongs to a later bubble.
           streamBuffer = "";
           const lastToolCheck = lastAgentMsg(messages.value);
@@ -837,6 +876,11 @@ export function usePetChat() {
           break;
         }
         case "finish": {
+          if (turnTiming.value) {
+            markPetTiming(turnTiming.value, "completedMs");
+            // Local diagnostics only: never log prompts, attachments or tokens.
+            console.debug("[pet latency]", JSON.stringify({agent: agentId.value, mode: config.value.chatMode, ...turnTiming.value}));
+          }
           // Close out the turn: no bubble is "processing" any more, and a
           // trailing empty one (opened by a `start` that produced nothing) is
           // dropped rather than left as a blank bubble.
@@ -988,12 +1032,12 @@ export function usePetChat() {
           // unattended default (`resolvePetPermissionMode`). The popup CAN render
           // permission prompts now, so an explicit `ask_approval` is honoured
           // rather than overridden.
-          if (stored.agentId !== "codex-cli") setSessionPermissionMode(stored.id, await resolvePermissionMode(stored.agentId)).catch(() => {});
+          if (config.value.chatMode === "agent" && stored.agentId !== "codex-cli") setSessionPermissionMode(stored.id, await resolvePermissionMode(stored.agentId)).catch(() => {});
           await attachListener(stored.id);
           // Same conversation, but the user changed agent/model/folder/skills:
           // swap the process in place. The transcript stays; only the agent
           // behind it is replaced.
-          if (stored.configKey !== petConfigKey(config.value)) {
+          if (stored.configKey !== petConfigKey(config.value) || (config.value.chatMode === "qa" && (stored.qaTurns ?? 0) >= 12)) {
             return restartSessionProcess(stored.id);
           }
           return true;
@@ -1033,13 +1077,12 @@ export function usePetChat() {
       }
       const model = await resolveDefaultModel(agent.id);
       const permissionMode = await resolvePermissionMode(agent.id);
-      const directory = config.value.directory || undefined;
-      const skills = config.value.skills.length > 0 ? [...config.value.skills] : undefined;
+      const {directory, skills, purpose, reasoningDisabled} = petLaunchOptions(config.value);
       const launchKey = petConfigKey({...config.value, agentId: agent.id, modelId: model?.id || "", permissionMode});
 
       // Reasoning is a process-wide proxy setting; apply it before the restart
       // so the very first answer already honours it.
-      if (agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
+      if (!purpose && agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
 
       // Drop the old process first — otherwise the manager keeps the stale
       // client and the new configuration never actually reaches the agent.
@@ -1054,7 +1097,7 @@ export function usePetChat() {
         undefined,
         permissionMode,
         skills,
-        { reasoningDisabled: config.value.noThinking },
+        { purpose, reasoningDisabled },
       );
       runtime.value = info.runtime ?? null;
       sessionId.value = info.id;
@@ -1067,13 +1110,13 @@ export function usePetChat() {
       if (!config.value.permissionMode) config.value.permissionMode = permissionMode;
       persistConfig();
       if (model) updateSessionModel(id, model.id).catch(() => {});
-      setLastAgent(agent.id).catch(() => {});
+      if (!purpose) setLastAgent(agent.id).catch(() => {});
 
       // Record the config now baked into the running process, so the next
       // `ensureSession` does not restart us over and over for the same choice.
       const stored = loadStored();
       if (stored && stored.id === id) {
-        saveStored({ ...stored, configKey: launchKey, agentId: agent.id, model: model?.id || "" });
+        saveStored({ ...stored, configKey: launchKey, agentId: agent.id, model: model?.id || "", qaTurns: 0 });
       }
       // The new process starts with no memory of the transcript; the next send
       // hands it the recent turns as context.
@@ -1098,14 +1141,13 @@ export function usePetChat() {
       }
       const model = await resolveDefaultModel(agent.id);
       const permissionMode = await resolvePermissionMode(agent.id);
-      const directory = config.value.directory || undefined;
-      const skills = config.value.skills.length > 0 ? [...config.value.skills] : undefined;
+      const {directory, skills, purpose, reasoningDisabled} = petLaunchOptions(config.value);
       const launchKey = petConfigKey({...config.value, agentId: agent.id, modelId: model?.id || "", permissionMode});
 
       // Reasoning is a process-wide proxy setting (not per-session), matching
       // the main window's toggle. Apply it before the agent starts so the very
       // first response already honours it.
-      if (agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
+      if (!purpose && agent.id !== "codex-cli" && model?.id !== NATIVE_MODEL_ID) setReasoningDisabled(config.value.noThinking).catch(() => {});
 
       const id = `pet-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const title = `🐾 宠物会话`;
@@ -1139,7 +1181,7 @@ export function usePetChat() {
         undefined,
         permissionMode,
         skills,
-        { reasoningDisabled: config.value.noThinking },
+        { purpose, reasoningDisabled },
       );
       runtime.value = info.runtime ?? null;
       sessionId.value = info.id;
@@ -1155,7 +1197,7 @@ export function usePetChat() {
       persistConfig();
       // Mirror the main window's "last agent" so switching here also switches
       // the new-session page's default next time.
-      setLastAgent(agent.id).catch(() => {});
+      if (!purpose) setLastAgent(agent.id).catch(() => {});
       const now = Date.now();
       lastActivityAt = now;
       saveStored({
@@ -1164,6 +1206,7 @@ export function usePetChat() {
         agentId: agent.id,
         model: model?.id || "",
         configKey: launchKey,
+        qaTurns: 0,
       });
       await attachListener(info.id);
       // Let the main window refresh its sidebar so the new session appears.
@@ -1226,8 +1269,10 @@ export function usePetChat() {
   }
 
   async function sendReadyMessage(text: string) {
+    turnTiming.value = startPetTiming();
     const ok = await ensureSession();
     if (!ok || !sessionId.value) return;
+    markPetTiming(turnTiming.value, "readyMs");
 
     // Attachments are parsed into the outgoing text but NOT shown in the
     // transcript (only their file names are) — same split as the main window.
@@ -1261,7 +1306,7 @@ export function usePetChat() {
     // user keeps asking things.
     const stored = loadStored();
     if (stored && stored.id === sessionId.value) {
-      saveStored({ ...stored, lastActiveAt: lastActivityAt });
+      saveStored({ ...stored, lastActiveAt: lastActivityAt, qaTurns: config.value.chatMode === "qa" ? (stored.qaTurns ?? 0) + 1 : 0 });
     }
 
     // A freshly (re)started process has no memory of this conversation, so hand
@@ -1270,11 +1315,7 @@ export function usePetChat() {
     // appends the new prompt itself); only the PRIOR turns become context.
     let history: string[] | undefined;
     if (processFresh && carryHistory) {
-      const prior = messages.value
-        .slice(0, -1)
-        .filter((m) => m.content)
-        .slice(-4)
-        .map((m) => `${m.role}: ${m.content}`);
+      const prior = petRecentHistory(messages.value.slice(0, -1), config.value.chatMode === "qa");
       if (prior.length > 0) history = prior;
       processFresh = false;
     }
@@ -1282,6 +1323,7 @@ export function usePetChat() {
     carryHistory = true;
 
     try {
+      markPetTiming(turnTiming.value, "dispatchMs");
       await sendInput(sessionId.value, sendText, history);
       // Bump the session's recency so it sorts to the top of the sidebar.
       touchSession(sessionId.value).catch(() => {});
@@ -1372,10 +1414,10 @@ export function usePetChat() {
     // new-session page reads `session_model_<agent>` / `agent_permission_<id>`,
     // so a choice made in the popup also becomes the default there.
     const patchedAgent = config.value.agentId;
-    if (patch.modelId !== undefined && patchedAgent && config.value.modelId && (patchedAgent !== "codex-cli" || !sessionId.value)) {
+    if (config.value.chatMode === "agent" && patch.modelId !== undefined && patchedAgent && config.value.modelId && (patchedAgent !== "codex-cli" || !sessionId.value)) {
       setSessionModel(patchedAgent, config.value.modelId).catch(() => {});
     }
-    if (patch.permissionMode !== undefined && patchedAgent && config.value.permissionMode && (patchedAgent !== "codex-cli" || !sessionId.value)) {
+    if (config.value.chatMode === "agent" && patch.permissionMode !== undefined && patchedAgent && config.value.permissionMode && (patchedAgent !== "codex-cli" || !sessionId.value)) {
       setAgentPermissionMode(patchedAgent, config.value.permissionMode).catch(() => {});
     }
 
@@ -1504,6 +1546,8 @@ export function usePetChat() {
 
   return {
     messages,
+    turnTiming,
+    markAnswerPainted,
     input,
     sending,
     busy,

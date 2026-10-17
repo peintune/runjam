@@ -786,6 +786,7 @@ pub struct AcpClient {
     /// agent receives the user's MCP list without `AcpClient` needing a handle
     /// to the app. Empty when the user configured none — the previous behaviour.
     mcp_servers: Vec<serde_json::Value>,
+    _qa_overlay: Option<crate::pet_qa::GeminiOverlay>,
 }
 
 impl AcpClient {
@@ -813,7 +814,9 @@ impl AcpClient {
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| package_dir.to_string());
         // Record this BEFORE `unwrap_or` consumes `directory`.
-        let project_scoped = directory.is_some();
+        let qa = mode == crate::pet_qa::MODE;
+        let permission_mode = if qa { "read_only" } else { permission_mode };
+        let project_scoped = directory.is_some() && !qa;
         let cwd = directory.unwrap_or(&default_dir);
         rjlog!("[ACP DEBUG] Using cwd: {}", cwd);
         // Ensure the working directory exists — Command::current_dir fails
@@ -825,7 +828,7 @@ impl AcpClient {
         // scope on this path. Failing to read must never block the session — an
         // empty list just means "no MCP servers", the previous behaviour.
         let native = launch_plan.as_ref().map(|p| p.info.config_mode == crate::agent_launch::ConfigMode::Native).unwrap_or(false);
-        let mcp_servers = if native { Vec::new() } else { crate::commands::mcp_cmd::acp_servers_from_app(app) };
+        let mcp_servers = if native || qa { Vec::new() } else { crate::commands::mcp_cmd::acp_servers_from_app(app) };
 
         let mut cmd = hidden_command(&cmd_path);
         for arg in args {
@@ -836,7 +839,7 @@ impl AcpClient {
         // so a freshly installed CLI does not greet ordinary work (curl, writing
         // a file) with "add Bash(curl:*) to settings.json". Merge-only: anything
         // the user already set is left untouched (see `agent_permissions`).
-        if !native {
+        if !native && !qa {
             if let Err(e) = crate::agent_permissions::ensure_default_permissions(agent_type) {
                 rjlog!("[PERMS] Could not seed default permissions for {}: {}", agent_type, e);
             }
@@ -864,14 +867,23 @@ impl AcpClient {
 
         if agent_type == "codex" || agent_type == "codex-cli" {
             configure_codex_adapter(app, &mut cmd, &cmd_path, launch_plan.as_ref().map(|p| &p.info), permission_mode)?;
+            if qa {
+                let root = launch_plan.as_ref().map(|p| std::path::PathBuf::from(&p.info.config_root))
+                    .or_else(|| crate::agent_isolation::isolated_config_file("codex-cli").and_then(|p| p.parent().map(|p| p.to_path_buf())));
+                crate::codex_adapter::apply_pet_policy(&mut cmd, root.as_deref())?;
+            }
         }
+
+        let qa_overlay = if qa && matches!(agent_type, "gemini" | "gemini-cli") {
+            Some(crate::pet_qa::GeminiOverlay::install(&mut cmd)?)
+        } else { None };
 
         if agent_type == "gemini" || agent_type == "gemini-cli" {
             // RunJam's permission mode was never passed to gemini, so the UI
             // picker did nothing for it. The launch flag is the only channel
             // that can express `yolo`: gemini's settings schema accepts only
             // default/auto_edit/plan for `general.defaultApprovalMode`.
-            if let Some(arg) = crate::agent_permissions::gemini_launch_approval_arg(permission_mode) {
+            if let Some(arg) = crate::agent_permissions::gemini_launch_approval_arg(if qa { "ask_approval" } else { permission_mode }) {
                 rjlog!("[ACP] gemini approval override: permission_mode={} {}", permission_mode, arg);
                 cmd.arg(arg);
             }
@@ -1797,6 +1809,7 @@ impl AcpClient {
             permission_mode: permission_mode_shared,
             stopped: false,
             mcp_servers,
+            _qa_overlay: qa_overlay,
         };
 
         Ok(client)
@@ -1809,6 +1822,8 @@ impl AcpClient {
     /// (e.g. after Plan-Mode denials) would keep refusing tools no matter how we
     /// answer future permission requests.
     pub fn set_permission_mode(&mut self, mode: &str) {
+        // Main-window global permission changes cannot widen a pet Q&A client.
+        if self.mode == crate::pet_qa::MODE { return; }
         *self.permission_mode.lock().unwrap() = mode.to_string();
         if let Some(plan) = &mut self.launch_plan { plan.info.permission_mode = mode.to_string(); }
         rjlog!("[ACP DEBUG] Live permission mode updated to: {}", mode);
@@ -1887,7 +1902,7 @@ impl AcpClient {
         // the very first turn — otherwise claude starts in its default mode and
         // asks for permission even when the user selected full_access/bypass.
         let initial_mode = self.permission_mode.lock().unwrap().clone();
-        if initial_mode != "inherit" {
+        if initial_mode != "inherit" && self.mode != crate::pet_qa::MODE {
             if let Some(mode_id) = Self::permission_mode_to_acp_mode(&self.agent_type, &initial_mode) {
                 self.send_request("session/set_mode", serde_json::json!({
                     "sessionId": acp_session_id, "modeId": mode_id,
@@ -1991,16 +2006,27 @@ impl AcpClient {
         // makes one server work with EVERY agent: each agent otherwise reads
         // MCP config from its own location, so the same server had to be
         // re-declared per agent.
-        let params = serde_json::json!({
+        let mut params = serde_json::json!({
             "cwd": self.cwd,
             "mcpServers": self.mcp_servers,
-            "mode": self.mode,
+            "mode": if self.mode == crate::pet_qa::MODE { "assistant" } else { &self.mode },
         });
+        if self.mode == crate::pet_qa::MODE && matches!(self.agent_type.as_str(), "claude" | "claude-code") {
+            params["_meta"] = crate::pet_qa::claude_meta();
+        }
         let result = self.send_request("session/new", params)
             .map_err(|e| format!("New session failed: {}", e))?;
         if let Some(session_id) = result.get("sessionId").and_then(|v| v.as_str()) {
             *self.session_id.lock().unwrap() = session_id.to_string();
             rjlog!("[ACP DEBUG] Received ACP session ID: {}", session_id);
+        }
+        if self.mode == crate::pet_qa::MODE {
+            if let Some((config_id, value)) = crate::pet_qa::lowest_effort(&result["configOptions"]) {
+                self.send_request("session/set_config_option", serde_json::json!({
+                    "sessionId": self.session_id.lock().unwrap().clone(),
+                    "configId": config_id, "value": value,
+                })).map_err(|e| format!("Failed to apply pet reasoning effort: {e}"))?;
+            }
         }
         Ok(())
     }
@@ -2035,6 +2061,7 @@ impl AcpClient {
     /// Only emitted for a user-chosen project directory: the per-session scratch
     /// directory is not a project, and claiming otherwise would misdirect it.
     pub fn project_context(&self) -> Option<String> {
+        if self.mode == crate::pet_qa::MODE { return Some(crate::pet_qa::INSTRUCTIONS.into()); }
         if !self.project_scoped {
             return None;
         }
@@ -2279,6 +2306,7 @@ impl AcpClient {
             project_scoped: false,
             // Connection test only: no MCP servers involved.
             mcp_servers: Vec::new(),
+            _qa_overlay: None,
             mode: "default".to_string(),
             agent_type: "claude".to_string(),
             permission_mode: Arc::new(Mutex::new("ask_approval".to_string())),

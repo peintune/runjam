@@ -4,10 +4,9 @@
  * the floating pet icon. It is a separate top-level window anchored to the
  * icon and optionally stays above other applications when pinned.
  *
- * Layout: a drag handle + transcript, a *persistent* settings toolbar (agent /
- * model / folder / permission mode / skills / reasoning) that mirrors the main
- * window's new-session page, and a single input. Everything is changeable at
- * any time: picking a value restarts the conversation with it. All the heavy
+ * Defaults to quick Q&A: existing login, concise answers and instant streams.
+ * Agent mode restores the project / permission / skills / reasoning toolbar.
+ * A changed choice restarts only the process, preserving the transcript. The
  * lifting (session lifecycle, streaming, config persistence) lives in
  * `usePetChat`.
  */
@@ -33,6 +32,7 @@ import { supportsNativeConfig } from "../../composables/agentLaunch";
 
 const {
   messages,
+  markAnswerPainted,
   input,
   busy,
   starting,
@@ -73,6 +73,7 @@ const chatEl = ref<HTMLDivElement | null>(null);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const attachListOpen = ref(false);
 const nativeMode = computed(() => supportsNativeConfig(config.value.agentId) && config.value.modelId === NATIVE_MODEL_ID);
+const qaMode = computed(() => config.value.chatMode !== "agent");
 let unlistenOpened: UnlistenFn | null = null;
 let unlistenClosed: UnlistenFn | null = null;
 const pinned = ref(false);
@@ -99,6 +100,7 @@ function scrollToBottom(force = false) {
 
 /** ChatMessages reports height changes (typewriter ticks, growing content). */
 function onContentUpdated() {
+  markAnswerPainted();
   scrollToBottom();
 }
 
@@ -131,6 +133,15 @@ async function togglePinned() {
  */
 async function openInMain() {
   await openInMainWindow();
+}
+
+async function toggleChatMode() {
+  if (busy.value || starting.value) return;
+  openMenu.value = "";
+  const previous = config.value.chatMode;
+  await applyConfig({chatMode: qaMode.value ? "agent" : "qa"});
+  if (!await ensureSession()) await applyConfig({chatMode: previous});
+  await focusInput();
 }
 
 /** Focus the composer without scrolling the transcript or changing its selection. */
@@ -192,6 +203,7 @@ async function doSend() {
   if (!canSend.value) return;
   await send();
   scrollToBottom(true);
+  focusComposer();
 }
 
 /** Halt the running answer (the send button becomes Stop while busy). */
@@ -634,6 +646,7 @@ onBeforeUnmount(() => {
         :agent-id="config.agentId"
         :active="true"
         :cwd="config.directory"
+        :stream-presentation="qaMode ? 'instant-stream' : 'animated'"
         @content-updated="onContentUpdated"
       />
     </div>
@@ -683,6 +696,12 @@ onBeforeUnmount(() => {
            made the attachments look like a separate row from the option chips. -->
       <div class="flex items-center gap-1.5 mt-1.5 flex-nowrap overflow-hidden">
         <button
+          type="button" :class="CHIP" :aria-pressed="qaMode"
+          :aria-label="t(qaMode ? 'pet.switchToAgent' : 'pet.switchToQa')"
+          :title="t(qaMode ? 'pet.switchToAgent' : 'pet.switchToQa')"
+          :disabled="busy || starting" @click="toggleChatMode"
+        >{{ t(qaMode ? 'pet.qaMode' : 'pet.agentMode') }}</button>
+        <button
           class="p-1 rounded-md flex-shrink-0 text-gray-400 hover:text-gray-600 hover:bg-gray-100
                  dark:hover:bg-[#26262f] transition-colors cursor-pointer"
           :title="t('pet.attachFile')"
@@ -700,7 +719,7 @@ onBeforeUnmount(() => {
 
         <!-- Skills stays next to attachments so all extra prompt context starts
              in one predictable place on the compact control row. -->
-        <div class="relative flex-shrink-0" data-pet-popover>
+        <div v-if="!qaMode" class="relative flex-shrink-0" data-pet-popover>
           <button :class="CHIP" :disabled="nativeMode" :title="t(nativeMode ? 'models.nativeExtensions' : 'pet.skills')" @click="toggleMenu('skills', $event)">
             <Wand2 :size="11" class="flex-shrink-0 opacity-70" />
             <span class="truncate">
@@ -730,7 +749,7 @@ onBeforeUnmount(() => {
           </Teleport>
         </div>
 
-        <div class="relative min-w-0" data-pet-popover>
+        <div v-if="!qaMode" class="relative min-w-0" data-pet-popover>
           <button
             class="inline-flex items-center gap-1 px-1.5 h-6 rounded-md text-[10px] leading-none min-w-0
                    text-gray-600 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-[#26262f] transition-colors cursor-pointer"
@@ -778,7 +797,7 @@ onBeforeUnmount(() => {
           </Teleport>
         </div>
 
-        <div class="relative min-w-0" data-pet-popover>
+        <div v-if="!qaMode" class="relative min-w-0" data-pet-popover>
           <button :class="CHIP" :title="t('pet.permission')" @click="toggleMenu('perm', $event)">
             <ShieldCheck :size="11" class="flex-shrink-0 opacity-70" />
             <span class="truncate">{{ permissionLabel || t("pet.permission") }}</span>
@@ -854,6 +873,7 @@ onBeforeUnmount(() => {
         </div>
 
         <button
+          v-if="!qaMode"
           :class="[
             CHIP,
             config.noThinking
@@ -867,6 +887,8 @@ onBeforeUnmount(() => {
           <Brain :size="11" class="flex-shrink-0" />
         </button>
       </div>
+
+      <p v-if="qaMode" class="mt-1 text-[9px] text-gray-500">{{ t('pet.qaHint') }}</p>
 
       <p v-if="runtime" class="mt-1 text-[9px] text-gray-500 truncate" :title="runtime.config_root">
         {{ t(runtime.config_mode === 'native' ? 'models.nativeMode' : 'models.managedMode') }} ·

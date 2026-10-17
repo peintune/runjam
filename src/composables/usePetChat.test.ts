@@ -39,9 +39,12 @@ describe("pet concurrent startup", () => {
   async function setup(stored = true, agent = "codex-cli", defaultMode = "native") {
     const start = vi.fn();
     const sendInput = vi.fn(async () => {});
+    const alive = vi.fn(async () => false);
+    const proxyReasoning = vi.fn(async () => {});
+    vi.doMock("../api/proxy", () => ({setReasoningDisabled: proxyReasoning}));
     vi.doMock("../api/sessions", () => ({
       NATIVE_MODEL_ID: "__runjam_native__", startSession: start, sendInput,
-      sessionAlive: vi.fn(async () => false), stopSession: vi.fn(async () => {}),
+      sessionAlive: alive, stopSession: vi.fn(async () => {}),
       getSessionRuntime: vi.fn(async () => null), listSkills: vi.fn(async () => []),
     }));
     vi.doMock("../api/models", () => ({
@@ -63,10 +66,10 @@ describe("pet concurrent startup", () => {
     vi.doMock("../stores/useLlamaStore", () => ({useLlamaStore: () => ({runningPort: 0, runningModel: null})}));
     const mod = await freshPetChat();
     const chat = mod.usePetChat();
-    chat.config.value = {...mod.defaultPetConfig(), agentId: agent, modelId: "__runjam_native__", permissionMode: "inherit"};
+    chat.config.value = {...mod.defaultPetConfig(), chatMode: "agent", agentId: agent, modelId: "__runjam_native__", permissionMode: "inherit"};
     chat.availableAgents.value = [{id: agent, display_name: agent, installed: true, enabled: true}] as never;
     if (stored) localStorage.setItem("runjam.pet.session", JSON.stringify({id: "existing", agentId: "codex-cli", model: "__runjam_native__", configKey: mod.petConfigKey(chat.config.value), lastActiveAt: Date.now()}));
-    return {chat, start, sendInput};
+    return {chat, start, sendInput, alive, proxyReasoning};
   }
 
   it.each([true, false])("shares pending startup instead of starting twice (stored=%s)", async stored => {
@@ -80,6 +83,31 @@ describe("pet concurrent startup", () => {
     for (const finish of finishes) finish({id: "existing"});
     expect(await Promise.all([first, second])).toEqual([true, true]);
     expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["claude-code", "gemini-cli", "codex-cli"])("launches %s Q&A independently of saved Agent permission/project/skills", async agent => {
+    const {chat, start, proxyReasoning} = await setup(false, agent);
+    chat.config.value = {...chat.config.value, chatMode: "qa", directory: "/private-project", skills: ["custom"], permissionMode: "full_access"};
+    start.mockResolvedValue({id: "qa-pet"});
+    expect(await chat.ensureSession()).toBe(true);
+    expect(start.mock.calls[0][2]).toBeUndefined();
+    expect(start.mock.calls[0][7]).toBeUndefined();
+    expect(start.mock.calls[0][8]).toEqual({purpose: "pet_qa", reasoningDisabled: true});
+    expect(chat.config.value.directory).toBe("/private-project");
+    expect(chat.config.value.permissionMode).toBe("full_access");
+    expect(proxyReasoning).not.toHaveBeenCalled();
+  });
+
+  it.each([11, 12])("reuses short Q&A context and rotates at twelve sends (turns=%s)", async turns => {
+    const {chat, start, alive} = await setup(false);
+    const {petConfigKey} = await import("./usePetChat");
+    chat.config.value.chatMode = "qa";
+    localStorage.setItem("runjam.pet.session", JSON.stringify({id: "existing", agentId: "codex-cli", model: "__runjam_native__", configKey: petConfigKey(chat.config.value), lastActiveAt: Date.now(), qaTurns: turns}));
+    alive.mockResolvedValue(true);
+    start.mockResolvedValue({id: "existing"});
+    expect(await chat.ensureSession()).toBe(true);
+    expect(start).toHaveBeenCalledTimes(turns < 12 ? 0 : 1);
+    if (turns >= 12) expect(JSON.parse(localStorage.getItem("runjam.pet.session")!).qaTurns).toBe(0);
   });
 
   it("blocks duplicate sends while startup is pending", async () => {
@@ -280,6 +308,7 @@ describe("normalizePetConfig", () => {
         noThinking: true,
       }),
     ).toEqual({
+      chatMode: "qa",
       agentId: "claude-code",
       modelId: "sonnet",
       directory: "/tmp/proj",
@@ -300,6 +329,7 @@ describe("normalizePetConfig", () => {
       noThinking: "yes",
     });
     expect(result).toEqual({
+      chatMode: "qa",
       agentId: "",
       modelId: "",
       directory: "",
@@ -319,7 +349,7 @@ describe("normalizePetConfig", () => {
 describe("petConfigKey", () => {
   it("ignores skill order but notices any real change", async () => {
     const { petConfigKey, defaultPetConfig } = await freshPetChat();
-    const base = { ...defaultPetConfig(), agentId: "codex-cli", modelId: "gpt-5" };
+    const base = { ...defaultPetConfig(), chatMode: "agent" as const, agentId: "codex-cli", modelId: "gpt-5" };
     expect(petConfigKey({ ...base, skills: ["a", "b"] })).toBe(
       petConfigKey({ ...base, skills: ["b", "a"] }),
     );
@@ -330,7 +360,7 @@ describe("petConfigKey", () => {
 
   it("changes when any toolbar knob changes", async () => {
     const { petConfigKey, defaultPetConfig } = await freshPetChat();
-    const base = defaultPetConfig();
+    const base = {...defaultPetConfig(), chatMode: "agent" as const};
     const key = petConfigKey(base);
     expect(petConfigKey({ ...base, agentId: "claude-code" })).not.toBe(key);
     expect(petConfigKey({ ...base, modelId: "opus" })).not.toBe(key);

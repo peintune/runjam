@@ -73,7 +73,7 @@ export async function startSession(
   mode?: string,
   permissionMode?: string,
   skills?: string[],
-  options?: { configMode?: ConfigMode; reasoningDisabled?: boolean },
+  options?: { configMode?: ConfigMode; reasoningDisabled?: boolean; purpose?: "pet_qa" },
 ): Promise<SessionInfo> {
   return invoke<SessionInfo>("start_session", {
     cli,
@@ -81,7 +81,7 @@ export async function startSession(
     directory: directory ?? null,
     sessionId: sessionId ?? null,
     model: model ?? null,
-    mode: mode ?? "assistant",
+    mode: options?.purpose ?? mode ?? "assistant",
     permissionMode: permissionMode ?? null,
     skills: skills ?? null,
     configMode: options?.configMode ?? (["claude-code", "gemini-cli", "codex-cli"].includes(cli) && model ? (model === NATIVE_MODEL_ID ? "native" : "managed") : null),

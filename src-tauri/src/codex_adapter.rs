@@ -65,6 +65,18 @@ pub fn configure_command(
     Ok(())
 }
 
+pub fn apply_pet_policy(cmd: &mut Command, root: Option<&Path>) -> Result<(), String> {
+    let mut config: serde_json::Value = cmd.get_envs()
+        .find(|(k, _)| *k == std::ffi::OsStr::new("CODEX_CONFIG"))
+        .and_then(|(_, v)| v).map(|v| serde_json::from_str(&v.to_string_lossy()))
+        .transpose().map_err(|e| format!("Invalid Codex adapter config: {e}"))?
+        .unwrap_or_else(|| serde_json::json!({}));
+    let overrides = crate::pet_qa::codex_overrides(root)?;
+    for (key, value) in overrides.as_object().unwrap() { config[key] = value.clone(); }
+    cmd.env("CODEX_CONFIG", config.to_string());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

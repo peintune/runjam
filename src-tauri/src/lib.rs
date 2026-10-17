@@ -15,6 +15,7 @@ mod node_util;
 mod agent_isolation;
 mod agent_launch;
 mod codex_adapter;
+mod pet_qa;
 mod pet_window;
 mod agent_permissions;
 mod first_launch;

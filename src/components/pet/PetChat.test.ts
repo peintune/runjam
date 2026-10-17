@@ -3,6 +3,8 @@ import { createSSRApp, h } from "vue";
 import { renderToString } from "@vue/server-renderer";
 import { createPinia } from "pinia";
 
+const state = vi.hoisted(() => ({chatMode: "agent"}));
+
 vi.mock("../../composables/usePetChat", async () => {
   const { ref } = await import("vue");
   return {
@@ -11,7 +13,7 @@ vi.mock("../../composables/usePetChat", async () => {
       agentName: ref("Codex"), modelName: ref("Test model"), canSend: ref(false),
       send: vi.fn(), stop: vi.fn(), newConversation: vi.fn(), openInMainWindow: vi.fn(),
       ensureSession: vi.fn(), greet: vi.fn(), dispose: vi.fn(),
-      config: ref({ agentId: "codex-cli", modelId: "model", directory: "", permissionMode: "approve_for_me", skills: [], reasoning: false }),
+      config: ref({ chatMode: state.chatMode, agentId: "codex-cli", modelId: "model", directory: "", permissionMode: "approve_for_me", skills: [], reasoning: false }),
       availableAgents: ref([]), availableModels: ref([]), availableSkills: ref([]), recentDirs: ref([]),
       loadOptions: vi.fn(), applyConfig: vi.fn(), toggleSkill: vi.fn(), toggleReasoning: vi.fn(),
       setDirectory: vi.fn(), refreshRecentDirs: vi.fn(), isUnavailableLocalModel: vi.fn(() => false),
@@ -41,7 +43,16 @@ async function render(): Promise<string> {
 }
 
 describe("PetChat composer", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => { vi.clearAllMocks(); state.chatMode = "agent"; });
+
+  it("shows a clear Q&A mode switch and hides Agent-only controls in Q&A", async () => {
+    state.chatMode = "qa";
+    const html = await render();
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('Quick Q&amp;A');
+    expect(html).not.toContain('title="Skills"');
+    expect(html).not.toContain('title="Permissions"');
+  });
 
   it("keeps Skills immediately to the right of Attachments in the bottom action row", async () => {
     const html = await render();

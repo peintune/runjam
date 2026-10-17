@@ -39,8 +39,9 @@ pub async fn start_session(
         &cli[..4.min(cli.len())]
     ));
 
-    // Default to ~/.runjam/session/{id} when no directory selected
-    let dir = directory.unwrap_or_else(|| {
+    let qa = mode.as_deref() == Some(crate::pet_qa::MODE);
+    // Q&A never runs inside a user project, even if a stale frontend sends one.
+    let dir = directory.filter(|_| !qa).unwrap_or_else(|| {
         default_session_dir().join(&id).to_string_lossy().to_string()
     });
     // Always ensure the session working directory exists — the frontend may
@@ -73,9 +74,9 @@ pub async fn start_session(
         let conn = guard.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row("SELECT value FROM app_settings WHERE key=?1", [format!("agent_permission_{cli}")], |r| r.get::<_, String>(0)).unwrap_or_default()
     };
-    let permission = permission_mode.as_deref().filter(|p| !p.is_empty())
+    let permission = if qa { "read_only" } else { permission_mode.as_deref().filter(|p| !p.is_empty())
         .or_else(|| if saved_permission.is_empty() { None } else { Some(saved_permission.as_str()) })
-        .unwrap_or(if native { "inherit" } else { "ask_approval" });
+        .unwrap_or(if native { "inherit" } else { "ask_approval" }) };
     if let Some(plan) = &mut launch_plan { plan.info.permission_mode = permission.into(); }
     if let Some(plan) = &launch_plan {
         manager.lock().map_err(|e| e.to_string())?.reserve_planned_start(&id, &plan.info.run_id);
@@ -90,7 +91,7 @@ pub async fn start_session(
         "gemini-cli" => "gemini",
         _ => "",
     };
-    if !agent_type.is_empty() && !native {
+    if !agent_type.is_empty() && !native && !qa {
         let mut skill_names = skills.unwrap_or_default();
         // Always inject the default constraints skill so every session has
         // guardrails: output path conventions, dependency checks, fallback

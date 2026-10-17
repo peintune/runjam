@@ -5,8 +5,10 @@ import {
   MousePointerClick, FolderOpen, Search,
 } from "lucide-vue-next";
 import { respondInteraction, respondPermission } from "../api/sessions";
-import { useMarkdown, renderCached, clearStreamingCache, containsCodeFence, linkifyPaths } from "../composables/useMarkdown";
+import { useMarkdown, renderCached, clearStreamingCache, linkifyPaths } from "../composables/useMarkdown";
+import { shouldAnimateStream, streamingSeconds, type StreamPresentation } from "../composables/chatStreamingPolicy";
 import { openFileInWorkspace, resolveAgainstBase } from "../composables/useFileOpener";
+import { openExternalContentLink } from "../composables/contentLinks";
 import { useThemeStore } from "../stores/useThemeStore";
 import AgentIcon from "./AgentIcon.vue";
 import MessageContent from "./MessageContent.vue";
@@ -62,13 +64,14 @@ const props = withDefaults(
     messages: Message[];
     agentId?: string;
     active?: boolean;
+    streamPresentation?: StreamPresentation;
     /** The session's working directory. Used to turn a relative path the agent
      *  mentions (`src/main.rs`) into a real one — without it, the backend would
      *  resolve the path against RunJam's own process cwd and fail to find the
      *  file. */
     cwd?: string | null;
   }>(),
-  { active: true },
+  { active: true, streamPresentation: "animated" },
 );
 const emit = defineEmits<{ (e: "contentUpdated"): void }>();
 
@@ -517,13 +520,8 @@ onBeforeUnmount(() => {
  * 长内容/含代码块的消息直接一次性写入 displayMap 完整显示——即使步长自适应，
  * 超长文本仍会产生大量 tick 与整列表 diff，且代码围栏在流式半截状态下反复
  * 触发高开销的 markdown 解析。 */
-const TYPING_MAX_CHARS = 1500;
-
 function shouldTypewriter(msg: Message): boolean {
-  const content = msg.content || "";
-  const thinking = msg.thinking || "";
-  if (content.length + thinking.length > TYPING_MAX_CHARS) return false;
-  return !containsCodeFence(content) && !containsCodeFence(thinking);
+  return shouldAnimateStream(msg, props.streamPresentation);
 }
 
 function startTypewriter(
@@ -1092,7 +1090,13 @@ function truncateLabel(label: string, maxLen = 32): string {
        消息列表做一次全量重渲染（vnode 重建在分离的 DOM 上进行），多个
        会话并行流式时主线程就被这些隐藏渲染吃满。切回可见时 list 立即
        渲染，markdown 有模块级缓存，秒出。 -->
-  <div v-if="props.active !== false" ref="chatEl" class="space-y-6 py-2">
+  <div
+    v-if="props.active !== false"
+    ref="chatEl"
+    class="space-y-6 py-2"
+    @click.capture="openExternalContentLink"
+    @auxclick.capture="openExternalContentLink"
+  >
     <!-- ── 历史折叠：头部组收进一个按钮，点击展开并锚定回原位 ── -->
     <button
       v-if="foldedHeadCount > 0"
@@ -1459,7 +1463,7 @@ function truncateLabel(label: string, maxLen = 32): string {
                 class="text-[12px] text-gray-400"
               >
                 <template v-if="it.msg.isProcessing && it.msg.startTime">
-                  working {{ Math.floor((now - it.msg.startTime) / 1000) }}s
+                  working {{ streamingSeconds(now, it.msg.startTime) }}s
                 </template>
               </span>
             </template>

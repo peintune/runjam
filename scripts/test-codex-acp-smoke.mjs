@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import assert from "node:assert/strict";
 
-const [adapter, cli] = process.argv.slice(2);
+const [adapter, cli, petPolicy] = process.argv.slice(2);
 if (!adapter || !cli) throw new Error("Usage: node scripts/test-codex-acp-smoke.mjs <adapter index.js> <local codex>");
 const root = await mkdtemp(join(tmpdir(), "runjam-codex-smoke-"));
 let promptRequests = 0;
@@ -17,7 +17,13 @@ const server = createServer(async (req, res) => {
   if (req.method === "POST" && req.url.endsWith("/responses")) {
     let body = "";
     for await (const chunk of req) body += chunk;
-    assert.equal(JSON.parse(body).model, "runjam-test-model");
+    const payload = JSON.parse(body);
+    assert.equal(payload.model, "runjam-test-model");
+    if (petPolicy) {
+      const toolNames = (payload.tools ?? []).map(tool => tool.name ?? tool.type);
+      assert.ok(!toolNames.some(name => /exec_command|write_stdin|shell|spawn_agent|send_input|mcp__/.test(name)), `Forbidden pet tool: ${toolNames.join(", ")}`);
+      console.log(`Pet tool inventory: ${toolNames.join(", ")}`);
+    }
     promptRequests++;
     const text = "Local fake-provider reply";
     const part = {type: "output_text", text, annotations: []};
@@ -48,6 +54,7 @@ try {
     model: "runjam-test-model", model_provider: "runjam", cli_auth_credentials_store: "ephemeral",
     model_providers: {runjam: {name: "Smoke test", base_url: `http://127.0.0.1:${server.address().port}/v1`, wire_api: "responses", env_key: "RUNJAM_PROXY_TOKEN", requires_openai_auth: false}},
     sandbox_mode: "read-only", approval_policy: "on-request",
+    ...(petPolicy ? JSON.parse(petPolicy) : {}),
   };
   await writeFile(join(root, "config.toml"), `model = "runjam-test-model"\nmodel_provider = "runjam"\ncli_auth_credentials_store = "ephemeral"\n[model_providers.runjam]\nname = "Smoke test"\nbase_url = "${config.model_providers.runjam.base_url}"\nwire_api = "responses"\nenv_key = "RUNJAM_PROXY_TOKEN"\nrequires_openai_auth = false\n`);
   const env = {...process.env, CODEX_HOME: root, CODEX_PATH: resolve(cli), CODEX_CONFIG: JSON.stringify(config), MODEL_PROVIDER: "runjam", RUNJAM_PROXY_TOKEN: "local-test-token"};
