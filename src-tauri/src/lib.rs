@@ -7,6 +7,7 @@ mod git;
 mod cost;
 mod state;
 mod models_config;
+mod platform_account;
 mod acp;
 mod search;
 mod acp_client;
@@ -118,6 +119,13 @@ pub fn run() {
         .manage(proxy_state)
         .manage(Mutex::new(TerminalState::new()))
         .invoke_handler(tauri::generate_handler![
+            platform_account::platform_status,
+            platform_account::platform_send_code,
+            platform_account::platform_login,
+            platform_account::platform_logout,
+            platform_account::platform_ledger,
+            platform_account::platform_checkout,
+            platform_account::platform_order,
             commands::agent_cmd::detect_agents,
             commands::agent_cmd::check_agent,
             commands::agent_cmd::install_agent,

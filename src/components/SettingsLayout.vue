@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from "vue-router";
-import { ArrowLeft, AppWindow, BarChart3, Bot, Boxes, Cpu, Globe, Info, Settings, Sparkles } from "lucide-vue-next";
+import { ArrowLeft, AppWindow, BarChart3, Bot, Boxes, Cpu, Globe, Info, Settings, Sparkles, Wallet } from "lucide-vue-next";
 import type { TranslationKey } from "../i18n";
 import WindowControls from "./WindowControls.vue";
 
@@ -8,6 +8,7 @@ const router = useRouter();
 const route = useRoute();
 
 const navItems: { path: string; labelKey: TranslationKey; icon: typeof Cpu }[] = [
+  { path: "/settings/account", labelKey: "account.title", icon: Wallet },
   { path: "/settings/models/commercial", labelKey: "settings.commercialModels", icon: Globe },
   { path: "/settings/models", labelKey: "settings.localModels", icon: Cpu },
   { path: "/settings/apps", labelKey: "settings.apps", icon: AppWindow },

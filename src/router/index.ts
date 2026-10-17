@@ -21,6 +21,7 @@ const router = createRouter({
       path: "/settings",
       component: SettingsLayout,
       children: [
+        { path: "account", name: "settings-account", component: () => import("../views/settings/AccountSettings.vue") },
         { path: "", redirect: "/settings/models" },
         {
           path: "agents",
@@ -100,6 +101,7 @@ const WORKSPACE_PATHS = new Set(["/", "/board"]);
 const PAGE_VIEW_IDS: Record<string, string> = {
   workspace: "workspace",
   board: "board",
+  "settings-account": "settings-account",
   "settings-agents": "settings-agents",
   "settings-apps": "settings-apps",
   "settings-models": "settings-models",

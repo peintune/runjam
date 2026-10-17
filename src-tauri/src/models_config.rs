@@ -687,7 +687,8 @@ impl ModelConfig {
         let path = Self::path();
         if path.exists() {
             if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(config) = serde_json::from_str(&content) {
+                if let Ok(mut config) = serde_json::from_str::<Self>(&content) {
+                    config.models = crate::platform_account::normalize_models(config.models);
                     return config;
                 }
             }
@@ -696,7 +697,7 @@ impl ModelConfig {
         models.extend(read_models_from_agent_config("claude-code"));
         models.extend(read_models_from_agent_config("codex-cli"));
         models.extend(read_models_from_agent_config("gemini-cli"));
-        ModelConfig { models }
+        ModelConfig { models: crate::platform_account::normalize_models(models) }
     }
 
     pub fn save(&self) {

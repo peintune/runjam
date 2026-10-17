@@ -9,6 +9,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
     let db_guard = db.lock().unwrap();
     let conn = db_guard.conn.lock().unwrap();
     
+    crate::platform_account::ensure_model(&conn).ok();
     let mut stmt = conn.prepare("SELECT id, name, alias, provider, provider_name, provider_icon, api_base, api_key, protocol, context_window, support_reasoning, tags, force_reasoning_none FROM models ORDER BY created_at").unwrap();
     let models_iter = stmt.query_map([], |row| {
         let tags_str: String = row.get(11)?;
@@ -42,6 +43,7 @@ pub fn get_models(db: State<'_, Mutex<Database>>) -> Vec<ModelEntry> {
 
 #[tauri::command]
 pub fn save_models(models: Vec<ModelEntry>, db: State<'_, Mutex<Database>>) -> Result<(), String> {
+    let models = crate::platform_account::normalize_models(models);
     let db_guard = db.lock().map_err(|e| format!("DB lock error: {}", e))?;
     let conn = db_guard.conn.lock().map_err(|e| format!("DB conn error: {}", e))?;
     

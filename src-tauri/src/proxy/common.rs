@@ -284,7 +284,16 @@ pub(crate) fn send_chat_completions(
     body: &str,
     inject_reasoning_none: bool,
 ) -> ChatUpstream {
-    let agent = build_agent();
+    let builtin = url == crate::platform_account::CHAT_URL;
+    let prepared;
+    let (api_key, body) = if builtin {
+        prepared = match crate::platform_account::authorize_chat(body) {
+            Ok(value) => value,
+            Err(message) => return ChatUpstream::Http { status:401, body:serde_json::json!({"error":{"type":"authentication_error","message":message}}).to_string() },
+        };
+        (prepared.0.as_str(), prepared.1.as_str())
+    } else { (api_key, body) };
+    let agent = if builtin { ureq::AgentBuilder::new().timeout(Duration::from_secs(120)).redirects(0).build() } else { build_agent() };
     let send = |b: &str| {
         agent
             .post(url)

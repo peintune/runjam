@@ -12,6 +12,7 @@ import { getProviderLogo } from "../../utils/providerIcons";
 import { getAgentStatuses } from "../../api/agents";
 import type { AgentInfo } from "../../api/agents";
 import AgentIcon from "../../components/AgentIcon.vue";
+import BuiltInAiCard from "../../components/BuiltInAiCard.vue";
 import ConfirmDialog from "../../components/ConfirmDialog.vue";
 import { t } from "../../i18n";
 
@@ -52,7 +53,7 @@ const agentDropdownPosition = ref({ x: 0, y: 0 });
 const nameError = ref("");
 const apiKeyError = ref("");
 
-const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama"));
+const commercialModels = computed(() => models.value.filter(m => m.provider !== "llama" && m.id !== "runjam-builtin"));
 
 async function refreshModels() {
   refreshing.value = true;
@@ -281,6 +282,8 @@ function openAgentDropdown(modelId: string, event: MouseEvent) {
         </button>
       </div>
     </div>
+
+    <BuiltInAiCard />
 
     <div v-if="commercialModels.length > 0" class="space-y-2">
       <div class="flex items-center justify-between mb-4">
