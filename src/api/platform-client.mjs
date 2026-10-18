@@ -17,7 +17,7 @@ export class PlatformClient {
     if(!products.has(product))throw new Error('产品不存在');
     this.product=product;this.fetch=options.fetch||globalThis.fetch.bind(globalThis);
     this.base='https://supabase-proxy.runjam.app/functions/v1/platform/'+product;
-    this.reports='https://www.runjam.app/api/v1/'+product;
+    this.reports=this.base;
     this.token='';this.telemetryEnabled=false;
   }
   setToken(token){this.token=typeof token==='string'?token:'';}
@@ -46,5 +46,8 @@ export class PlatformClient {
   registerInstallation(body){return this.telemetryEnabled?this.request('/telemetry/register',{body,report:true}):Promise.resolve({disabled:true});}
   events(body){return this.telemetryEnabled?this.request('/telemetry/events',{body,report:true}):Promise.resolve({disabled:true});}
   errors(body){return this.telemetryEnabled?this.request('/telemetry/errors',{body:diagnosticReport(body),report:true}):Promise.resolve({disabled:true});}
+  updates(current=''){return this.request('/updates/latest?current='+encodeURIComponent(current));}
+  announcements(current=''){return this.request('/announcements?current='+encodeURIComponent(current));}
+  releases(){return this.request('/releases');}
   feedback(body){return this.request('/feedback',{body,report:true});}
 }

@@ -18,7 +18,7 @@
 #   ./release.sh -h              # 帮助
 #
 # 环境变量（可选）:
-#   RELEASES_API_URL     写入版本元数据的接口，默认 https://www.runjam.app/api/releases
+#   RELEASES_API_URL     写入版本元数据的接口，默认 https://supabase-proxy.runjam.app/functions/v1/platform/runjam/releases
 #   RELEASES_ADMIN_TOKEN 接口鉴权 token（未设置则跳过写入并提示）
 #
 set -euo pipefail
@@ -205,7 +205,7 @@ json_escape() {
 
 publish_metadata() {
   local tag="$1"
-  local api_url="${RELEASES_API_URL:-https://www.runjam.app/api/releases}"
+  local api_url="${RELEASES_API_URL:-https://supabase-proxy.runjam.app/functions/v1/platform/runjam/releases}"
   # export RELEASES_ADMIN_TOKEN="<PASSWORD>"
   local token="${RELEASES_ADMIN_TOKEN:-}"
 

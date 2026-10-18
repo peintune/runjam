@@ -20,5 +20,8 @@ export class PlatformClient {
   registerInstallation(body: Record<string, unknown>): Promise<Record<string, unknown>>;
   events(body: Record<string, unknown>): Promise<Record<string, unknown>>;
   errors(body: Record<string, unknown>): Promise<Record<string, unknown>>;
+  updates(current?: string): Promise<Record<string, unknown>>;
+  announcements(current?: string): Promise<Record<string, unknown>>;
+  releases(): Promise<Record<string, unknown>>;
   feedback(body: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
