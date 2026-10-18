@@ -289,6 +289,6 @@
     <text x="16" y="44" class="node-sub">• Local-First: ~/.runjam/ holds db · logs · sessions · acp · skills</text>
     <text x="16" y="64" class="node-sub">• Protocol Auto-Conversion: configure once → all CLIs use the same model set via proxy</text>
     <text x="16" y="84" class="node-sub">• Zero-config: auto-detect PATH · one-click install · bundled Node.js + llama-server</text>
-    <text x="16" y="102" class="node-sub">• Privacy: opt-in telemetry · local SQLite · no cloud lock-in</text>
+    <text x="16" y="102" class="node-sub">• Privacy: telemetry opt-out · public IP · local SQLite</text>
   </g>
 </svg>

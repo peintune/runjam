@@ -41,7 +41,7 @@ pub fn set_telemetry_enabled(
         if enabled {
             let version = app.package_info().version.to_string();
             let platform = platform_name();
-            telemetry::register(&guard, &version, platform, std::env::consts::ARCH, "", true);
+            telemetry::register(&guard, &version, platform, std::env::consts::ARCH, &telemetry::os_version(), true);
         }
     }
     telemetry::flush_async(&app);
@@ -142,33 +142,48 @@ pub fn test_proxy(proxy: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn submit_feedback(
+pub async fn submit_feedback(
     app: tauri::AppHandle,
-    db: State<'_, Mutex<Database>>,
     email: Option<String>,
     feedback_type: String,
     content: String,
-    screenshot_url: Option<String>,
-) -> Result<(), String> {
-    if content.trim().is_empty() {
-        return Err("feedback content is empty".into());
+    request_id: String,
+) -> Result<serde_json::Value, String> {
+    uuid::Uuid::parse_str(&request_id).map_err(|_| "Invalid feedback request ID".to_string())?;
+    if !["bug", "feature", "other"].contains(&feedback_type.as_str()) {
+        return Err("Invalid feedback type".into());
     }
-    let guard = db.lock().map_err(|e| e.to_string())?;
-    let conn = guard.conn.lock().map_err(|e| e.to_string())?;
-    let installation_id = telemetry::get_or_create_installation_id(&conn);
-    drop(conn);
-    let payload = serde_json::json!({
-        "installation_id": installation_id,
-        "email": email,
-        "type": feedback_type,
-        "content": telemetry::sanitize(&content),
-        "screenshot_url": screenshot_url,
-        "app_version": app.package_info().version.to_string(),
-    });
-    telemetry::enqueue_feedback(&guard, &payload);
-    drop(guard);
-    telemetry::flush_async(&app);
-    Ok(())
+    if content.trim().is_empty() || content.chars().count() > 10000 {
+        return Err("Feedback must contain between 1 and 10000 characters".into());
+    }
+    if email.as_ref().map(|s| s.len() > 254).unwrap_or(false) {
+        return Err("Email is too long".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let installation_id = {
+            let db = app.state::<Mutex<Database>>();
+            let guard = db.lock().map_err(|_| "Database unavailable".to_string())?;
+            let conn = guard
+                .conn
+                .lock()
+                .map_err(|_| "Database unavailable".to_string())?;
+            telemetry::get_or_create_installation_id(&conn)
+        };
+        let payload = serde_json::json!({
+            "request_id":request_id, "installation_id":installation_id,
+            "email":email.filter(|s| !s.trim().is_empty()), "type":feedback_type,
+            "content":content.trim(), "app_version":app.package_info().version.to_string(),
+            "platform":platform_name(),
+        });
+        telemetry::send_feedback_with(
+            &telemetry::build_agent(&app),
+            &telemetry::api_base(),
+            &payload,
+        )
+    })
+    .await
+    .map_err(|_| "Feedback worker failed; please retry".to_string())?
 }
 
 #[derive(Serialize, Deserialize)]
@@ -217,7 +232,7 @@ pub async fn check_for_updates(
 ) -> Result<UpdateInfo, String> {
     let base = telemetry::api_base();
     let url = format!(
-        "{}/api/v1/runjam/updates/latest?platform={}&arch={}&current={}",
+        "{}/updates/latest?platform={}&arch={}&current={}",
         base,
         platform_name(),
         std::env::consts::ARCH,
@@ -297,7 +312,7 @@ pub async fn get_announcements(
 ) -> Result<Vec<crate::updates::Announcement>, String> {
     let base = telemetry::api_base();
     let version = app.package_info().version.to_string();
-    let url = format!("{}/api/v1/runjam/announcements?current={}", base, version);
+    let url = format!("{}/announcements?current={}", base, version);
     let agent = telemetry::build_agent(&app);
     let resp = agent
         .get(&url)

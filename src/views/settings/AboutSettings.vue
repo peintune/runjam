@@ -4,6 +4,7 @@ import { ExternalLink, Github } from "lucide-vue-next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { checkUpdateUi } from "@/api/telemetry";
 import type { UpdateCheckResult } from "@/api/telemetry";
+import FeedbackDialog from "@/components/FeedbackDialog.vue";
 import UpdatePrompt from "@/components/UpdatePrompt.vue";
 import { t } from "../../i18n";
 
@@ -22,6 +23,7 @@ function openLink(url: string) {
   openUrl(url).catch(() => {});
 }
 
+const showFeedback = ref(false);
 const checking = ref(false);
 const updateResult = ref<UpdateCheckResult | null>(null);
 const checkError = ref("");
@@ -68,6 +70,13 @@ async function checkForUpdate() {
           </div>
         </div>
 
+        <div class="flex items-center justify-between px-5 py-4">
+          <p class="text-[14px] font-medium text-gray-900">{{ $t("session.feedbackTitle") }}</p>
+          <button class="rounded-lg bg-indigo-600 px-4 py-2 text-[13px] font-medium text-white hover:bg-indigo-700" @click="showFeedback = true">
+            {{ $t("session.sendFeedback") }}
+          </button>
+        </div>
+
         <!-- Links -->
         <div class="px-5 py-4">
           <p class="text-[14px] font-medium text-gray-900 mb-3">{{ $t("about.links") }}</p>
@@ -111,6 +120,8 @@ async function checkForUpdate() {
       </div>
     </div>
   </div>
+
+  <FeedbackDialog :open="showFeedback" @close="showFeedback = false" />
 
   <UpdatePrompt
     v-if="updateResult"

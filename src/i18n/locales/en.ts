@@ -156,8 +156,8 @@ const en = {
   "pet.attachments": "Attachments",
   "pet.removeAttachment": "Remove",
   "pet.deniedNote": "In this mode, actions that need approval show their confirmation buttons right here.",
-  "settings.general.telemetry": "Anonymous Usage Data",
-  "settings.general.telemetryDesc": "Help improve RunJam: app version, feature usage and sanitized error logs. No code, conversations or IP addresses.",
+  "settings.general.telemetry": "Usage and Diagnostic Data",
+  "settings.general.telemetryDesc": "Startup, app version, system, feature usage and limited diagnostic metadata are reported with your public IP recorded by our server. No code, file paths or conversations. Turn off to stop automatic reporting; feedback remains available.",
   "settings.general.proxy": "Outbound Proxy",
   "settings.general.proxyDesc": "HTTP/SOCKS5 proxy used for telemetry reporting when direct connection fails. Leave empty to connect directly.",
   "settings.general.proxyPlaceholder": "http://127.0.0.1:7890 or socks5://127.0.0.1:1080",
@@ -337,6 +337,7 @@ const en = {
   "session.feedbackEmailPlaceholder": "Email (optional)",
   "session.feedbackSending": "Sending…",
   "session.feedbackSubmit": "Submit",
+  "session.feedbackPrivacy": "Sends only your text, optional email, installation ID, version and system. Our server records your public IP. No conversation or file is attached.",
 
   // ── Permission modes ────────────────────────────────────────────────────
   "perm.readOnly": "The agent can only read files and plan actions, but cannot make any changes.",

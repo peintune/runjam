@@ -43,7 +43,7 @@ const en = {
       },
       {
         title: "Local First, Data Secure",
-        desc: "All conversation data stored locally. Agent processes run on your machine. No telemetry collection, no cloud dependency.",
+        desc: "All conversation data stored locally. Agent processes run on your machine. Optional usage and diagnostic reporting includes public IP; disable it in Settings.",
       },
       {
         title: "Unified Model Config",
@@ -178,7 +178,7 @@ const en = {
       },
       {
         q: "Will my data be sent to the cloud?",
-        a: "Not at all. RunJam is local-first. All agent processes run on your machine, and all data (session records, model configs, agent states) is stored in your local ~/.runjam directory. No telemetry, no cloud sync.",
+        a: "RunJam stores session records, model configs and agent states locally in ~/.runjam. Automatic usage and diagnostic metadata includes public IP and is enabled by default; disable it in Settings. Feedback sends only what you explicitly submit, plus installation and system metadata. Agent API calls use the provider you choose.",
       },
       {
         q: "Which AI agents are supported?",

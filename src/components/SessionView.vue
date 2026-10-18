@@ -22,11 +22,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import ChatMessages, { type Message } from "./ChatMessages.vue";
+import FeedbackDialog from "./FeedbackDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MentionPicker from "./MentionPicker.vue";
 import { type FileEntry, parseFile } from "../api/fs";
-import { submitFeedback, track, reportError } from "../api/telemetry";
-import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle, Check } from "lucide-vue-next";
+import { track, reportError } from "../api/telemetry";
+import { Send, Square, Download, Shield, ChevronDown, ArrowDown, Folder, X, FolderPlus, Sparkles, HelpCircle, Plus, Package, Wand2, Paperclip, MessageCircle } from "lucide-vue-next";
 import { useToast } from "../composables/useToast";
 import { useContextSize } from "../composables/useContextSize";
 import { t, currentLocale, type TranslationKey } from "../i18n";
@@ -694,49 +695,6 @@ const { showWarning } = useToast();
 
 // ── Feedback modal ──────────────────────────────────────────────
 const showFeedbackModal = ref(false);
-const feedbackSending = ref(false);
-const feedbackDone = ref(false);
-const feedbackError = ref("");
-const feedbackType = ref("bug");
-const feedbackContent = ref("");
-const feedbackEmail = ref("");
-const feedbackTypes: { id: string; labelKey: TranslationKey }[] = [
-  { id: "bug", labelKey: "session.feedbackBug" },
-  { id: "feature", labelKey: "session.feedbackFeature" },
-  { id: "other", labelKey: "session.feedbackOther" },
-];
-
-function closeFeedback() {
-  if (feedbackSending.value) return;
-  showFeedbackModal.value = false;
-  feedbackDone.value = false;
-  feedbackError.value = "";
-}
-
-async function submitFeedbackForm() {
-  const content = feedbackContent.value.trim();
-  if (!content || feedbackSending.value) return;
-  feedbackSending.value = true;
-  feedbackError.value = "";
-  try {
-    await submitFeedback(
-      feedbackType.value,
-      content,
-      feedbackEmail.value.trim() || undefined,
-    );
-    feedbackSending.value = false;
-    feedbackDone.value = true;
-    // Auto-close after showing the success state
-    setTimeout(() => {
-      showFeedbackModal.value = false;
-      feedbackDone.value = false;
-      feedbackContent.value = "";
-    }, 1600);
-  } catch (e) {
-    feedbackSending.value = false;
-    feedbackError.value = String(e);
-  }
-}
 
 function getFilename(name: string): string {
   const parts = name.split('/');
@@ -3473,92 +3431,7 @@ watch(messages, (msgs) => {
     @close="closeMentionPicker"
   />
 
-  <!-- Feedback modal -->
-  <div
-    v-if="showFeedbackModal"
-    class="fixed inset-0 z-[100] flex items-center justify-center"
-    @click.self="closeFeedback"
-  >
-    <div class="absolute inset-0 bg-black/30" @click="closeFeedback" />
-    <div class="relative w-[420px] max-w-[90vw] bg-white rounded-2xl shadow-2xl p-5">
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2">
-          <MessageCircle :size="16" class="text-gray-500" />
-          <span class="text-[15px] font-semibold text-gray-900">{{ $t("session.feedbackTitle") }}</span>
-        </div>
-        <button
-          @click="closeFeedback"
-          class="w-6 h-6 rounded-md flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors cursor-pointer"
-        >
-          <X :size="14" />
-        </button>
-      </div>
-
-      <template v-if="feedbackDone">
-        <div class="py-10 flex flex-col items-center gap-2">
-          <div class="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
-            <Check :size="20" class="text-green-600" />
-          </div>
-          <p class="text-[14px] font-medium text-gray-900">{{ $t("session.feedbackThanks") }}</p>
-          <p class="text-[12px] text-gray-400">{{ $t("session.feedbackThanksDesc") }}</p>
-        </div>
-      </template>
-
-      <template v-else>
-        <div class="flex gap-1.5 mb-3">
-          <button
-            v-for="t in feedbackTypes"
-            :key="t.id"
-            @click="feedbackType = t.id"
-            :class="[
-              'flex-1 px-3 py-1.5 rounded-lg text-[12px] font-medium border transition-colors cursor-pointer',
-              feedbackType === t.id
-                ? 'bg-gray-900 border-gray-900 text-white dark:bg-zinc-800 dark:border-zinc-800'
-                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50',
-            ]"
-          >
-            {{ $t(t.labelKey) }}
-          </button>
-        </div>
-
-        <textarea
-          v-model="feedbackContent"
-          rows="5"
-          :placeholder="$t('session.feedbackPlaceholder')"
-          class="w-full px-3 py-2.5 rounded-xl border text-[13px] text-gray-900 placeholder:text-gray-300 bg-white focus:outline-none transition-colors resize-none"
-          :class="feedbackError ? 'border-red-300 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'"
-          @input="feedbackError = ''"
-        />
-        <input
-          v-model="feedbackEmail"
-          type="email"
-          placeholder="Email (optional)"
-          class="mt-2 w-full h-9 px-3 rounded-xl border text-[13px] text-gray-900 placeholder:text-gray-300 bg-white focus:outline-none transition-colors"
-          :class="feedbackError ? 'border-red-300 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'"
-        />
-
-        <p v-if="feedbackError" class="mt-2 text-[12px] text-red-600">{{ feedbackError }}</p>
-
-        <div class="mt-4 flex items-center justify-end gap-2">
-          <button
-            @click="closeFeedback"
-            class="px-4 h-9 rounded-xl text-[13px] font-medium text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
-            :disabled="feedbackSending"
-          >
-            Cancel
-          </button>
-          <button
-            @click="submitFeedbackForm"
-            :disabled="!feedbackContent.trim() || feedbackSending"
-            class="px-4 h-9 rounded-xl text-[13px] font-medium text-white transition-colors flex items-center gap-1.5"
-            :class="feedbackContent.trim() && !feedbackSending ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
-          >
-            {{ feedbackSending ? $t("session.feedbackSending") : $t("session.feedbackSubmit") }}
-          </button>
-        </div>
-      </template>
-    </div>
-  </div>
+  <FeedbackDialog :open="showFeedbackModal" @close="showFeedbackModal = false" />
 </template>
 
 <style scoped>

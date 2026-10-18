@@ -67,17 +67,17 @@ export async function testProxy(proxy: string): Promise<void> {
   return invoke<void>("test_proxy", { proxy });
 }
 
+export type FeedbackType = "bug" | "feature" | "other";
+export interface FeedbackAck { ok: true; id: string; }
+
 export async function submitFeedback(
-  feedbackType: string,
+  feedbackType: FeedbackType,
   content: string,
-  email?: string,
-  screenshotUrl?: string,
-): Promise<void> {
-  return invoke<void>("submit_feedback", {
-    feedbackType,
-    content,
-    email,
-    screenshotUrl,
+  email: string | undefined,
+  requestId: string,
+): Promise<FeedbackAck> {
+  return invoke<FeedbackAck>("submit_feedback", {
+    feedbackType, content, email, requestId,
   });
 }
 

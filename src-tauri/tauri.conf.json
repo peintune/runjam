@@ -54,7 +54,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMzVBNEMzMzYwRjFCREIKUldUYkd3ODJ3NlExL0NqcmltWTFrU0RmTndyYXR4UDFBaCt4V0RQcXovZlZiT3Q2bVVnbk9tZ08K",
       "endpoints": [
-        "https://www.runjam.app/api/v1/runjam/updates/latest"
+        "https://supabase-proxy.runjam.app/functions/v1/platform/runjam/updates/latest?current={{current_version}}"
       ],
       "windows": {
         "installMode": "passive"

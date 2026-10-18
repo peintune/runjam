@@ -57,7 +57,7 @@ A local-first desktop manager for **Claude Code, Codex CLI, and Gemini CLI** —
 - 🔌 **Any agent, any model.** Built-in protocol proxy converts Anthropic ↔ OpenAI ↔ Gemini on the fly. Claude Code can use GPT. Codex can use Claude. Configure once, sync everywhere.
 - 🛠️ **Zero agent modifications.** Unlike ACP-based tools, RunJam drives agents through their native CLI (stdin/stdout). Works today, with any agent.
 - 💸 **Cut your API bill.** Automatic prompt-cache detection, local response cache, and one-click local models (llama.cpp).
-- 🔒 **Local-first & private.** Conversations, configs, and API keys stay on your machine. Telemetry is on by default (anonymous usage data — disable anytime in Settings), no cloud sync.
+- 🔒 **Local-first & private.** Conversations, configs, and API keys stay on your machine. Telemetry is on by default (usage and diagnostic metadata, including public IP recorded by the server — disable anytime in Settings), no cloud sync.
 
 ---
 
@@ -237,7 +237,7 @@ Most managers just hand the agent's request to a vendor API. RunJam does more:
 ### 🔒 Local-First & Secure
 
 - **All data local** — Conversations, configs, and agent states in `~/.runjam/`
-- **Telemetry on by default** — anonymous usage data helps improve RunJam; disable anytime in Settings → General
+- **Telemetry on by default** — usage and diagnostic metadata helps improve RunJam; the server records public IP; disable anytime in Settings → General
 - **No cloud dependency** — Works fully offline (agents need their own API access)
 - **System keychain** — API keys never touch plaintext config files
 - **Local models** — Run models via llama.cpp with zero API cost
@@ -478,9 +478,9 @@ Yes. That's exactly what the protocol proxy is for. Example: Claude Code (Anthro
 
 ### Is my data sent to the cloud?
 
-**No.** RunJam is local-first. All agent processes run on your machine. All data (conversations, configs, agent states) is stored locally in `~/.runjam/`. Telemetry is **on by default** — anonymous usage data (launch & version info, key feature usage, sanitized error logs) helps improve the product. You can disable it anytime in Settings → General. There is no cloud sync. API keys live in the OS keychain, not in config files.
+RunJam stores conversations, configs and agent states locally in `~/.runjam/`. Telemetry is **on by default**: startup, version, system, key feature usage and limited diagnostic metadata are reported, and the server records your public IP. Disable automatic reporting in Settings → General. Explicit feedback remains available and sends your text, optional email, installation ID, app version and system metadata, with the request IP recorded by the server.
 
-The only thing that touches the cloud is the LLM API call itself — and you choose the provider. Run a local llama.cpp model and nothing leaves your laptop at all.
+Agent API calls use the provider you choose. Run local models and disable telemetry to avoid automatic cloud reporting. API keys live in the OS keychain.
 
 ### Is RunJam free?
 

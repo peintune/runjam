@@ -1,20 +1,6 @@
-//! Telemetry: local queue + batched reporting to the RunJam backend
-//! (Vercel + Supabase).
-//!
-//! Design rules:
-//! - **No IP / PII collection client-side.** The server resolves the country
-//!   from the request IP; we never send the IP itself.
-//! - **Local SQLite queue** so network failures never block the app.
-//! - **Opt-out supported**: disabling telemetry clears the queue and stops
-//!   further enqueues. User-submitted feedback is always sent.
-//! - All outgoing text is sanitized (home paths, API keys/tokens) and
-//!   length-capped before it leaves the machine.
-//!
-//! Endpoint layout (see `website/app/api/...`):
-//! - POST {base}/api/telemetry/register
-//! - POST {base}/api/telemetry/events
-//! - POST {base}/api/telemetry/errors
-//! - POST {base}/api/feedback
+//! Local metadata queue and native feedback transport through the product Edge gateway.
+//! The server records the public request IP. Automatic reports contain only
+//! approved usage/system metadata; explicit feedback is independent of opt-out.
 
 use crate::db::connection::Database;
 use rusqlite::Connection;
@@ -26,13 +12,9 @@ use tauri::Manager;
 pub const KEY_INSTALLATION_ID: &str = "installation_id";
 pub const KEY_TELEMETRY_ENABLED: &str = "telemetry_enabled";
 pub const KEY_PROXY_URL: &str = "outbound_proxy";
-// 注意用 www 前缀：裸域名 runjam.app 会 308 跳转到 www.runjam.app，而 ureq 2.x
-// 对带 body 的 POST 不自动跟随 307/308（见 AgentBuilder::redirects 文档），
-// 会导致所有上报静默失败。post_json_with 里另有防御性重定向跟随。
-pub const DEFAULT_API_BASE: &str = "https://www.runjam.app";
+pub const DEFAULT_API_BASE: &str = "https://supabase-proxy.runjam.app/functions/v1/platform/runjam";
 
 const MAX_QUEUE_BATCH: i64 = 50;
-const MAX_ATTEMPTS: i64 = 5;
 const FLUSH_THRESHOLD: i64 = 20;
 
 /// Set once in `run()` so background threads and the panic hook can reach the
@@ -41,7 +23,17 @@ static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 static FLUSHING: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn api_base() -> String {
-    std::env::var("RUNJAM_API_BASE").unwrap_or_else(|_| DEFAULT_API_BASE.to_string())
+    // Local fixtures may override the full product base in debug builds only.
+    if cfg!(debug_assertions) {
+        if let Ok(base) = std::env::var("RUNJAM_API_BASE") {
+            if let Ok(url) = url::Url::parse(&base) {
+                if matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+                    return base.trim_end_matches('/').to_string();
+                }
+            }
+        }
+    }
+    DEFAULT_API_BASE.to_string()
 }
 
 // ── settings ───────────────────────────────────────────────────────────
@@ -76,7 +68,7 @@ pub fn is_enabled(conn: &Connection) -> bool {
     match v {
         Ok(s) => s == "1" || s.eq_ignore_ascii_case("true"),
         // Opt-out by default: telemetry starts enabled so we can learn how the
-        // product is used. Users who don't want it can disable the anonymous
+        // product is used. Users who don't want it can disable the
         // usage-data switch in Settings → General. Users who explicitly opted
         // out keep their choice (the row is stored as "0").
         Err(_) => true,
@@ -161,7 +153,7 @@ fn sanitize_value(value: &serde_json::Value) -> serde_json::Value {
 
 fn diagnostic_payload(payload: &serde_json::Value) -> serde_json::Value {
     let mut value = payload.clone();
-    let allowed = ["code", "status", "http_status", "duration_ms", "retry_count", "agent_type", "cli", "model", "stop_reason", "stopReason", "update_type", "platform", "arch"];
+    let allowed = ["code", "status", "http_status", "duration_ms", "retry_count", "agent_type", "cli", "stop_reason", "stopReason", "update_type", "platform", "arch"];
     if let Some(errors) = value.get_mut("errors").and_then(|v| v.as_array_mut()) {
         for item in errors {
             let category = item.get("category").and_then(|v| v.as_str())
@@ -169,7 +161,7 @@ fn diagnostic_payload(payload: &serde_json::Value) -> serde_json::Value {
                 .unwrap_or("unknown").to_string();
             let context: serde_json::Map<String, serde_json::Value> = item.get("context").and_then(|v| v.as_object())
                 .map(|map| map.iter().filter(|(key, v)| allowed.contains(&key.as_str()) &&
-                    (v.is_boolean() || v.is_number() || v.as_str().map(|s| !s.is_empty() && s.len() <= 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:/-".contains(&b))).unwrap_or(false)))
+                    (v.is_boolean() || v.is_number() || v.as_str().map(|s| !s.is_empty() && s.len() <= 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))).unwrap_or(false)))
                     .map(|(k,v)| (k.clone(), if let Some(text) = v.as_str() { serde_json::Value::String(sanitize(text)) } else { v.clone() })).collect())
                 .unwrap_or_default();
             *item = serde_json::json!({"level":item.get("level"), "category":category,
@@ -179,8 +171,81 @@ fn diagnostic_payload(payload: &serde_json::Value) -> serde_json::Value {
     value
 }
 
+fn usage_payload(payload: &serde_json::Value) -> serde_json::Value {
+    let mut value = payload.clone();
+    if let Some(events) = value.get_mut("events").and_then(|v| v.as_array_mut()) {
+        for item in events {
+            let name = item
+                .get("event_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let name = if [
+                "app_started",
+                "page_view",
+                "session_started",
+                "session_stopped",
+                "attach_files",
+                "runaway_guard_stopped",
+                "message_sent",
+                "model_changed",
+                "skill_toggled",
+                "message_stopped",
+                "llama_server_start",
+            ]
+            .contains(&name)
+            {
+                name
+            } else {
+                "unknown"
+            };
+            let mut props = serde_json::Map::new();
+            if let Some(original) = item.get("event_props").and_then(|v| v.as_object()) {
+                for (key, v) in original {
+                    let allowed_number = [
+                        "count",
+                        "duration_ms",
+                        "input_tokens",
+                        "output_tokens",
+                        "retry_count",
+                    ]
+                    .contains(&key.as_str())
+                        && v.is_number();
+                    let allowed_bool =
+                        ["enabled", "has_attachments"].contains(&key.as_str()) && v.is_boolean();
+                    let allowed_enum = match key.as_str() {
+                        "platform" => matches!(
+                            v.as_str(),
+                            Some("macos" | "windows" | "darwin" | "win32" | "linux")
+                        ),
+                        "arch" => matches!(v.as_str(), Some("aarch64" | "x86_64" | "x86" | "arm")),
+                        "cli" => matches!(v.as_str(), Some("claude" | "codex" | "gemini")),
+                        "version" | "os_version" => v
+                            .as_str()
+                            .map(|s| {
+                                s.len() <= 100
+                                    && s.bytes()
+                                        .all(|b| b.is_ascii_alphanumeric() || b".-_ ".contains(&b))
+                            })
+                            .unwrap_or(false),
+                        "launch_id" => v
+                            .as_str()
+                            .map(|s| uuid::Uuid::parse_str(s).is_ok())
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if allowed_number || allowed_bool || allowed_enum {
+                        props.insert(key.clone(), v.clone());
+                    }
+                }
+            }
+            *item = serde_json::json!({"event_name":name,"event_props":props,"event_time":item.get("event_time")});
+        }
+    }
+    value
+}
+
 fn queue_body(kind: &str, payload: &serde_json::Value) -> String {
-    let mut value = if kind == "errors" { diagnostic_payload(payload) } else { payload.clone() };
+    let mut value = if kind == "errors" { diagnostic_payload(payload) } else if kind == "events" { usage_payload(payload) } else { payload.clone() };
     if let Some(object) = value.as_object_mut() {
         let key = if kind == "feedback" { "request_id" } else { "batch_id" };
         object.entry(key).or_insert_with(|| serde_json::Value::String(uuid::Uuid::new_v4().to_string()));
@@ -190,9 +255,9 @@ fn queue_body(kind: &str, payload: &serde_json::Value) -> String {
 
 fn report_route(base: &str, kind: &str) -> String {
     if kind == "feedback" {
-        format!("{}/api/v1/runjam/feedback", base.trim_end_matches('/'))
+        format!("{}/feedback", base.trim_end_matches('/'))
     } else {
-        format!("{}/api/v1/runjam/telemetry/{}", base.trim_end_matches('/'), kind)
+        format!("{}/telemetry/{}", base.trim_end_matches('/'), kind)
     }
 }
 
@@ -254,6 +319,52 @@ pub fn register(db: &Database, app_version: &str, platform: &str, arch: &str, os
         "telemetry_enabled": enabled,
     });
     enqueue(db, "register", &payload);
+}
+
+/// Enqueue one durable launch event with an ID retained across offline retries.
+pub fn enqueue_startup(db: &Database, version: &str, platform: &str, arch: &str, os_version: &str) {
+    register(db, version, platform, arch, os_version, true);
+    let payload = serde_json::json!({
+        "installation_id": installation_id(db), "app_version":version, "platform":platform,
+        "events":[{"event_name":"app_started", "event_time":chrono::Utc::now().to_rfc3339(),
+            "event_props":{"version":version,"platform":platform,"arch":arch,"os_version":os_version,
+                "launch_id":uuid::Uuid::new_v4().to_string()}}]
+    });
+    enqueue(db, "events", &payload);
+}
+
+pub fn os_version() -> String {
+    #[cfg(unix)]
+    {
+        #[cfg(target_os = "macos")]
+        let mut command = { let mut c = std::process::Command::new("/usr/bin/sw_vers"); c.arg("-productVersion"); c };
+        #[cfg(not(target_os = "macos"))]
+        let mut command = { let mut c = std::process::Command::new("uname"); c.arg("-r"); c };
+        command.output().ok().filter(|r| r.status.success())
+            .map(|r| String::from_utf8_lossy(&r.stdout).trim().to_string()).unwrap_or_default()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", "ver"])
+            .creation_flags(0x08000000)
+            .output()
+            .ok()
+            .filter(|r| r.status.success())
+            .and_then(|r| {
+                String::from_utf8_lossy(&r.stdout)
+                    .split(|c: char| !c.is_ascii_digit() && c != '.')
+                    .filter(|part| part.contains('.') && part.chars().any(|c| c.is_ascii_digit()))
+                    .max_by_key(|part| part.len())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        String::new()
+    }
 }
 
 /// App version + platform for the current build, sourced from the app handle
@@ -344,16 +455,14 @@ pub fn report_error_from_app(
     flush_async(app);
 }
 
-/// User feedback — sent even when telemetry is disabled (explicit user action).
-pub fn enqueue_feedback(db: &Database, payload: &serde_json::Value) {
-    enqueue_forced(db, "feedback", payload);
-}
-
 /// Drain the queue in one batch (called on a background thread).
 pub fn flush_sync(app: &tauri::AppHandle) {
-    let base = api_base();
+    let agent = build_agent(app);
+    flush_database(&app.state::<Mutex<Database>>(), &agent, &api_base());
+}
+
+fn flush_database(db: &Mutex<Database>, agent: &ureq::Agent, base: &str) {
     let rows: Vec<(i64, String, String)> = {
-        let db = app.state::<Mutex<Database>>();
         let guard = match db.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -377,11 +486,6 @@ pub fn flush_sync(app: &tauri::AppHandle) {
         return;
     }
 
-    // Build an agent honoring the configured outbound proxy (if any). The
-    // proxy URL is re-read on every flush so config changes take effect
-    // immediately.
-    let agent = build_agent(app);
-
     let mut ok_ids: Vec<i64> = Vec::new();
     let mut fail_ids: Vec<i64> = Vec::new();
     for (id, kind, payload) in rows {
@@ -389,32 +493,38 @@ pub fn flush_sync(app: &tauri::AppHandle) {
         // Recheck before each outgoing telemetry request; explicit feedback is
         // independent of this setting and must not disappear with the queue.
         if kind != "feedback" {
-            let enabled = app.state::<Mutex<Database>>().lock().ok()
+            let enabled = db.lock().ok()
                 .and_then(|db| db.conn.lock().ok().map(|conn| is_enabled(&conn)))
                 .unwrap_or(false);
             if !enabled { ok_ids.push(id); continue; }
         }
-        // Upgrade old queued diagnostics before they leave the machine too.
-        let payload = if kind == "errors" {
-            match serde_json::from_str::<serde_json::Value>(&payload) {
-                Ok(mut value) => {
+        // Upgrade and persist legacy identities before the first send, so retries
+        // remain idempotent even after restarting the app. Scrub old automatic data.
+        let payload = match serde_json::from_str::<serde_json::Value>(&payload) {
+            Ok(mut value) => {
+                if kind == "feedback" {
                     if let Some(object) = value.as_object_mut() {
-                        object.entry("batch_id").or_insert_with(|| serde_json::Value::String(format!("legacy-queue-{}", id)));
+                        object.entry("platform").or_insert_with(|| serde_json::json!(crate::commands::telemetry_cmd::platform_name()));
+                        object.entry("app_version").or_insert_with(|| serde_json::json!(env!("CARGO_PKG_VERSION")));
                     }
-                    queue_body("errors", &value)
-                },
-                Err(_) => { ok_ids.push(id); continue; }
-            }
-        } else { payload };
-        let url = report_route(&base, &kind);
-        if post_json_with(&agent, &url, &payload) {
+                }
+                queue_body(&kind, &value)
+            },
+            Err(_) => { ok_ids.push(id); continue; }
+        };
+        {
+            let Ok(guard) = db.lock() else { return; };
+            let Ok(conn) = guard.conn.lock() else { return; };
+            if conn.execute("UPDATE telemetry_queue SET payload = ?1 WHERE id = ?2", rusqlite::params![payload, id]).is_err() { continue; }
+        }
+        let url = report_route(base, &kind);
+        if post_json_with(agent, &url, &payload) {
             ok_ids.push(id);
         } else {
             fail_ids.push(id);
         }
     }
 
-    let db = app.state::<Mutex<Database>>();
     let guard = match db.lock() {
         Ok(g) => g,
         Err(_) => return,
@@ -431,11 +541,8 @@ pub fn flush_sync(app: &tauri::AppHandle) {
             "UPDATE telemetry_queue SET attempts = attempts + 1 WHERE id = ?1",
             [id],
         );
-        // Give up after MAX_ATTEMPTS so a dead endpoint can't grow the queue forever.
-        let _ = conn.execute(
-            "DELETE FROM telemetry_queue WHERE id = ?1 AND attempts >= ?2",
-            rusqlite::params![id, MAX_ATTEMPTS],
-        );
+        // Retain offline work until acknowledgement; opt-out explicitly clears
+        // automatic rows. Retrying must never silently lose a queued launch.
     }
 }
 
@@ -478,44 +585,48 @@ fn proxy_url_from_app(app: &tauri::AppHandle) -> String {
     get_proxy_url(&conn)
 }
 
-fn post_json_with(agent: &ureq::Agent, url: &str, body: &str) -> bool {
-    let mut url = url.to_string();
-    // ureq 2.x 对带 body 的 POST 不会自动跟随 307/308（见 AgentBuilder::redirects
-    // 文档）。若 API 域名存在裸域名 308 跳转，这里手动跟随，最多 3 跳。
-    for _ in 0..3 {
-        let resp = agent
-            .post(&url)
-            .set("Content-Type", "application/json")
-            .send_string(body);
-        match resp {
-            Ok(r) if matches!(r.status(), 307 | 308) => {
-                let Some(loc) = r.header("location") else {
-                    return false;
-                };
-                match resolve_redirect(&url, loc) {
-                    Some(next) => url = next,
-                    None => return false,
-                }
-            }
-            Ok(r) => return (200..300).contains(&r.status()),
-            Err(_) => return false,
-        }
-    }
-    false
+/// Feedback succeeds only after the server confirms persisted storage.
+pub fn send_feedback_with(
+    agent: &ureq::Agent,
+    base: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    post_acknowledged_json(
+        agent,
+        &report_route(base, "feedback"),
+        &payload.to_string(),
+        true,
+    )
 }
 
-/// 将重定向 location 解析为完整 URL（支持绝对 URL 与根路径相对 URL）。
-fn resolve_redirect(current: &str, location: &str) -> Option<String> {
-    if location.starts_with("http://") || location.starts_with("https://") {
-        return Some(location.to_string());
+fn post_acknowledged_json(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &str,
+    feedback: bool,
+) -> Result<serde_json::Value, String> {
+    let response = agent
+        .post(url)
+        .set("Content-Type", "application/json")
+        .send_string(body)
+        .map_err(|_| "Could not deliver the request. Please retry.".to_string())?;
+    let status = response.status();
+    if !(200..300).contains(&status) || (feedback && status != 201) {
+        return Err("The server did not acknowledge the request. Please retry.".into());
     }
-    let (scheme, rest) = current.split_once("://")?;
-    let host = rest.split('/').next()?;
-    if let Some(path) = location.strip_prefix('/') {
-        Some(format!("{}://{}/{}", scheme, host, path))
-    } else {
-        None
+    let result: serde_json::Value = response
+        .into_json()
+        .map_err(|_| "Invalid server acknowledgement".to_string())?;
+    if result["ok"] != true
+        || (feedback && result["id"].as_str().filter(|s| uuid::Uuid::parse_str(s).is_ok()).is_none())
+    {
+        return Err("The server did not acknowledge the request. Please retry.".into());
     }
+    Ok(result)
+}
+
+fn post_json_with(agent: &ureq::Agent, url: &str, body: &str) -> bool {
+    post_acknowledged_json(agent, url, body, url.ends_with("/feedback")).is_ok()
 }
 
 #[cfg(test)]
@@ -554,39 +665,169 @@ mod tests {
 
     #[test]
     fn all_report_routes_are_product_scoped_and_retry_identity_is_stable() {
-        assert_eq!(report_route("https://www.runjam.app", "events"), "https://www.runjam.app/api/v1/runjam/telemetry/events");
-        assert_eq!(report_route("https://www.runjam.app", "feedback"), "https://www.runjam.app/api/v1/runjam/feedback");
+        assert_eq!(report_route("https://supabase-proxy.runjam.app/functions/v1/platform/runjam", "events"), "https://supabase-proxy.runjam.app/functions/v1/platform/runjam/telemetry/events");
+        assert_eq!(report_route("https://supabase-proxy.runjam.app/functions/v1/platform/runjam", "feedback"), "https://supabase-proxy.runjam.app/functions/v1/platform/runjam/feedback");
         let first = queue_body("events", &serde_json::json!({"events": []}));
         let value: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert!(value["batch_id"].as_str().is_some());
         assert_eq!(queue_body("events", &value), first);
     }
 
-    #[test]
-    fn resolve_redirect_handles_absolute_and_root_relative() {
-        assert_eq!(
-            resolve_redirect(
-                "https://runjam.app/api/telemetry/events",
-                "https://www.runjam.app/api/telemetry/events"
-            )
-            .as_deref(),
-            Some("https://www.runjam.app/api/telemetry/events")
-        );
-        assert_eq!(
-            resolve_redirect("https://runjam.app/api/telemetry/events", "/api/telemetry/events").as_deref(),
-            Some("https://runjam.app/api/telemetry/events")
-        );
-        assert_eq!(resolve_redirect("https://runjam.app/a/b", "x"), None);
+    fn test_db() -> Mutex<Database> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT,updated_at TEXT);
+            CREATE TABLE telemetry_queue(id INTEGER PRIMARY KEY,kind TEXT,payload TEXT,attempts INTEGER,created_at TEXT);").unwrap();
+        Mutex::new(Database { conn: Mutex::new(conn) })
     }
 
-    /// 对真实后端做冒烟测试：POST 经裸域名（308）跟随后必须成功。
-    /// 需要网络；CI 不可用时自动跳过（post_json_with 返回 false 无法区分
-    /// 网络错误与 3xx 未跟随，此处直接断言成功以覆盖本地开发场景）。
     #[test]
+    fn startup_reports_real_metadata_once_per_launch_and_respects_disabled_preference() {
+        let db = test_db();
+        let guard = db.lock().unwrap();
+        enqueue_startup(&guard, "1.2.3", "macos", "aarch64", "24.6.0");
+        let conn = guard.conn.lock().unwrap();
+        let body: String = conn.query_row("SELECT payload FROM telemetry_queue WHERE kind='events'", [], |r| r.get(0)).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(payload["app_version"], "1.2.3");
+        assert_eq!(payload["platform"], "macos");
+        assert_eq!(payload["events"][0]["event_name"], "app_started");
+        assert_eq!(payload["events"][0]["event_props"]["arch"], "aarch64");
+        assert_eq!(payload["events"][0]["event_props"]["os_version"], "24.6.0");
+        assert!(uuid::Uuid::parse_str(payload["events"][0]["event_props"]["launch_id"].as_str().unwrap()).is_ok());
+        set_enabled(&conn, false).unwrap();
+        drop(conn);
+        enqueue_startup(&guard, "1.2.3", "macos", "aarch64", "24.6.0");
+        let count: i64 = guard.conn.lock().unwrap().query_row("SELECT count(*) FROM telemetry_queue", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn startup_survives_offline_retry_limits_without_changing_launch_or_batch_ids() {
+        let db = test_db();
+        let before: Vec<String> = {
+            let guard = db.lock().unwrap();
+            enqueue_startup(&guard, "1.2.3", "darwin", "aarch64", "24.6.0");
+            let conn = guard.conn.lock().unwrap();
+            conn.execute("UPDATE telemetry_queue SET attempts=5", []).unwrap();
+            let mut statement = conn.prepare("SELECT payload FROM telemetry_queue ORDER BY id").unwrap();
+            let rows = statement.query_map([], |r| r.get(0)).unwrap();
+            rows.map(Result::unwrap).collect()
+        };
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/functions/v1/platform/runjam", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let request = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+                request.respond(tiny_http::Response::from_string("offline").with_status_code(503)).unwrap();
+            }
+        });
+        flush_database(&db, &ureq::agent(), &base);
+        worker.join().unwrap();
+        let guard = db.lock().unwrap();
+        let conn = guard.conn.lock().unwrap();
+        let mut statement = conn.prepare("SELECT payload FROM telemetry_queue ORDER BY id").unwrap();
+        let rows = statement.query_map([], |r| r.get::<_,String>(0)).unwrap();
+        let after: Vec<String> = rows.map(Result::unwrap).collect();
+        assert_eq!(after, before, "offline startup metadata must remain durable until acknowledgement or opt-out");
+    }
+
+    #[test]
+    fn disabled_flush_sends_only_explicit_legacy_feedback_with_durable_retry_id() {
+        let db = test_db();
+        {
+            let guard = db.lock().unwrap();
+            let conn = guard.conn.lock().unwrap();
+            set_enabled(&conn, false).unwrap();
+            // Stale pre-opt-out snapshot plus feedback submitted by an older release.
+            conn.execute("INSERT INTO telemetry_queue(kind,payload,attempts) VALUES('events',?1,0)", [r#"{"events":[{"event_name":"app_started"}]}"#]).unwrap();
+            conn.execute("INSERT INTO telemetry_queue(kind,payload,attempts) VALUES('feedback',?1,5)", [r#"{"type":"bug","content":"Legacy draft"}"#]).unwrap();
+        }
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/functions/v1/platform/runjam", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let mut ids = Vec::new();
+            for status in [503, 201] {
+                let mut request = server.recv_timeout(Duration::from_secs(2)).unwrap().expect("feedback request missing");
+                assert_eq!(request.url(), "/functions/v1/platform/runjam/feedback");
+                let mut text = String::new();
+                request.as_reader().read_to_string(&mut text).unwrap();
+                let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(payload["content"], "Legacy draft");
+                assert_eq!(payload["platform"], crate::commands::telemetry_cmd::platform_name());
+                let id = payload["request_id"].as_str().unwrap().to_string();
+                assert!(uuid::Uuid::parse_str(&id).is_ok());
+                ids.push(id);
+                request.respond(tiny_http::Response::from_string(r#"{"ok":true,"id":"2337ab27-69db-42c9-bf68-243017e28b5e"}"#).with_status_code(status)).unwrap();
+            }
+            assert_eq!(ids[0], ids[1]);
+        });
+        flush_database(&db, &ureq::agent(), &base);
+        let count: i64 = db.lock().unwrap().conn.lock().unwrap().query_row("SELECT count(*) FROM telemetry_queue WHERE kind='feedback'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "failed legacy feedback must remain queued");
+        flush_database(&db, &ureq::agent(), &base);
+        worker.join().unwrap();
+        let count: i64 = db.lock().unwrap().conn.lock().unwrap().query_row("SELECT count(*) FROM telemetry_queue", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn rejects_success_status_without_server_acknowledgement() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/feedback", server.server_addr());
+        let worker = std::thread::spawn(move || {
+            let request = server.recv().unwrap();
+            assert_eq!(request.url(), "/feedback");
+            request.respond(tiny_http::Response::from_string(r#"{"ok":false}"#).with_status_code(201)).unwrap();
+        });
+        let ok = post_json_with(&ureq::agent(), &url, "{}");
+        worker.join().unwrap();
+        assert!(!ok);
+    }
+
+    #[test]
+    fn explicit_feedback_requires_a_persisted_id_and_sends_only_the_user_payload() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/functions/v1/platform/runjam", server.server_addr());
+        let payload = serde_json::json!({"request_id":"1352c622-e643-4b55-943d-3bfead7d0bd1",
+            "installation_id":"084c70ab-1292-4fed-b93a-ab12e7f14cb0", "type":"feature",
+            "content":"My suggestion", "app_version":"1.2.3", "platform":"darwin"});
+        let expected = payload.clone();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [(201, r#"{"ok":true}"#), (202, r#"{"ok":true,"id":"saved"}"#), (201, r#"{"ok":true,"id":"queued"}"#), (201, r#"{"ok":true,"id":"2337ab27-69db-42c9-bf68-243017e28b5e"}"#)] {
+                let mut request = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+                assert_eq!(request.url(), "/functions/v1/platform/runjam/feedback");
+                assert!(!request.headers().iter().any(|h| h.field.equiv("authorization")));
+                let mut body_sent = String::new();
+                request.as_reader().read_to_string(&mut body_sent).unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&body_sent).unwrap(), expected);
+                request.respond(tiny_http::Response::from_string(body).with_status_code(status)).unwrap();
+            }
+        });
+        assert!(send_feedback_with(&ureq::agent(), &base, &payload).is_err());
+        assert!(send_feedback_with(&ureq::agent(), &base, &payload).is_err());
+        assert!(send_feedback_with(&ureq::agent(), &base, &payload).is_err());
+        assert_eq!(send_feedback_with(&ureq::agent(), &base, &payload).unwrap()["id"], "2337ab27-69db-42c9-bf68-243017e28b5e");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn queued_events_never_include_user_content_or_paths() {
+        let payload = serde_json::json!({"events":[{"event_name":"message_sent", "event_time":"2026-10-18T00:00:00Z",
+            "event_props":{"count":2,"path":"/private/workspace", "model":"private-model-name", "content":"conversation"}}]});
+        let result = queue_body("events", &payload);
+        assert!(!result.contains("/private"));
+        assert!(!result.contains("conversation"));
+        assert!(!result.contains("private-model"));
+        assert!(result.contains("\"count\":2"));
+    }
+
+    /// Historical endpoint probe retained only for compatibility investigation.
+    /// Never run during local validation: it performs a production write.
+    #[test]
+    #[ignore = "Legacy production-network probe; run local fixture tests instead"]
     fn post_follows_308_redirect_to_www() {
         let agent = ureq::builder().timeout(std::time::Duration::from_secs(15)).build();
-        // 裸域名 runjam.app 会 308 到 www.runjam.app；默认 base 已用 www，
-        // 这里显式用裸域名验证手动跟随逻辑生效。
+        // This legacy route is not used by the client transport.
         let ok = post_json_with(&agent, "https://runjam.app/api/telemetry/register", r#"{"installation_id":"00000000-0000-4000-8000-000000000001"}"#);
         assert!(ok, "POST 经 308 重定向后应返回 2xx");
     }

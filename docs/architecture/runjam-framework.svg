@@ -177,7 +177,7 @@
   <line x1="740" y1="398" x2="1047.5" y2="578" stroke="#9333ea" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
   <!-- Layer 6: Local Storage -->
   <rect x="30" y="680" width="1140" height="65" rx="10" fill="#f9fafb" stroke="#e5e7eb" stroke-width="1.5"/>
-  <text x="48" y="702" class="layer-title">🔒  Local-First Storage  ·  ~/.runjam/  (private, no telemetry, no cloud)</text>
+  <text x="48" y="702" class="layer-title">🔒  Local-First Storage  ·  ~/.runjam/  (private content; optional metadata + IP)</text>
   <rect x="70" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>
   <text x="170" y="724" text-anchor="middle" class="label-text">SQLite · sessions · costs · config</text>
   <rect x="280" y="710" width="200" height="28" rx="6" fill="#ffffff" stroke="#9ca3af" stroke-width="1.2"/>

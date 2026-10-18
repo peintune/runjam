@@ -156,8 +156,8 @@ const zhCN: Record<TranslationKey, string> = {
   "pet.attachments": "附件",
   "pet.removeAttachment": "移除",
   "pet.deniedNote": "选择该模式后，需要授权的操作会在此处弹出确认按钮。",
-  "settings.general.telemetry": "匿名使用数据",
-  "settings.general.telemetryDesc": "帮助改进 RunJam：应用版本、功能使用情况和脱敏错误日志。不收集代码、对话内容或 IP 地址。",
+  "settings.general.telemetry": "使用与诊断数据",
+  "settings.general.telemetryDesc": "上报启动、应用版本、系统、功能使用和有限诊断元数据，服务器会记录公网 IP。不上传代码、文件路径或对话内容。关闭后停止自动上报，仍可主动发送反馈。",
   "settings.general.proxy": "出站代理",
   "settings.general.proxyDesc": "直连失败时用于遥测上报的 HTTP/SOCKS5 代理。留空表示直连。",
   "settings.general.proxyPlaceholder": "http://127.0.0.1:7890 或 socks5://127.0.0.1:1080",
@@ -337,6 +337,7 @@ const zhCN: Record<TranslationKey, string> = {
   "session.feedbackEmailPlaceholder": "邮箱（可选）",
   "session.feedbackSending": "发送中…",
   "session.feedbackSubmit": "提交",
+  "session.feedbackPrivacy": "仅发送填写的内容、可选邮箱、安装标识、版本和系统，服务器会记录公网 IP。不附带对话或文件。",
 
   // ── Permission modes ────────────────────────────────────────────────────
   "perm.readOnly": "智能体只能读取文件并规划操作，无法做任何修改。",
