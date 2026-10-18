@@ -9,6 +9,7 @@
     "core:window:allow-hide",
     "core:window:allow-close",
     "core:window:allow-set-focus",
+    "core:webview:allow-set-webview-focus",
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:event:default",

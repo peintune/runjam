@@ -9,6 +9,7 @@ pub mod proxy_cmd;
 pub mod fs_cmd;
 pub mod pet_cmd;
 pub mod power_cmd;
+pub mod input_diag_cmd;
 pub mod term_cmd;
 pub mod ollama_cmd;
 pub mod llama_cmd;

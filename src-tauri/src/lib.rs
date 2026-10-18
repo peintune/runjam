@@ -119,6 +119,7 @@ pub fn run() {
         .manage(proxy_state)
         .manage(Mutex::new(TerminalState::new()))
         .invoke_handler(tauri::generate_handler![
+            commands::input_diag_cmd::report_input_diagnostic,
             platform_account::platform_status,
             platform_account::platform_send_code,
             platform_account::platform_login,

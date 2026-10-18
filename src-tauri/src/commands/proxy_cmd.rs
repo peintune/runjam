@@ -18,19 +18,26 @@ pub fn get_proxy_url(state: tauri::State<'_, Arc<Mutex<ProxyState>>>) -> String 
 }
 
 #[tauri::command]
-pub fn set_reasoning_disabled(
+pub async fn set_reasoning_disabled<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     state: tauri::State<'_, Arc<Mutex<ProxyState>>>,
     disabled: bool,
     session_id: Option<String>,
-    manager: tauri::State<'_, Mutex<crate::session::runner::SessionManager>>,
-) {
+) -> Result<(), String> {
     if let Some(id) = session_id {
-        if let Some(info) = manager.lock().ok().and_then(|m| m.runtime_info(&id)) {
-            if let Some(route) = state.lock().unwrap().session_routes.get_mut(&info.run_id) { route.reasoning_disabled = disabled; }
-        }
-        return;
+        let state = state.inner().clone();
+        return super::session_cmd::run_session_task(app, move |manager| {
+            if let Some(info) = manager.runtime_info(&id) {
+                let mut proxy = state.lock().map_err(|e| e.to_string())?;
+                if let Some(route) = proxy.session_routes.get_mut(&info.run_id) {
+                    route.reasoning_disabled = disabled;
+                }
+            }
+            Ok(())
+        }).await?;
     }
-    state.lock().unwrap().reasoning_disabled = disabled;
+    state.lock().map_err(|e| e.to_string())?.reasoning_disabled = disabled;
+    Ok(())
 }
 
 pub fn init_proxy(state: Arc<Mutex<ProxyState>>) {

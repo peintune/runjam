@@ -1185,7 +1185,7 @@ impl AcpClient {
             // session so a chatty agent can't flood the telemetry queue.
             let mut reported_unknown_updates: HashSet<String> = HashSet::new();
             for line in reader.lines().flatten() {
-                rjlog!("[ACP RAW] {}", line);
+                rjlogd!("[ACP RAW] {}", line);
                 if let Ok(val) = serde_json::from_str::<Value>(&line) {
                     if val.get("method").is_some() {
                         // Try to parse as permission request first
@@ -1338,13 +1338,13 @@ impl AcpClient {
                             }
                         }
                         // Then try to parse as session update
+                        let command_count = val.pointer("/params/update/availableCommands")
+                            .and_then(Value::as_array).map(Vec::len).unwrap_or(0);
                         if let Ok(update) = serde_json::from_value::<SessionUpdate>(val) {
                             if update.method == "session/update" {
-                                let update_type = update.params.update.session_update.as_str();
-                                let tool_name_str = get_tool_name(&update.params.update);
-                                rjlog!("[ACP DEBUG] Received session/update type='{}' tool_name={} content_len={} input_len={}",
-                                    update_type,
-                                    tool_name_str,
+                                rjlogd!("[ACP DEBUG] Received session/update type='{}' tool_name={} content_len={} input_len={}",
+                                    update.params.update.session_update,
+                                    get_tool_name(&update.params.update),
                                     get_content_text(&update.params.update).len(),
                                     update.params.update.input.as_ref().map(|s| s.len()).unwrap_or(0),
                                 );
@@ -1486,7 +1486,7 @@ impl AcpClient {
                                         }
                                     }
                                     "available_commands_update" => {
-                                        rjlog!("[ACP DEBUG] Available commands update");
+                                        rjlog!("[ACP] Command catalog refreshed: {} entries", command_count);
                                     }
                                     "tool_call" | "tool_call_update" => {
                                         let tool_name = get_tool_name(&update.params.update);
@@ -1583,10 +1583,10 @@ impl AcpClient {
                                 rjlog!("[ACP DEBUG] Unknown method: {}", update.method);
                             }
                         } else {
-                            rjlog!("[ACP DEBUG] Failed to parse session update: {}", line);
+                            rjlog!("[ACP WARN] Failed to parse session update ({} bytes): {}", line.len(), safe_truncate(&line, 300));
                         }
                     } else if val.get("result").is_some() || val.get("error").is_some() {
-                        rjlog!("[ACP DEBUG] Response: {}", line);
+                        rjlogd!("[ACP DEBUG] Response: {}", line);
                         // 只有 session/prompt（turn 产出）请求的响应才允许触发 finish。
                         // 握手类响应（initialize / session/new / set_mode）即使因为
                         // Proxy 全局 usage 兜底命中 has_usage，也绝不能把会话标记为完成。
@@ -1632,7 +1632,7 @@ impl AcpClient {
                         }
                         if let Some(result) = val.get("result") {
                             // Log the full result for debugging
-                            rjlog!("[CACHE DEBUG] Full result: {}", serde_json::to_string(result).unwrap_or_default());
+                            rjlogd!("[CACHE DEBUG] Full result: {}", serde_json::to_string(result).unwrap_or_default());
                             
                             // Try to extract usage from the result, regardless of stopReason
                             let usage = result.get("usage");
@@ -2280,7 +2280,7 @@ impl AcpClient {
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().flatten() {
-                rjlog!("[ACP TEST RAW] {}", line);
+                rjlogd!("[ACP TEST RAW] {}", line);
                 if let Ok(val) = serde_json::from_str::<Value>(&line) {
                     if val.get("result").is_some() || val.get("error").is_some() {
                         if let Some(id) = val.get("id").and_then(|v| v.as_u64()) {

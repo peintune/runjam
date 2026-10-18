@@ -6,10 +6,18 @@ import PetIcon from "./components/pet/PetIcon.vue";
 import PetChat from "./components/pet/PetChat.vue";
 import "./assets/styles/main.css";
 import { initDiag } from "./lib/diag";
+import { installInputDiagnostics } from "./lib/inputDiagnostics";
+import { invoke } from "@tauri-apps/api/core";
 import { t } from "./i18n";
 import { useThemeStore } from "./stores/useThemeStore";
 
 initDiag();
+if (import.meta.env.DEV) {
+  const stopInputDiagnostics = installInputDiagnostics(snapshot => {
+    void invoke("report_input_diagnostic", { snapshot }).catch(() => {});
+  });
+  import.meta.hot?.dispose(stopInputDiagnostics);
+}
 
 // ── Window routing ────────────────────────────────────────────────────────
 // The desktop-pet windows (`pet-icon`, `pet-chat`) load this same bundle but

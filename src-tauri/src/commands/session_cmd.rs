@@ -14,6 +14,22 @@ fn default_session_dir() -> PathBuf {
     home.join(".runjam").join("session")
 }
 
+/// Agent startup holds session/client locks while waiting on ACP responses.
+/// Commands that need those locks must yield IPC dispatch and do their waiting
+/// on the blocking pool, keeping both the UI and async workers available.
+pub(crate) async fn run_session_task<R: tauri::Runtime, T: Send + 'static>(
+    app: tauri::AppHandle<R>,
+    action: impl FnOnce(&mut SessionManager) -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<T, String> {
+        let state = app.state::<Mutex<SessionManager>>();
+        let mut manager = state.lock().map_err(|e| e.to_string())?;
+        Ok(action(&mut manager))
+    })
+    .await
+    .map_err(|e| format!("Session worker failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn start_session(
     app: tauri::AppHandle,
@@ -222,8 +238,91 @@ pub async fn session_alive(
 }
 
 #[tauri::command]
-pub fn get_session_runtime(manager: State<'_, Mutex<SessionManager>>, id: String) -> Option<crate::agent_launch::RuntimeInfo> {
-    manager.lock().ok()?.runtime_info(&id)
+pub async fn get_session_runtime<R: tauri::Runtime>(app: tauri::AppHandle<R>, id: String) -> Option<crate::agent_launch::RuntimeInfo> {
+    run_session_task(app, move |manager| manager.runtime_info(&id)).await.ok().flatten()
+}
+
+#[cfg(test)]
+mod responsiveness_tests {
+    use super::*;
+    use std::sync::{mpsc, Arc};
+    use std::time::{Duration, Instant};
+    use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
+
+    /// Dispatch runs on the UI thread in production. Holding a session lock
+    /// models the Agent startup/handshake without launching a real process.
+    fn assert_dispatch_remains_responsive(command: &str, body: serde_json::Value) {
+        let app = mock_builder()
+            .manage(Mutex::new(SessionManager::new()))
+            .manage(Arc::new(Mutex::new(crate::proxy::ProxyState::new())))
+            .invoke_handler(tauri::generate_handler![
+                get_session_runtime, respond_interaction, respond_permission,
+                crate::commands::proxy_cmd::set_reasoning_disabled,
+            ])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build().unwrap();
+        let handle = app.handle().clone();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let state = handle.state::<Mutex<SessionManager>>();
+            let _guard = state.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            // A broken synchronous handler must fail rather than hang the test.
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+        });
+        locked_rx.recv().unwrap();
+        let (response_tx, response_rx) = mpsc::channel();
+        let started = Instant::now();
+        window.as_ref().clone().on_message(
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" }.parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.into(),
+            },
+            Box::new(move |_, _, response, _, _| { let _ = response_tx.send(response); }),
+        );
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        worker.join().unwrap();
+        let response = response_rx.recv_timeout(Duration::from_secs(2)).expect("command must finish after unlock");
+        let response = match response {
+            tauri::ipc::InvokeResponse::Ok(body) => Ok(body.deserialize::<serde_json::Value>().unwrap()),
+            tauri::ipc::InvokeResponse::Err(error) => Err(error.0),
+        };
+        let expected = if command.starts_with("respond_") {
+            Err(serde_json::json!("No client for session: starting"))
+        } else { Ok(serde_json::Value::Null) };
+        assert_eq!(response, expected, "the request must reach the real {command} handler");
+        assert!(elapsed < Duration::from_millis(500),
+            "{command} blocked UI dispatch for {elapsed:?} while the session lock was busy");
+    }
+
+    #[test]
+    fn runtime_lookup_does_not_block_ui_dispatch() {
+        assert_dispatch_remains_responsive("get_session_runtime", serde_json::json!({"id": "starting"}));
+    }
+
+    #[test]
+    fn interaction_response_does_not_block_ui_dispatch() {
+        assert_dispatch_remains_responsive("respond_interaction", serde_json::json!({"id": "starting", "response": "yes"}));
+    }
+
+    #[test]
+    fn permission_response_does_not_block_ui_dispatch() {
+        assert_dispatch_remains_responsive("respond_permission", serde_json::json!({"id": "starting", "requestId": "request", "response": "yes"}));
+    }
+
+    #[test]
+    fn reasoning_change_does_not_block_ui_dispatch() {
+        assert_dispatch_remains_responsive("set_reasoning_disabled", serde_json::json!({"sessionId": "starting", "disabled": true}));
+    }
 }
 
 #[tauri::command]
@@ -249,24 +348,22 @@ pub async fn set_session_permission_mode(
 }
 
 #[tauri::command]
-pub fn respond_interaction(
-    manager: State<'_, Mutex<SessionManager>>,
+pub async fn respond_interaction<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     id: String,
     response: String,
 ) -> Result<(), String> {
-    let mgr = manager.lock().map_err(|e| e.to_string())?;
-    mgr.respond(&id, &response)
+    run_session_task(app, move |manager| manager.respond(&id, &response)).await?
 }
 
 #[tauri::command]
-pub fn respond_permission(
-    manager: State<'_, Mutex<SessionManager>>,
+pub async fn respond_permission<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     id: String,
     request_id: String,
     response: String,
 ) -> Result<(), String> {
-    let mgr = manager.lock().map_err(|e| e.to_string())?;
-    mgr.respond_permission(&id, &request_id, &response)
+    run_session_task(app, move |manager| manager.respond_permission(&id, &request_id, &response)).await?
 }
 
 #[tauri::command]

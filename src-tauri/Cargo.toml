@@ -1,6 +1,6 @@
 [package]
 name = "runjam"
-version = "1.0.101"
+version = "1.0.102"
 description = "RunJam — A unified desktop manager for AI coding agents"
 authors = ["RunJam Contributors"]
 edition = "2021"
@@ -40,6 +40,9 @@ calamine = "0.25"
 pdf-extract = "0.7"
 uuid = { version = "1", features = ["v4"] }
 url = "2"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 
 # macOS-only: the pet windows must float above OTHER applications' native
 # full-screen spaces. Tauri/tao only ever sets `CanJoinAllSpaces`

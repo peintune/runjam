@@ -15,6 +15,7 @@ import {
 } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -46,7 +47,6 @@ const {
   ensureSession,
   greet,
   dispose,
-  runtime,
   // Toolbar state (agent / model / folder / permission / skills / reasoning).
   config,
   availableAgents,
@@ -84,6 +84,7 @@ let disposed = false;
 let focusGeneration = 0;
 let focusFrame: number | null = null;
 let focusTimer: ReturnType<typeof setTimeout> | null = null;
+let composerFocusPending = false;
 
 /**
  * Keep the newest message in view, but only when the user is already at the
@@ -146,11 +147,15 @@ async function toggleChatMode() {
 
 /** Focus the composer without scrolling the transcript or changing its selection. */
 function focusComposer() {
-  if (document.visibilityState === "hidden" || !document.hasFocus()) return;
-  inputEl.value?.focus({ preventScroll: true });
+  if (disposed || document.visibilityState === "hidden" || !document.hasFocus()) return false;
+  const el = inputEl.value;
+  if (!el) return false;
+  el.focus({ preventScroll: true });
+  return document.activeElement === el;
 }
 
 function cancelFocusRetries() {
+  composerFocusPending = false;
   focusGeneration++;
   if (focusFrame !== null) {
     cancelAnimationFrame(focusFrame);
@@ -167,19 +172,42 @@ function cancelFocusRetries() {
  *  settled — the first attempt can otherwise race WebView becoming key. */
 async function focusInput() {
   cancelFocusRetries();
+  composerFocusPending = true;
   const generation = focusGeneration;
   await nextTick();
-  if (disposed || generation !== focusGeneration || !await getCurrentWindow().isVisible().catch(() => false)) return;
-  if (generation !== focusGeneration) return;
-  focusComposer();
+  if (disposed || generation !== focusGeneration) return;
+  const window = getCurrentWindow();
+  const visible = await window.isVisible().catch(() => false);
+  if (disposed || generation !== focusGeneration) return;
+  if (!visible) { cancelFocusRetries(); return; }
+  // A non-activating panel can receive clicks with no native key window.
+  // WebView.setFocus only assigns first responder on macOS; it cannot make
+  // that inactive panel key. Restore the window before its editing responder.
+  await window.setFocus().catch(error => {
+    console.error("[pet] failed to focus window:", error);
+  });
+  if (disposed || generation !== focusGeneration) return;
+  // A key NSPanel does not necessarily have its WKWebView as first responder.
+  // Restore the native WebView input path before focusing the DOM textarea.
+  await getCurrentWebview().setFocus().catch(error => {
+    console.error("[pet] failed to focus WebView:", error);
+  });
+  if (disposed || generation !== focusGeneration) return;
+  onWindowFocus();
   focusFrame = requestAnimationFrame(() => {
     focusFrame = null;
-    focusComposer();
+    onWindowFocus();
   });
   focusTimer = setTimeout(() => {
     focusTimer = null;
-    focusComposer();
+    onWindowFocus();
   }, 80);
+}
+
+/** Native activation can finish after both opening retries. Keep the request
+ *  until WebKit reports focus, or a user interaction/close cancels it. */
+function onWindowFocus() {
+  if (composerFocusPending && focusComposer()) composerFocusPending = false;
 }
 
 /** A native first click can reach the webview before WebKit assigns focus to
@@ -188,7 +216,7 @@ async function focusInput() {
 function onComposerPointerDown(e: PointerEvent) {
   cancelFocusRetries();
   if ((e.target as HTMLElement | null)?.closest("button")) return;
-  focusComposer();
+  if (!focusComposer()) void focusInput();
 }
 
 /** Enter sends; Shift+Enter inserts a newline. */
@@ -494,6 +522,7 @@ onMounted(async () => {
   // Register window controls BEFORE the potentially slow ACP handshake. A
   // reopen during initialization must still restore focus and close popovers.
   window.addEventListener("keydown", onEsc);
+  window.addEventListener("focus", onWindowFocus);
   document.addEventListener("click", onDocClick);
   unlistenOpened = await listen<{pinned: boolean}>("pet:opened", event => {
     pinRevision++;
@@ -532,6 +561,7 @@ onBeforeUnmount(() => {
     unlistenClosed = null;
   }
   window.removeEventListener("keydown", onEsc);
+  window.removeEventListener("focus", onWindowFocus);
   document.removeEventListener("click", onDocClick);
   dispose();
 });
@@ -888,13 +918,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <p v-if="qaMode" class="mt-1 text-[9px] text-gray-500">{{ t('pet.qaHint') }}</p>
-
-      <p v-if="runtime" class="mt-1 text-[9px] text-gray-500 truncate" :title="runtime.config_root">
-        {{ t(runtime.config_mode === 'native' ? 'models.nativeMode' : 'models.managedMode') }} ·
-        {{ runtime.requested_model }}
-        <span v-if="runtime.config_mode === 'native'"> · {{ t('models.nativeAuth') }}</span>
-      </p>
       <!-- Staged attachments list. Teleported like the option menus so it is
            never clipped by the action row (`overflow-hidden`) and uses the same
            open-up/​open-down anchoring. -->

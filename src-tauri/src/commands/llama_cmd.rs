@@ -171,7 +171,15 @@ pub fn open_llama_models_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_llama_server_status() -> String {
+pub async fn get_llama_server_status() -> Result<String, String> {
+    // This is called while opening the pet and refreshing its model picker.
+    // A slow loopback HTTP response must not block every native window.
+    tauri::async_runtime::spawn_blocking(llama_server_status)
+        .await
+        .map_err(|e| format!("Local model status worker failed: {e}"))
+}
+
+fn llama_server_status() -> String {
     if LLAMA_SERVER_RUNNING.load(Ordering::Relaxed) {
         return format!("running:{}", LLAMA_SERVER_PORT.load(Ordering::Relaxed));
     }
@@ -775,7 +783,67 @@ pub fn create_llama_model(model_name: String, port: u16) -> Result<String, Strin
 }
 #[cfg(test)]
 mod tests {
-    use super::parse_running_model;
+    use super::{parse_running_model, LLAMA_SERVER_PORT, LLAMA_SERVER_RUNNING};
+
+    #[test]
+    fn slow_local_server_probe_does_not_block_ui_dispatch() {
+        use std::net::TcpListener;
+        use std::sync::{atomic::Ordering, mpsc};
+        use std::time::{Duration, Instant};
+        use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let http = tiny_http::Server::from_listener(listener, None).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            if let Ok(Some(request)) = http.recv_timeout(Duration::from_secs(3)) {
+                let _ = accepted_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(2));
+                let _ = request.respond(tiny_http::Response::from_string("{}"));
+            }
+        });
+
+        struct RestoreServerState(bool, u16);
+        impl Drop for RestoreServerState {
+            fn drop(&mut self) {
+                LLAMA_SERVER_RUNNING.store(self.0, Ordering::Relaxed);
+                LLAMA_SERVER_PORT.store(self.1, Ordering::Relaxed);
+            }
+        }
+        let _restore = RestoreServerState(
+            LLAMA_SERVER_RUNNING.swap(false, Ordering::Relaxed),
+            LLAMA_SERVER_PORT.swap(port, Ordering::Relaxed),
+        );
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![super::get_llama_server_status])
+            .build(mock_context(noop_assets())).unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+        let (response_tx, response_rx) = mpsc::channel();
+        let started = Instant::now();
+        window.as_ref().clone().on_message(
+            tauri::webview::InvokeRequest {
+                cmd: "get_llama_server_status".into(),
+                callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) { "http://tauri.localhost" } else { "tauri://localhost" }.parse().unwrap(),
+                body: tauri::ipc::InvokeBody::Json(serde_json::json!({})),
+                headers: Default::default(), invoke_key: INVOKE_KEY.into(),
+            },
+            Box::new(move |_, _, response, _, _| { let _ = response_tx.send(response); }),
+        );
+        let elapsed = started.elapsed();
+        let accepted = accepted_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        let _ = release_tx.send(());
+        server.join().unwrap();
+        let response = response_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(accepted, "the real status handler must probe the local server");
+        assert!(elapsed < Duration::from_millis(500), "the HTTP probe blocked UI dispatch for {elapsed:?}");
+        match response {
+            tauri::ipc::InvokeResponse::Ok(body) => assert_eq!(body.deserialize::<String>().unwrap(), format!("running:{port}")),
+            tauri::ipc::InvokeResponse::Err(error) => panic!("status probe failed: {}", error.0),
+        }
+    }
 
     /// A real response captured from a running llama-server (`GET /v1/models`).
     /// Keeping the actual payload — rather than a hand-written minimal object —
